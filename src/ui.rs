@@ -1158,14 +1158,58 @@ impl App {
     }
 
     // ---------- header ----------
+    /// Specialty categories get their own look: (gradient from, gradient to, text).
+    fn family_style(f: usize) -> Option<(Color32, Color32, Color32)> {
+        match f {
+            16 => Some((Color32::from_rgb(0x4a, 0x2c, 0x17), Color32::from_rgb(0x9a, 0x62, 0x2c), Color32::from_rgb(0xff, 0xf1, 0xd6))), // Samples: walnut and brass
+            17 => Some((Color32::from_rgb(0x0f, 0x38, 0x0f), Color32::from_rgb(0x30, 0x62, 0x30), Color32::from_rgb(0x9b, 0xbc, 0x0f))), // Chiptune: Game Boy screen
+            18 => Some((Color32::from_rgb(0xff, 0x3e, 0xa5), Color32::from_rgb(0x9b, 0x5d, 0xe5), Color32::WHITE)), // Synthwave: neon pink → pastel purple
+            19 => Some((Color32::from_rgb(0x00, 0x3c, 0xff), Color32::from_rgb(0x00, 0xe5, 0xff), Color32::from_rgb(0xff, 0xf2, 0x00))), // Eurodance: laser blue, yellow
+            20 => Some((Color32::from_rgb(0xff, 0x00, 0x6e), Color32::from_rgb(0xff, 0xbe, 0x0b), Color32::WHITE)), // Italo disco: magenta → gold
+            _ => None,
+        }
+    }
+
+    fn gradient(p: &egui::Painter, r: Rect, a: Color32, b: Color32) {
+        let mut m = egui::Mesh::default();
+        m.colored_vertex(r.left_top(), a);
+        m.colored_vertex(r.right_top(), b);
+        m.colored_vertex(r.right_bottom(), b);
+        m.colored_vertex(r.left_bottom(), a);
+        m.add_triangle(0, 1, 2);
+        m.add_triangle(0, 2, 3);
+        p.add(egui::Shape::mesh(m));
+    }
+
+    /// A sound row with its category's colours. Returns true when clicked.
+    fn styled_row(ui: &mut egui::Ui, label: &str, selected: bool, (a, b, txt): (Color32, Color32, Color32)) -> bool {
+        let h = 22.0;
+        let w = ui.available_width().max(200.0);
+        let (r, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+        let p = ui.painter_at(r);
+        let dim = if resp.hovered() || selected { 1.0 } else { 0.78 };
+        Self::gradient(&p, r.shrink2(Vec2::new(0.0, 1.0)), a.gamma_multiply(dim), b.gamma_multiply(dim));
+        if selected {
+            p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+        }
+        p.text(r.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(14.0), txt);
+        resp.clicked()
+    }
+
     fn preset_combo(&mut self, ui: &mut egui::Ui, layer: bool, width: f32) {
         let cur = if layer { self.s.layer } else { self.s.main };
         let name = self.preset_name(cur);
         let list = self.filtered();
         let mut pick = None;
         let size = if layer { 14.0 } else { 19.0 };
+        // the chosen sound wears its category's colour
+        let cur_style = self.presets.iter().find(|p| (p.bank, p.prog) == cur).and_then(|p| Self::family_style(sounds::family(p)));
+        let name_col = match cur_style {
+            Some((a, _, _)) if !layer => a.lerp_to_gamma(Color32::WHITE, 0.15),
+            _ => if layer { ARP } else { fg() },
+        };
         egui::ComboBox::from_id_salt(if layer { "layer_preset" } else { "main_preset" })
-            .selected_text(RichText::new(name).size(size).strong().color(if layer { ARP } else { fg() }))
+            .selected_text(RichText::new(name).size(size).strong().color(name_col))
             .width(width)
             .height(520.0)
             .show_ui(ui, |ui| {
@@ -1173,13 +1217,32 @@ impl App {
                 for i in list {
                     let pr = &self.presets[i];
                     let f = sounds::family(pr);
-                    if self.category.is_none() && f != fam && pr.bank == 0 {
+                    let style = Self::family_style(f);
+                    if self.category.is_none() && f != fam && (pr.bank == 0 || style.is_some()) {
                         fam = f;
-                        ui.label(RichText::new(GM_FAMILIES[f]).size(11.0).color(text_dim()));
+                        match style {
+                            Some((a, b, txt)) => {
+                                ui.add_space(4.0);
+                                let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().max(200.0), 18.0), Sense::hover());
+                                let p = ui.painter_at(r);
+                                Self::gradient(&p, r, a, b);
+                                p.text(r.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, GM_FAMILIES[f].to_uppercase(), FontId::proportional(11.5), txt);
+                            }
+                            None => {
+                                ui.label(RichText::new(GM_FAMILIES[f]).size(11.0).color(text_dim()));
+                            }
+                        }
                     }
                     let fav = if self.s.favorites.contains(&(pr.bank, pr.prog)) { "★ " } else { "" };
-                    let label = format!("{fav}{:03}  {}{}", pr.prog + 1, pr.name, if pr.bank > 0 { format!("  (bank {})", pr.bank) } else { String::new() });
-                    if ui.selectable_label((pr.bank, pr.prog) == cur, label).clicked() {
+                    let sel = (pr.bank, pr.prog) == cur;
+                    let clicked = match style {
+                        Some(st) => Self::styled_row(ui, &format!("{fav}{}", pr.name), sel, st),
+                        None => {
+                            let label = format!("{fav}{:03}  {}{}", pr.prog + 1, pr.name, if pr.bank > 0 { format!("  (bank {})", pr.bank) } else { String::new() });
+                            ui.selectable_label(sel, label).clicked()
+                        }
+                    };
+                    if clicked {
                         pick = Some((pr.bank, pr.prog));
                     }
                 }
@@ -1218,12 +1281,25 @@ impl App {
                 Some(99) => "★ Favourites".to_string(),
                 Some(f) => GM_FAMILIES[f].to_string(),
             };
-            egui::ComboBox::from_id_salt("cat").selected_text(cat).width(130.0).show_ui(ui, |ui| {
+            let cat_col = self.category.and_then(Self::family_style).map(|s| s.0.lerp_to_gamma(Color32::WHITE, 0.15)).unwrap_or(fg());
+            egui::ComboBox::from_id_salt("cat").selected_text(RichText::new(cat).color(cat_col)).width(130.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut self.category, None, "All sounds");
                 ui.selectable_value(&mut self.category, Some(99), "★ Favourites");
                 ui.separator();
                 for (i, f) in GM_FAMILIES.iter().enumerate() {
-                    ui.selectable_value(&mut self.category, Some(i), *f);
+                    match Self::family_style(i) {
+                        Some(st) => {
+                            if i == 16 {
+                                ui.separator();
+                            }
+                            if Self::styled_row(ui, f, self.category == Some(i), st) {
+                                self.category = Some(i);
+                            }
+                        }
+                        None => {
+                            ui.selectable_value(&mut self.category, Some(i), *f);
+                        }
+                    }
                 }
             });
             ui.separator();
