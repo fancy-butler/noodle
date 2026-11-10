@@ -16,8 +16,10 @@ pub struct PresetInfo {
 pub const SAMPLE_BANK: i32 = 1000;
 pub const CHIP_BANK: i32 = 2000;
 pub const SYNTH_BANK: i32 = 3000;
+pub const EURO_BANK: i32 = 3001;
+pub const ITALO_BANK: i32 = 3002;
 
-pub const GM_FAMILIES: [&str; 19] = [
+pub const GM_FAMILIES: [&str; 21] = [
     "Piano",
     "Chromatic perc.",
     "Organ",
@@ -37,6 +39,8 @@ pub const GM_FAMILIES: [&str; 19] = [
     "Samples",
     "Chiptune",
     "Synthwave",
+    "Eurodance",
+    "Italo disco",
 ];
 
 pub fn family(p: &PresetInfo) -> usize {
@@ -44,6 +48,8 @@ pub fn family(p: &PresetInfo) -> usize {
         SAMPLE_BANK => 16,
         CHIP_BANK => 17,
         SYNTH_BANK => 18,
+        EURO_BANK => 19,
+        ITALO_BANK => 20,
         _ => (p.prog / 8).clamp(0, 15) as usize,
     }
 }
@@ -97,8 +103,10 @@ pub fn native_presets(extra: &[PathBuf]) -> (Vec<PresetInfo>, Vec<(i32, PathBuf)
     for (i, p) in crate::chip::PATCHES.iter().enumerate() {
         v.push(PresetInfo { bank: CHIP_BANK, prog: i as i32, name: p.name.to_string() });
     }
-    for (i, p) in crate::analog::PATCHES.iter().enumerate() {
-        v.push(PresetInfo { bank: SYNTH_BANK, prog: i as i32, name: p.name.to_string() });
+    for (b, bank) in crate::analog::BANKS.iter().enumerate() {
+        for (i, p) in bank.iter().enumerate() {
+            v.push(PresetInfo { bank: SYNTH_BANK + b as i32, prog: i as i32, name: p.name.to_string() });
+        }
     }
     (v, paths)
 }

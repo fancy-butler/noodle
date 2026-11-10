@@ -344,7 +344,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
             fails.push(format!("chip patch {} is silent", pt.name));
         }
     }
-    for pt in analog::PATCHES.iter() {
+    for pt in analog::BANKS.iter().flat_map(|b| b.iter()) {
         tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(std::sync::Arc::new(native::InstDef::Analog(*pt))) }).unwrap();
         for k in [57, 60, 64] {
             tx.send(note(k, true)).unwrap();

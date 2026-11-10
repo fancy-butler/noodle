@@ -44,6 +44,14 @@ pub struct Patch {
     pub mono: bool,
     pub chorus: f32,
     pub level: f32,
+    /// pitch envelope: start offset (semitones) gliding to 0 over time (s)
+    pub pitch_env: (f32, f32),
+    /// notes stacked on each key (semitones above it), e.g. a rave stab
+    pub chord: &'static [i8],
+    /// osc 2 hard-synced to osc 1 (the pitch envelope then sweeps osc 2)
+    pub sync: bool,
+    /// ping-pong echo: time (s), feedback, mix
+    pub echo: (f32, f32, f32),
 }
 
 const fn base(name: &'static str) -> Patch {
@@ -69,6 +77,10 @@ const fn base(name: &'static str) -> Patch {
         mono: false,
         chorus: 0.0,
         level: 0.5,
+        pitch_env: (0.0, 0.1),
+        chord: &[],
+        sync: false,
+        echo: (0.0, 0.0, 0.0),
     }
 }
 
@@ -86,6 +98,36 @@ pub const PATCHES: [Patch; 12] = [
     Patch { w1: Wave::Super, w2: Wave::Square, semi2: -12.0, mix2: 0.4, spread: 0.25, cutoff: 1200.0, res: 0.2, env_amt: 1.5, f_adsr: (1.5, 2.0, 0.8, 1.5), a_adsr: (1.2, 1.0, 0.9, 2.0), lfo: (0.25, 0.0, 0.0, 0.6, 0.0), chorus: 0.8, level: 0.5, ..base("Nightdrive pad") },
     Patch { w1: Wave::Square, sub: 0.5, noise: 0.05, cutoff: 700.0, res: 0.55, env_amt: 2.2, f_adsr: (0.002, 0.3, 0.25, 0.2), a_adsr: (0.002, 0.2, 0.8, 0.2), lfo: (6.0, 0.12, 0.0, 0.0, 0.3), glide: 0.12, mono: true, level: 0.25, ..base("Mono synth lead") },
 ];
+
+const MIN7: &[i8] = &[0, 3, 7, 10];
+const POWER: &[i8] = &[0, 7, 12];
+const MAJ: &[i8] = &[0, 4, 7];
+
+/// 90s Eurodance
+pub const EURO: [Patch; 8] = [
+    Patch { w1: Wave::Super, w2: Wave::Saw, semi2: 12.0, mix2: 0.3, spread: 0.55, cutoff: 4500.0, res: 0.1, env_amt: 0.6, f_adsr: (0.002, 0.4, 0.8, 0.3), a_adsr: (0.002, 0.3, 0.9, 0.3), glide: 0.03, chorus: 0.7, echo: (0.33, 0.3, 0.18), level: 0.28, ..base("Euro supersaw lead") },
+    Patch { w1: Wave::Pwm, w2: Wave::Saw, semi2: -12.0, det2: 18.0, mix2: 0.8, sub: 0.3, cutoff: 1800.0, res: 0.2, env_amt: 1.0, f_adsr: (0.05, 0.6, 0.7, 0.4), a_adsr: (0.01, 0.3, 0.9, 0.4), lfo: (4.5, 0.25, 0.45, 0.0, 0.0), pitch_env: (-7.0, 0.18), glide: 0.08, chorus: 1.0, level: 0.1, ..base("Hoover") },
+    Patch { w1: Wave::Saw, w2: Wave::Square, det2: 8.0, mix2: 0.5, cutoff: 900.0, res: 0.35, env_amt: 3.0, f_adsr: (0.001, 0.2, 0.1, 0.15), a_adsr: (0.001, 0.25, 0.3, 0.2), chord: MIN7, chorus: 0.5, echo: (0.25, 0.25, 0.15), level: 0.1, ..base("Rave stab (minor 7th)") },
+    Patch { w1: Wave::Square, w2: Wave::Saw, semi2: 12.0, mix2: 0.45, cutoff: 1500.0, res: 0.15, env_amt: 1.8, f_adsr: (0.001, 0.18, 0.35, 0.1), a_adsr: (0.001, 0.4, 0.45, 0.12), level: 0.18, ..base("Piano-house organ") },
+    Patch { w1: Wave::Saw, sub: 0.8, cutoff: 300.0, res: 0.4, env_amt: 2.8, keytrack: 0.3, f_adsr: (0.001, 0.14, 0.1, 0.06), a_adsr: (0.001, 0.18, 0.5, 0.06), vel_filter: 0.6, level: 0.24, ..base("Offbeat bass") },
+    Patch { w1: Wave::Super, spread: 0.4, cutoff: 1200.0, res: 0.3, env_amt: 3.0, f_adsr: (0.001, 0.16, 0.05, 0.2), a_adsr: (0.001, 0.3, 0.0, 0.3), chorus: 0.6, echo: (0.375, 0.4, 0.3), level: 0.55, ..base("Trance pluck") },
+    Patch { w1: Wave::Saw, w2: Wave::Saw, det2: 10.0, mix2: 0.9, cutoff: 700.0, res: 0.15, env_amt: 2.6, f_adsr: (0.005, 0.25, 0.2, 0.15), a_adsr: (0.003, 0.3, 0.4, 0.15), chord: POWER, chorus: 0.5, level: 0.23, ..base("Euro brass stab") },
+    Patch { w1: Wave::Square, cutoff: 2200.0, res: 0.2, env_amt: 1.5, f_adsr: (0.001, 0.08, 0.0, 0.05), a_adsr: (0.001, 0.12, 0.0, 0.08), echo: (0.25, 0.3, 0.2), level: 0.45, ..base("Pizzicato synth") },
+];
+
+/// Italo disco
+pub const ITALO: [Patch; 8] = [
+    Patch { w1: Wave::Square, w2: Wave::Square, semi2: 12.0, det2: 6.0, mix2: 0.3, cutoff: 2400.0, res: 0.25, env_amt: 1.0, f_adsr: (0.002, 0.3, 0.7, 0.3), a_adsr: (0.002, 0.2, 0.9, 0.3), lfo: (5.8, 0.2, 0.0, 0.0, 0.3), glide: 0.07, mono: true, echo: (0.3, 0.38, 0.28), level: 0.18, ..base("Italo square lead") },
+    Patch { w1: Wave::Saw, w2: Wave::Saw, det2: 11.0, mix2: 0.85, cutoff: 2600.0, res: 0.2, env_amt: 1.0, f_adsr: (0.004, 0.4, 0.7, 0.3), a_adsr: (0.004, 0.2, 0.9, 0.3), lfo: (5.5, 0.18, 0.0, 0.0, 0.4), glide: 0.05, mono: true, chorus: 0.5, echo: (0.3, 0.35, 0.25), level: 0.27, ..base("Italo saw lead") },
+    Patch { w1: Wave::Saw, w2: Wave::Saw, semi2: 7.0, mix2: 0.0, cutoff: 1200.0, res: 0.3, env_amt: 2.0, f_adsr: (0.002, 0.5, 0.5, 0.3), a_adsr: (0.002, 0.2, 0.9, 0.3), pitch_env: (24.0, 0.35), sync: true, lfo: (5.5, 0.15, 0.0, 0.0, 0.4), mono: true, echo: (0.28, 0.3, 0.2), level: 0.3, ..base("Sync lead") },
+    Patch { w1: Wave::Saw, w2: Wave::Pwm, det2: 6.0, mix2: 0.6, cutoff: 600.0, res: 0.15, env_amt: 2.8, f_adsr: (0.03, 0.35, 0.5, 0.25), a_adsr: (0.02, 0.2, 0.85, 0.25), lfo: (2.0, 0.0, 0.25, 0.0, 0.0), chorus: 0.8, level: 0.15, ..base("PolySix brass") },
+    Patch { w1: Wave::Saw, w2: Wave::Square, semi2: -12.0, mix2: 0.4, cutoff: 450.0, res: 0.45, env_amt: 2.6, keytrack: 0.4, f_adsr: (0.001, 0.12, 0.15, 0.06), a_adsr: (0.001, 0.16, 0.6, 0.06), level: 0.26, ..base("Octave bass") },
+    Patch { w1: Wave::Saw, cutoff: 420.0, res: 0.6, env_amt: 3.2, f_adsr: (0.001, 0.13, 0.08, 0.1), a_adsr: (0.001, 0.2, 0.4, 0.1), echo: (0.1875, 0.25, 0.15), level: 0.36, ..base("Moroder sequence") },
+    Patch { w1: Wave::Saw, w2: Wave::Pwm, det2: 8.0, mix2: 0.7, cutoff: 3000.0, res: 0.05, env_amt: 0.3, f_adsr: (0.3, 1.0, 0.8, 1.0), a_adsr: (0.25, 0.5, 0.9, 1.0), lfo: (0.8, 0.0, 0.3, 0.0, 0.0), chorus: 1.0, level: 0.125, ..base("Italo strings") },
+    Patch { w1: Wave::Tri, w2: Wave::Square, semi2: 12.0, mix2: 0.15, cutoff: 3500.0, res: 0.1, env_amt: 0.5, f_adsr: (0.005, 0.5, 0.6, 0.4), a_adsr: (0.01, 0.3, 0.85, 0.4), lfo: (6.0, 0.22, 0.0, 0.0, 0.25), glide: 0.06, mono: true, echo: (0.33, 0.4, 0.3), level: 0.25, ..base("Glass whistle lead") },
+];
+
+pub const BANKS: [&[Patch]; 3] = [&PATCHES, &EURO, &ITALO];
 
 #[derive(Clone, Copy, Default)]
 struct Adsr {
@@ -126,6 +168,7 @@ impl Adsr {
 #[derive(Clone, Copy, Default)]
 struct Voice {
     key: i16,
+    root: i16,
     vel: f32,
     hz: f32,
     target_hz: f32,
@@ -180,11 +223,13 @@ pub struct Player {
     cpos: usize,
     cph: f32,
     last_hz: f32,
+    echo: [Vec<f32>; 2],
+    epos: usize,
 }
 
 impl Player {
     pub fn new(patch: Patch, sr: f32) -> Self {
-        let n = if patch.mono { 1 } else { 12 };
+        let n = if patch.mono { 1 } else if patch.chord.is_empty() { 12 } else { 12 * patch.chord.len().max(1) };
         Player {
             patch,
             sr,
@@ -200,6 +245,8 @@ impl Player {
             cpos: 0,
             cph: 0.0,
             last_hz: 0.0,
+            echo: [vec![0.0; (sr * 1.1) as usize], vec![0.0; (sr * 1.1) as usize]],
+            epos: 0,
         }
     }
 
@@ -208,11 +255,23 @@ impl Player {
     }
 
     fn trigger(&mut self, key: u8, vel: u8) {
+        if !self.patch.mono && !self.patch.chord.is_empty() {
+            for &iv in self.patch.chord {
+                let k = (key as i16 + iv as i16).clamp(0, 127) as u8;
+                self.trigger_one(k, key, vel);
+            }
+            return;
+        }
+        self.trigger_one(key, key, vel);
+    }
+
+    fn trigger_one(&mut self, key: u8, root: u8, vel: u8) {
         let target = Self::hz(key);
         if self.patch.mono {
             let v = &mut self.v[0];
             let legato = v.amp.stage != 0 && v.amp.stage != 4 && self.held.len() > 1;
             v.key = key as i16;
+            v.root = root as i16;
             v.vel = vel as f32 / 127.0;
             v.target_hz = target;
             if self.patch.glide <= 0.0 || v.hz <= 0.0 {
@@ -229,6 +288,7 @@ impl Player {
         let i = self.v.iter().position(|v| v.amp.stage == 0).or_else(|| self.v.iter().enumerate().filter(|(_, v)| v.amp.stage == 4).min_by(|a, b| a.1.amp.v.partial_cmp(&b.1.amp.v).unwrap()).map(|x| x.0)).unwrap_or_else(|| self.v.iter().enumerate().max_by(|a, b| a.1.t.partial_cmp(&b.1.t).unwrap()).map(|x| x.0).unwrap_or(0));
         let v = &mut self.v[i];
         v.key = key as i16;
+        v.root = root as i16;
         v.vel = vel as f32 / 127.0;
         v.target_hz = target;
         v.hz = if self.patch.glide > 0.0 && self.last_hz > 0.0 { self.last_hz } else { target };
@@ -257,7 +317,7 @@ impl Player {
         self.held.retain(|h| h.0 != key);
         if self.patch.mono {
             if let Some(&(k, vel)) = self.held.last() {
-                if self.v[0].key == key as i16 {
+                if self.v[0].root == key as i16 {
                     self.trigger(k, vel);
                 }
                 return;
@@ -266,7 +326,7 @@ impl Player {
         if self.sustain {
             return;
         }
-        for v in self.v.iter_mut().filter(|v| v.key == key as i16 && v.amp.stage != 0) {
+        for v in self.v.iter_mut().filter(|v| v.root == key as i16 && v.amp.stage != 0) {
             v.amp.stage = 4;
             v.flt.stage = 4;
         }
@@ -282,7 +342,7 @@ impl Player {
                 self.sustain = val >= 64;
                 if !self.sustain {
                     let held: Vec<u8> = self.held.iter().map(|h| h.0).collect();
-                    for v in self.v.iter_mut().filter(|v| v.amp.stage != 0 && !held.contains(&(v.key as u8))) {
+                    for v in self.v.iter_mut().filter(|v| v.amp.stage != 0 && !held.contains(&(v.root as u8))) {
                         v.amp.stage = 4;
                         v.flt.stage = 4;
                     }
@@ -317,7 +377,7 @@ impl Player {
         let sr = self.sr;
         let dt = 1.0 / sr;
         let any = self.v.iter().any(|v| v.amp.stage != 0);
-        if !any && pt.chorus <= 0.0 {
+        if !any && pt.chorus <= 0.0 && pt.echo.2 <= 0.0 {
             return;
         }
         let gain = pt.level * self.vol * self.expr;
@@ -336,7 +396,8 @@ impl Player {
                     v.t += dt;
                     v.hz = v.target_hz + (v.hz - v.target_hz) * glide_k;
                     let vib_amt = if v.t > pt.lfo.4 { pt.lfo.1 } else { pt.lfo.1 * v.t / pt.lfo.4.max(0.001) } + self.modw * 0.35;
-                    let hz = v.hz * 2f32.powf((self.bend + lfo * vib_amt) / 12.0);
+                    let penv = if pt.pitch_env.0 != 0.0 { pt.pitch_env.0 * (-v.t / pt.pitch_env.1.max(0.001)).exp() } else { 0.0 };
+                    let hz = v.hz * 2f32.powf((self.bend + lfo * vib_amt + if pt.sync { 0.0 } else { penv }) / 12.0);
                     let inc = (hz / sr) as f64;
                     let pw = (0.5 + lfo * pt.lfo.2 * 0.42) as f64;
                     let osc = |w: Wave, ph: &mut [f64; 9], base: usize, inc: f64| -> f32 {
@@ -374,14 +435,23 @@ impl Player {
                             }
                         }
                     };
+                    let before = v.ph[0];
                     let s1 = osc(pt.w1, &mut v.ph, 0, inc);
-                    let inc2 = inc * 2f64.powf(((pt.semi2 + pt.det2 / 100.0) / 12.0) as f64);
-                    let s2 = if pt.w2 == Wave::Off { 0.0 } else { osc(pt.w2, &mut v.ph, if pt.w1 == Wave::Super { 7 } else { 1 }, inc2) };
+                    let b2 = if pt.w1 == Wave::Super { 7 } else { 1 };
+                    if pt.sync && v.ph[0] < before {
+                        // osc 1 wrapped: restart osc 2 (hard sync)
+                        v.ph[b2] = v.ph[0] * (1.0 + ((pt.semi2 + penv) / 12.0).exp2() as f64);
+                        v.ph[b2] = v.ph[b2].fract();
+                    }
+                    let inc2 = inc * 2f64.powf(((pt.semi2 + pt.det2 / 100.0 + if pt.sync { penv } else { 0.0 }) / 12.0) as f64);
+                    let s2 = if pt.w2 == Wave::Off { 0.0 } else { osc(pt.w2, &mut v.ph, b2, inc2) };
+                    // a sync lead is mostly the synced oscillator, with a little of the master underneath
+                    let s1 = if pt.sync { s1 * 0.25 } else { s1 };
                     v.sub_ph = (v.sub_ph + inc * 0.5).fract();
                     let sub = if v.sub_ph < 0.5 { 1.0 } else { -1.0 };
                     v.noise = v.noise.wrapping_mul(1664525).wrapping_add(1013904223);
                     let nz = (v.noise >> 9) as f32 / (1u32 << 22) as f32 - 1.0;
-                    let x = s1 + s2 * pt.mix2 + sub * pt.sub + nz * pt.noise;
+                    let x = s1 + s2 * if pt.sync { 1.0 } else { pt.mix2 } + sub * pt.sub + nz * pt.noise;
                     // filter: cutoff × envelope × keytrack × velocity × LFO, 4-pole ladder
                     let fe = v.flt.tick(pt.f_adsr, dt);
                     let oct = fe * pt.env_amt * (1.0 - pt.vel_filter + pt.vel_filter * v.vel) + (v.key as f32 - 60.0) / 12.0 * pt.keytrack + lfo * pt.lfo.3;
@@ -426,6 +496,19 @@ impl Player {
                 (x, x)
             };
             self.cpos = (self.cpos + 1) % len;
+            let (mut l, mut r) = (l, r);
+            if pt.echo.2 > 0.0 {
+                // ping-pong: left feeds right and back
+                let el = self.echo[0].len();
+                let d = ((pt.echo.0 * sr) as usize).clamp(1, el - 1);
+                let rp = (self.epos + el - d) % el;
+                let (yl, yr) = (self.echo[0][rp], self.echo[1][rp]);
+                self.echo[0][self.epos] = (l + r) * 0.5 + yr * pt.echo.1;
+                self.echo[1][self.epos] = yl * pt.echo.1;
+                self.epos = (self.epos + 1) % el;
+                l += yl * pt.echo.2;
+                r += yr * pt.echo.2;
+            }
             out_l[i] += l;
             out_r[i] += r;
         }
@@ -437,7 +520,7 @@ mod tests {
     use super::*;
     #[test]
     fn every_patch_plays() {
-        for pt in PATCHES {
+        for pt in BANKS.iter().flat_map(|b| b.iter()).copied() {
             let mut p = Player::new(pt, 48000.0);
             for k in [57, 60, 64] {
                 p.note_on(k, 100);

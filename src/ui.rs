@@ -700,8 +700,9 @@ impl App {
                 let inst = Some(Arc::new(crate::native::InstDef::Chip(pt)));
                 let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst });
             }
-            sounds::SYNTH_BANK => {
-                let pt = crate::analog::PATCHES[(bp.1 as usize).min(crate::analog::PATCHES.len() - 1)];
+            sounds::SYNTH_BANK | sounds::EURO_BANK | sounds::ITALO_BANK => {
+                let bank = crate::analog::BANKS[(bp.0 - sounds::SYNTH_BANK) as usize];
+                let pt = bank[(bp.1 as usize).min(bank.len() - 1)];
                 let inst = Some(Arc::new(crate::native::InstDef::Analog(pt)));
                 let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst });
             }
@@ -2212,7 +2213,7 @@ impl App {
                     self.set_drum_kit_chip(c);
                 }
                 // playing a chip voice with a SoundFont kit? offer the matching chip kit
-                if self.s.drum_chip.is_none() && self.s.main.0 == sounds::SYNTH_BANK {
+                if self.s.drum_chip.is_none() && (sounds::SYNTH_BANK..=sounds::ITALO_BANK).contains(&self.s.main.0) {
                     if ui.small_button("🌆 80s drums").on_hover_text("Gated-reverb 80s kit to match the synth").clicked() {
                         self.set_drum_kit_chip(Some(5));
                     }
