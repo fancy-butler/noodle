@@ -60,6 +60,7 @@ pub struct Settings {
     pub written: u8, // staff transposition preset
     pub theme: u8,   // 0 dark, 1 light, 2 follow system
     pub midi_off: Vec<String>,
+    pub latency: u32, // frames per buffer
 }
 
 impl Default for Settings {
@@ -117,6 +118,7 @@ impl Default for Settings {
             written: 0,
             theme: 0,
             midi_off: vec![],
+            latency: 128,
         }
     }
 }

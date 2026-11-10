@@ -104,6 +104,8 @@ pub struct Handles {
     pub blocked: Arc<Mutex<Vec<String>>>,
     pub sample_rate: u32,
     pub audio_info: Result<String, String>,
+    pub engine: crate::audio::SharedEngine,
+    pub audio: Option<crate::audio::Audio>,
 }
 
 pub struct App {
@@ -114,6 +116,8 @@ pub struct App {
     blocked: Arc<Mutex<Vec<String>>>,
     sample_rate: u32,
     audio_info: Result<String, String>,
+    engine: crate::audio::SharedEngine,
+    audio: Option<crate::audio::Audio>,
     s: Settings,
     saved_json: String,
     last_save: f64,
@@ -383,6 +387,8 @@ impl App {
             blocked: h.blocked,
             sample_rate: h.sample_rate,
             audio_info: h.audio_info,
+            engine: h.engine,
+            audio: h.audio,
             saved_json: String::new(),
             last_save: 0.0,
             load_tx,
@@ -436,6 +442,28 @@ impl App {
         }
         app.rebuild_walk();
         app
+    }
+
+    /// Reopen the sound card with a new buffer size. The watchdog keeps the engine
+    /// alive during the switch.
+    fn restart_audio(&mut self, frames: u32) {
+        self.s.latency = frames;
+        self.audio = None; // closes the old stream
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        match crate::audio::start(self.engine.clone(), self.p.clone(), frames) {
+            Ok(a) => {
+                self.audio_info = Ok(format!("{} · {} kHz", a.device, a.sample_rate / 1000));
+                if a.sample_rate != self.sample_rate {
+                    // the synth must run at the card's rate: reload the bank at the new rate
+                    self.sample_rate = a.sample_rate;
+                    if let Some(sf) = self.sf_current.clone() {
+                        self.load_sf(sf);
+                    }
+                }
+                self.audio = Some(a);
+            }
+            Err(e) => self.audio_info = Err(format!("No audio: {e}")),
+        }
     }
 
     fn load_sf(&mut self, path: PathBuf) {
@@ -980,11 +1008,38 @@ impl App {
                 let cpu = self.p.cpu.get();
                 ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { text_dim() }));
                 let ok = self.p.audio_ok.load(Relaxed);
-                match (&self.audio_info, ok) {
-                    (Ok(a), true) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(text_dim())),
-                    (Ok(a), false) => ui.label(RichText::new("🔇 Audio stalled — screen still works").size(11.0).color(BAD)).on_hover_text(format!("{a}: the sound card stopped asking for audio. Is another app holding it exclusively? Try restarting Noodle.")),
-                    (Err(e), _) => ui.label(RichText::new("🔇 No audio output").size(11.0).color(BAD)).on_hover_text(e),
+                let frames = self.p.audio_frames.load(Relaxed);
+                let sr = self.p.sample_rate.load(Relaxed).max(1);
+                let ms = frames as f32 * 1000.0 / sr as f32;
+                let label = match (&self.audio_info, ok) {
+                    (Ok(a), true) => RichText::new(format!("🔊 {a} · {ms:.1} ms ▾")).size(11.0).color(if ms > 12.0 { YOURS } else { text_dim() }),
+                    (Ok(_), false) => RichText::new("🔇 Audio stalled ▾").size(11.0).color(BAD),
+                    (Err(_), _) => RichText::new("🔇 No audio output ▾").size(11.0).color(BAD),
                 };
+                let mut pick = None;
+                ui.menu_button(label, |ui| {
+                    ui.label(RichText::new("Latency (buffer size)").strong());
+                    ui.label(RichText::new("Smaller = tighter feel, more CPU. If you hear crackles, go one step bigger.").size(11.0).color(text_dim()));
+                    for f in [32u32, 64, 128, 256, 512, 1024] {
+                        let txt = format!("{f} samples  ≈ {:.1} ms", f as f32 * 1000.0 / sr as f32);
+                        if ui.selectable_label(self.s.latency == f, txt).clicked() {
+                            pick = Some(f);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    match &self.audio_info {
+                        Ok(a) => ui.label(RichText::new(format!("Device: {a}\nSound card asks for {frames} samples at a time.")).size(11.0).color(text_dim())),
+                        Err(e) => ui.label(RichText::new(e).size(11.0).color(BAD)),
+                    };
+                    if ui.button("↻ Reconnect audio").clicked() {
+                        pick = Some(self.s.latency);
+                        ui.close();
+                    }
+                });
+                if let Some(f) = pick {
+                    self.restart_audio(f);
+                }
                 let all = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
                 let on: Vec<String> = all.iter().filter(|n| !n.starts_with('-')).cloned().collect();
                 let label = if on.is_empty() {

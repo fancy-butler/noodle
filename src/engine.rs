@@ -171,6 +171,8 @@ pub struct Params {
     /// incremented by the sound card callback; the watchdog checks it
     pub audio_beats: AtomicU64,
     pub audio_ok: AtomicBool,
+    /// frames per sound-card callback (for the latency readout)
+    pub audio_frames: AtomicU32,
 }
 
 impl Params {
@@ -229,6 +231,7 @@ impl Params {
             breath_locked: AtomicU8::new(0),
             audio_beats: AtomicU64::new(0),
             audio_ok: AtomicBool::new(true),
+            audio_frames: AtomicU32::new(0),
         }
     }
 }

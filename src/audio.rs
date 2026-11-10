@@ -36,7 +36,9 @@ pub fn default_rate() -> u32 {
 /// Open an output and prove it keeps running (the callback keeps firing).
 /// On Linux we try PipeWire / Pulse directly before ALSA's "default", and for
 /// each device a small low-latency buffer first, then the device's default.
-pub fn start(engine: SharedEngine, p: Arc<Params>) -> Result<Audio, String> {
+pub fn start(engine: SharedEngine, p: Arc<Params>, frames: u32) -> Result<Audio, String> {
+    // Ask PipeWire (via its ALSA plugin) for a small quantum up front; it reads this when a stream opens.
+    std::env::set_var("PIPEWIRE_LATENCY", format!("{frames}/48000"));
     let host = cpal::default_host();
     eprintln!("noodle: audio host = {:?}", host.id());
     let mut candidates: Vec<cpal::Device> = Vec::new();
@@ -71,7 +73,8 @@ pub fn start(engine: SharedEngine, p: Arc<Params>) -> Result<Audio, String> {
         let fmt = sup.sample_format();
         eprintln!("noodle: trying audio device {name}: {rate} Hz, {} ch, {fmt:?}", sup.channels());
         engine.lock().unwrap_or_else(|x| x.into_inner()).set_sample_rate(rate as f32);
-        for (label, size) in [("256 frames", cpal::BufferSize::Fixed(256)), ("device default", cpal::BufferSize::Default)] {
+        let small = format!("{frames} frames");
+        for (label, size) in [(small.as_str(), cpal::BufferSize::Fixed(frames)), ("device default", cpal::BufferSize::Default)] {
             let mut cfg: cpal::StreamConfig = sup.config();
             cfg.buffer_size = size;
             let built = match fmt {
@@ -175,6 +178,7 @@ where
             cfg,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                 p.audio_beats.fetch_add(1, Relaxed);
+                p.audio_frames.store((data.len() / channels.max(1)) as u32, Relaxed);
                 let Ok(mut e) = engine.try_lock() else {
                     for s in data.iter_mut() {
                         *s = T::from_sample(0.0);
