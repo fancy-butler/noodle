@@ -208,6 +208,7 @@ struct V {
     phase: f64,
     lfsr: u16,
     noise_out: f32,
+    noise_acc: f64,
     env: Env,
     ops: [(f64, Env); 4],
     fb: [f32; 2],
@@ -437,9 +438,14 @@ impl Player {
                         lvl as f32 / 7.5 - 1.0
                     }
                     Osc::Noise(short) => {
-                        // clocked at 16× the note frequency, like the NES period table
-                        let clocks = ((v.phase + inc * 16.0).floor() - v.phase.floor()) as i32;
-                        for _ in 0..clocks.max(0).min(64) {
+                        // the LFSR runs on its own clock: one of the 2A03's 16 noise periods,
+                        // brighter as you go up the keyboard (never tied to the note's pitch)
+                        const PERIODS: [f64; 16] = [4.0, 8.0, 16.0, 32.0, 64.0, 96.0, 128.0, 160.0, 202.0, 254.0, 380.0, 508.0, 762.0, 1016.0, 2034.0, 4068.0];
+                        let idx = 15 - ((v.key as i32 - 36).clamp(0, 47) / 3) as usize;
+                        v.noise_acc += 1_789_773.0 / PERIODS[idx] / sr as f64;
+                        let clocks = v.noise_acc.floor() as i32;
+                        v.noise_acc -= clocks as f64;
+                        for _ in 0..clocks.max(0).min(4096) {
                             let tap = if short { 6 } else { 1 };
                             let b = (v.lfsr ^ (v.lfsr >> tap)) & 1;
                             v.lfsr = (v.lfsr >> 1) | (b << 14);
@@ -601,6 +607,37 @@ mod tests {
             for k in [60, 64, 67, 71] {
                 p.note_off(k);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::*;
+    /// How strongly the signal repeats at the played note's period (1.0 = a pure tone, ~0 = noise).
+    pub fn periodicity(key: u8) -> f32 {
+        let pt = PATCHES.iter().find(|p| p.name == "NES Noise drums").copied().unwrap();
+        let pt = Patch { d: 5.0, s: 1.0, ..pt };
+        let mut p = Player::new(pt, 48000.0);
+        p.note_on(key, 120);
+        let mut x = Vec::new();
+        for _ in 0..20 {
+            let (mut l, mut r) = (vec![0.0; 960], vec![0.0; 960]);
+            p.render(&mut l, &mut r);
+            x.extend(l);
+        }
+        let lag = (48000.0 / (440.0 * 2f32.powf((key as f32 - 69.0) / 12.0))).round() as usize;
+        let n = x.len() - lag;
+        let num: f32 = (0..n).map(|i| x[i] * x[i + lag]).sum();
+        let den: f32 = (0..n).map(|i| x[i] * x[i]).sum();
+        num / den.max(1e-9)
+    }
+    #[test]
+    fn noise_has_no_hidden_tone() {
+        for k in [48u8, 60, 72] {
+            let c = periodicity(k);
+            println!("key {k}: correlation at the note's period {c:.3}");
+            assert!(c.abs() < 0.2, "noise at key {k} repeats at the note's pitch ({c:.3})");
         }
     }
 }
