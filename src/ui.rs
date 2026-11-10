@@ -1529,22 +1529,35 @@ impl App {
                 }
             });
             let sidx = self.s.scale_idx.min(SCALES.len() - 1);
-            egui::ComboBox::from_id_salt("scale").selected_text(SCALES[sidx].name).width(220.0).height(560.0).show_ui(ui, |ui| {
-                let te = ui.add(egui::TextEdit::singleline(&mut self.scale_filter).hint_text(format!("🔍 search {} scales…", SCALES.len())).desired_width(200.0));
+            egui::ComboBox::from_id_salt("scale").selected_text(SCALES[sidx].name).width(240.0).height(600.0).show_ui(ui, |ui| {
+                let te = ui.add(egui::TextEdit::singleline(&mut self.scale_filter).hint_text(format!("🔍 search {} scales & other names…", SCALES.len())).desired_width(200.0));
                 if !te.has_focus() && self.scale_filter.is_empty() {
                     te.request_focus(); // type straight away; keys don't play notes while searching
                 }
                 let f = self.scale_filter.to_lowercase();
                 let mut group = "";
                 for (i, sc) in SCALES.iter().enumerate() {
-                    if !f.is_empty() && !sc.name.to_lowercase().contains(&f) && !sc.group.to_lowercase().contains(&f) && !sc.hint.to_lowercase().contains(&f) {
+                    if !f.is_empty()
+                        && !sc.name.to_lowercase().contains(&f)
+                        && !sc.aka.to_lowercase().contains(&f)
+                        && !sc.group.to_lowercase().contains(&f)
+                        && !sc.hint.to_lowercase().contains(&f)
+                    {
                         continue;
                     }
                     if sc.group != group {
                         group = sc.group;
                         ui.label(RichText::new(group).size(11.0).color(YOURS));
                     }
-                    changed |= ui.selectable_value(&mut self.s.scale_idx, i, sc.name).changed();
+                    let label = if sc.aka.is_empty() {
+                        egui::text::LayoutJob::simple_singleline(sc.name.into(), FontId::proportional(14.0), fg())
+                    } else {
+                        let mut j = egui::text::LayoutJob::default();
+                        j.append(sc.name, 0.0, egui::TextFormat::simple(FontId::proportional(14.0), fg()));
+                        j.append(&format!("   {}", sc.aka), 0.0, egui::TextFormat::simple(FontId::proportional(11.5), text_dim()));
+                        j
+                    };
+                    changed |= ui.selectable_value(&mut self.s.scale_idx, i, label).changed();
                 }
             });
             if changed {
@@ -1579,9 +1592,14 @@ impl App {
             }
         });
         if self.scale_on {
-            let h = SCALES[self.s.scale_idx.min(SCALES.len() - 1)].hint;
-            if !h.is_empty() {
-                ui.label(RichText::new(h).size(11.5).color(text_dim()));
+            let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+            let mut line = String::new();
+            if !sc.aka.is_empty() {
+                line.push_str(&format!("Also called: {}.  ", sc.aka));
+            }
+            line.push_str(sc.hint);
+            if !line.is_empty() {
+                ui.label(RichText::new(line).size(11.5).color(text_dim()));
             }
         }
         // song bar
