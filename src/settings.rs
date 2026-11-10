@@ -58,6 +58,7 @@ pub struct Settings {
     pub breath_filter: f32,
     pub wind_setup_done: bool,
     pub written: u8, // staff transposition preset
+    pub theme: u8,   // 0 dark, 1 light, 2 follow system
 }
 
 impl Default for Settings {
@@ -113,6 +114,7 @@ impl Default for Settings {
             breath_filter: 0.3,
             wind_setup_done: false,
             written: 0,
+            theme: 0,
         }
     }
 }

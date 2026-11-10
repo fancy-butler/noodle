@@ -16,11 +16,47 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 // ---------- palette ----------
-const BG: Color32 = Color32::from_rgb(0x12, 0x14, 0x17);
-const PANEL: Color32 = Color32::from_rgb(0x19, 0x1c, 0x21);
-const CARD: Color32 = Color32::from_rgb(0x21, 0x25, 0x2b);
-const CARD_HI: Color32 = Color32::from_rgb(0x2b, 0x30, 0x38);
-const TEXT_DIM: Color32 = Color32::from_rgb(0x8a, 0x93, 0xa0);
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn light() -> bool {
+    LIGHT.load(Relaxed)
+}
+fn pick(dark: Color32, lite: Color32) -> Color32 {
+    if light() {
+        lite
+    } else {
+        dark
+    }
+}
+fn bg() -> Color32 {
+    pick(Color32::from_rgb(0x12, 0x14, 0x17), Color32::from_rgb(0xec, 0xee, 0xf1))
+}
+fn panel() -> Color32 {
+    pick(Color32::from_rgb(0x19, 0x1c, 0x21), Color32::from_rgb(0xf7, 0xf8, 0xfa))
+}
+fn card_bg() -> Color32 {
+    pick(Color32::from_rgb(0x21, 0x25, 0x2b), Color32::from_rgb(0xff, 0xff, 0xff))
+}
+fn card_hi() -> Color32 {
+    pick(Color32::from_rgb(0x2b, 0x30, 0x38), Color32::from_rgb(0xe2, 0xe5, 0xea))
+}
+fn text_dim() -> Color32 {
+    pick(Color32::from_rgb(0x8a, 0x93, 0xa0), Color32::from_rgb(0x5d, 0x66, 0x73))
+}
+/// main text / ink colour
+fn fg() -> Color32 {
+    pick(Color32::WHITE, Color32::from_rgb(0x16, 0x19, 0x1d))
+}
+/// theme-aware grey: dark-mode value v, mirrored for light mode
+fn gray(v: u8) -> Color32 {
+    if light() {
+        Color32::from_gray(255u8.saturating_sub(v).saturating_add(12))
+    } else {
+        Color32::from_gray(v)
+    }
+}
+fn deep() -> Color32 {
+    pick(Color32::from_rgb(0x0d, 0x0f, 0x12), Color32::from_rgb(0xe4, 0xe7, 0xec))
+}
 const LIVE: Color32 = Color32::from_rgb(0xff, 0x8a, 0x3d);
 const ARP: Color32 = Color32::from_rgb(0x3d, 0xd6, 0xff);
 const LOOPC: Color32 = Color32::from_rgb(0xb4, 0x8c, 0xff);
@@ -122,6 +158,7 @@ pub struct App {
     wind_active: bool,
     wind_name: String,
     scale_filter: String,
+    style_done: bool,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -217,16 +254,16 @@ fn knob(ui: &mut egui::Ui, label: &str, v: &mut f32, default: f32, col: Color32,
     let r = 17.0;
     let a0 = std::f32::consts::PI * 0.75;
     let a1 = std::f32::consts::PI * 2.25;
-    p.circle_filled(c, r - 4.0, CARD_HI);
-    p.add(egui::Shape::line(arc_points(c, r, a0, a1), Stroke::new(3.5, Color32::from_gray(55))));
+    p.circle_filled(c, r - 4.0, card_hi());
+    p.add(egui::Shape::line(arc_points(c, r, a0, a1), Stroke::new(3.5, gray(55))));
     let av = a0 + (a1 - a0) * *v;
     if *v > 0.003 {
         p.add(egui::Shape::line(arc_points(c, r, a0, av), Stroke::new(3.5, col)));
     }
     let tip = c + Vec2::new(av.cos(), av.sin()) * (r - 6.0);
-    p.line_segment([c, tip], Stroke::new(2.5, Color32::WHITE));
+    p.line_segment([c, tip], Stroke::new(2.5, fg()));
     let txt = if resp.hovered() || resp.dragged() { fmt(*v) } else { label.to_string() };
-    p.text(Pos2::new(c.x, rect.bottom() - 7.0), Align2::CENTER_CENTER, txt, FontId::proportional(11.5), if resp.hovered() { Color32::WHITE } else { TEXT_DIM });
+    p.text(Pos2::new(c.x, rect.bottom() - 7.0), Align2::CENTER_CENTER, txt, FontId::proportional(11.5), if resp.hovered() { fg() } else { text_dim() });
     resp.on_hover_text(format!("{label}: {}\nDrag up/down · Shift = fine · double-click resets", fmt(*v)));
     changed
 }
@@ -281,13 +318,13 @@ fn fader(ui: &mut egui::Ui, label: &str, v: &mut f32, col: Color32, hot: bool) -
         }
     }
     let p = ui.painter();
-    p.rect_filled(track, 2.0, Color32::from_gray(45));
+    p.rect_filled(track, 2.0, gray(45));
     let y = track.bottom() - *v * track.height();
     p.rect_filled(Rect::from_min_max(Pos2::new(track.left(), y), track.right_bottom()), 2.0, col.gamma_multiply(0.7));
     let cap = Rect::from_center_size(Pos2::new(rect.center().x, y), Vec2::new(26.0, 10.0));
-    p.rect_filled(cap, 3.0, if hot { Color32::WHITE } else { Color32::from_gray(200) });
-    p.line_segment([Pos2::new(cap.left() + 3.0, y), Pos2::new(cap.right() - 3.0, y)], Stroke::new(1.5, Color32::from_gray(60)));
-    p.text(Pos2::new(rect.center().x, rect.bottom() - 8.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if hot { Color32::WHITE } else { TEXT_DIM });
+    p.rect_filled(cap, 3.0, if hot { fg() } else { gray(200) });
+    p.line_segment([Pos2::new(cap.left() + 3.0, y), Pos2::new(cap.right() - 3.0, y)], Stroke::new(1.5, gray(60)));
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 8.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if hot { fg() } else { text_dim() });
     resp.on_hover_text(format!("{label}: {}", pct(*v)));
     changed
 }
@@ -306,14 +343,14 @@ fn card<R>(ui: &mut egui::Ui, title: &str, width: f32, add: impl FnOnce(&mut egu
 
 fn card_h<R>(ui: &mut egui::Ui, title: &str, width: f32, height: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
-        .fill(CARD)
+        .fill(card_bg())
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(width);
             ui.set_height(height);
             ui.vertical(|ui| {
-                ui.label(RichText::new(title).size(12.0).strong().color(TEXT_DIM));
+                ui.label(RichText::new(title).size(12.0).strong().color(text_dim()));
                 ui.add_space(2.0);
                 add(ui)
             })
@@ -323,8 +360,8 @@ fn card_h<R>(ui: &mut egui::Ui, title: &str, width: f32, height: f32, add: impl 
 }
 
 fn big_toggle(ui: &mut egui::Ui, on: bool, label: &str, col: Color32, size: Vec2) -> egui::Response {
-    let fill = if on { col } else { CARD_HI };
-    let tc = if on { Color32::BLACK } else { Color32::WHITE };
+    let fill = if on { col } else { card_hi() };
+    let tc = if on { Color32::BLACK } else { fg() };
     ui.add_sized(size, egui::Button::new(RichText::new(label).strong().size(14.0).color(tc)).fill(fill).corner_radius(8.0))
 }
 
@@ -382,6 +419,7 @@ impl App {
             wind_active: false,
             wind_name: String::new(),
             scale_filter: String::new(),
+            style_done: false,
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -746,6 +784,7 @@ impl App {
                 Key::F1 => self.show_help = !self.show_help,
                 Key::F2 => self.s.hide_modules = !self.s.hide_modules,
                 Key::V => self.s.view = (self.s.view + 1) % 3,
+                Key::F3 => self.s.theme = (self.s.theme + 1) % 3,
                 _ => {}
             }
         }
@@ -774,7 +813,7 @@ impl App {
         let mut pick = None;
         let size = if layer { 14.0 } else { 19.0 };
         egui::ComboBox::from_id_salt(if layer { "layer_preset" } else { "main_preset" })
-            .selected_text(RichText::new(name).size(size).strong().color(if layer { ARP } else { Color32::WHITE }))
+            .selected_text(RichText::new(name).size(size).strong().color(if layer { ARP } else { fg() }))
             .width(width)
             .height(520.0)
             .show_ui(ui, |ui| {
@@ -784,7 +823,7 @@ impl App {
                     let f = sounds::family(pr);
                     if self.category.is_none() && f != fam && pr.bank == 0 {
                         fam = f;
-                        ui.label(RichText::new(GM_FAMILIES[f]).size(11.0).color(TEXT_DIM));
+                        ui.label(RichText::new(GM_FAMILIES[f]).size(11.0).color(text_dim()));
                     }
                     let fav = if self.s.favorites.contains(&(pr.bank, pr.prog)) { "★ " } else { "" };
                     let label = format!("{fav}{:03}  {}{}", pr.prog + 1, pr.name, if pr.bank > 0 { format!("  (bank {})", pr.bank) } else { String::new() });
@@ -812,7 +851,7 @@ impl App {
             let cur = self.s.main;
             let is_fav = self.s.favorites.contains(&cur);
             if ui
-                .add(egui::Button::new(RichText::new(if is_fav { "★" } else { "☆" }).size(18.0).color(if is_fav { YOURS } else { TEXT_DIM })).frame(false))
+                .add(egui::Button::new(RichText::new(if is_fav { "★" } else { "☆" }).size(18.0).color(if is_fav { YOURS } else { text_dim() })).frame(false))
                 .on_hover_text("Favourite this sound")
                 .clicked()
             {
@@ -861,7 +900,7 @@ impl App {
                 }
                 if mode == 2 {
                     let mut sp = self.p.split.load(Relaxed) as i32;
-                    ui.label(RichText::new("split").color(TEXT_DIM));
+                    ui.label(RichText::new("split").color(text_dim()));
                     if ui
                         .add(egui::DragValue::new(&mut sp).range(24..=96).custom_formatter(|v, _| theory::note_name_oct(v as u8)))
                         .on_hover_text("Notes below this go to the second sound")
@@ -874,7 +913,7 @@ impl App {
         });
         ui.horizontal(|ui| {
             let mut tr = self.p.transpose.load(Relaxed);
-            ui.label(RichText::new("Transpose").color(TEXT_DIM));
+            ui.label(RichText::new("Transpose").color(text_dim()));
             if ui.small_button("−8va").clicked() {
                 tr -= 12;
             }
@@ -890,7 +929,7 @@ impl App {
             }
             self.p.transpose.store(tr.clamp(-36, 36), Relaxed);
             ui.separator();
-            ui.label(RichText::new("Tempo").color(TEXT_DIM));
+            ui.label(RichText::new("Tempo").color(text_dim()));
             let mut bpm = self.p.bpm.get();
             if ui.add(egui::DragValue::new(&mut bpm).range(40.0..=260.0).speed(0.4).fixed_decimals(0).suffix(" bpm")).changed() {
                 self.p.bpm.set(bpm);
@@ -905,7 +944,7 @@ impl App {
                 }
             }
             ui.separator();
-            ui.label(RichText::new("Bank").color(TEXT_DIM));
+            ui.label(RichText::new("Bank").color(text_dim()));
             let cur = self.sf_current.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
             let txt = self.loading.clone().map(|l| format!("Loading {l}…")).or(cur).unwrap_or_else(|| "none".into());
             let mut pick = None;
@@ -918,7 +957,7 @@ impl App {
                     }
                 }
                 ui.separator();
-                ui.label(RichText::new("Drop any .sf2 on the window to add it").size(11.0).color(TEXT_DIM));
+                ui.label(RichText::new("Drop any .sf2 on the window to add it").size(11.0).color(text_dim()));
             });
             if let Some(p) = pick {
                 self.load_sf(p);
@@ -927,15 +966,23 @@ impl App {
                 if ui.button("?").on_hover_text("Keys & shortcuts (F1)").clicked() {
                     self.show_help = !self.show_help;
                 }
+                let (icon, tip) = match self.s.theme {
+                    1 => ("☀", "Light mode — click for follow-system"),
+                    2 => ("◐", "Following your system theme — click for dark"),
+                    _ => ("🌙", "Dark mode — click for light"),
+                };
+                if ui.button(icon).on_hover_text(format!("{tip}  (F3)")).clicked() {
+                    self.s.theme = (self.s.theme + 1) % 3;
+                }
                 let cpu = self.p.cpu.get();
-                ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { TEXT_DIM }));
+                ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { text_dim() }));
                 match &self.audio_info {
-                    Ok(a) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(TEXT_DIM)),
+                    Ok(a) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(text_dim())),
                     Err(e) => ui.label(RichText::new("🔇 No audio output").size(11.0).color(BAD)).on_hover_text(e),
                 };
                 let devs = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
                 if devs.is_empty() {
-                    ui.label(RichText::new("○ No MIDI keyboard yet").size(12.0).color(TEXT_DIM)).on_hover_text("Plug one in any time — it's picked up automatically.\nMeanwhile your computer keys A W S E D F T G… play notes.");
+                    ui.label(RichText::new("○ No MIDI keyboard yet").size(12.0).color(text_dim())).on_hover_text("Plug one in any time — it's picked up automatically.\nMeanwhile your computer keys A W S E D F T G… play notes.");
                 } else {
                     ui.label(RichText::new(format!("● {}", devs.join(", "))).size(12.0).color(GOOD));
                 }
@@ -999,12 +1046,12 @@ impl App {
                     p.drive.set(v)
                 }
                 let mut v = p.master.get();
-                if knob(ui, "Volume", &mut v, 0.8, Color32::WHITE, pct) {
+                if knob(ui, "Volume", &mut v, 0.8, fg(), pct) {
                     p.master.set(v)
                 }
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Delay time").size(11.0).color(TEXT_DIM));
+                ui.label(RichText::new("Delay time").size(11.0).color(text_dim()));
                 let mut dt = p.delay_time.load(Relaxed) as usize;
                 for (i, (n, _)) in DELAY_TIMES.iter().enumerate() {
                     if ui.selectable_label(dt == i, RichText::new(*n).size(11.0)).clicked() {
@@ -1038,8 +1085,8 @@ impl App {
             let hot = |cc: u8| now - self.cc_seen[cc as usize] < 0.5;
             // --- left column: shift/hold, oct, touch strips
             let btn = |r: Rect, label: &str, lit: bool| {
-                painter.rect_filled(r, 4.0, if lit { Color32::WHITE } else { CARD_HI });
-                painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.5), if lit { Color32::BLACK } else { TEXT_DIM });
+                painter.rect_filled(r, 4.0, if lit { fg() } else { card_hi() });
+                painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.5), if lit { Color32::BLACK } else { text_dim() });
             };
             btn(Rect::from_min_size(o + Vec2::new(0.0, 0.0), Vec2::new(40.0, 18.0)), "Shift", hot(9) && self.cc_vals[9] > 0);
             btn(Rect::from_min_size(o + Vec2::new(46.0, 0.0), Vec2::new(40.0, 18.0)), "Hold", false);
@@ -1048,14 +1095,14 @@ impl App {
             let strip_l = Rect::from_min_size(o + Vec2::new(6.0, 50.0), Vec2::new(28.0, 120.0));
             let strip_r = Rect::from_min_size(o + Vec2::new(52.0, 50.0), Vec2::new(28.0, 120.0));
             for r in [strip_l, strip_r] {
-                painter.rect_filled(r, 5.0, Color32::from_gray(38));
+                painter.rect_filled(r, 5.0, gray(38));
             }
             let by = strip_l.center().y - (self.bend as f32 / 8192.0) * (strip_l.height() / 2.0 - 6.0);
-            painter.rect_filled(Rect::from_center_size(Pos2::new(strip_l.center().x, by), Vec2::new(24.0, 6.0)), 2.0, if self.bend != 0 { LIVE } else { Color32::from_gray(140) });
+            painter.rect_filled(Rect::from_center_size(Pos2::new(strip_l.center().x, by), Vec2::new(24.0, 6.0)), 2.0, if self.bend != 0 { LIVE } else { gray(140) });
             let mv = self.cc_vals[1] as f32 / 127.0;
             painter.rect_filled(Rect::from_min_max(Pos2::new(strip_r.left(), strip_r.bottom() - mv * strip_r.height()), strip_r.max), 5.0, ARP.gamma_multiply(0.8));
-            painter.text(strip_l.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "bend", FontId::proportional(9.5), TEXT_DIM);
-            painter.text(strip_r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "mod", FontId::proportional(9.5), Color32::WHITE);
+            painter.text(strip_l.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "bend", FontId::proportional(9.5), text_dim());
+            painter.text(strip_r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "mod", FontId::proportional(9.5), fg());
             // --- display + main encoder
             let disp = Rect::from_min_size(o + Vec2::new(98.0, 0.0), Vec2::new(84.0, 118.0));
             painter.rect_filled(disp, 6.0, Color32::from_rgb(8, 9, 11));
@@ -1077,14 +1124,14 @@ impl App {
             }
             let l2: String = l2.chars().take(13).collect();
             let (l1, l2) = (l1.as_str(), l2.as_str());
-            painter.text(screen.min + Vec2::new(4.0, 4.0), Align2::LEFT_TOP, cat.chars().take(12).collect::<String>(), FontId::proportional(8.5), TEXT_DIM);
+            painter.text(screen.min + Vec2::new(4.0, 4.0), Align2::LEFT_TOP, cat.chars().take(12).collect::<String>(), FontId::proportional(8.5), text_dim());
             painter.text(screen.min + Vec2::new(4.0, 17.0), Align2::LEFT_TOP, l1.trim(), FontId::proportional(11.0), Color32::WHITE);
             painter.text(screen.min + Vec2::new(4.0, 30.0), Align2::LEFT_TOP, l2.trim(), FontId::proportional(11.0), Color32::WHITE);
             let enc_c = Pos2::new(disp.center().x, disp.bottom() - 32.0);
             let enc_r = Rect::from_center_size(enc_c, Vec2::splat(44.0));
             let enc = ui.interact(enc_r, ui.id().with("ml3enc"), Sense::click_and_drag());
-            painter.circle_filled(enc_c, 18.0, if hot(114) || hot(112) || enc.hovered() { Color32::from_gray(70) } else { Color32::from_gray(40) });
-            painter.circle_stroke(enc_c, 18.0, Stroke::new(1.0, Color32::from_gray(90)));
+            painter.circle_filled(enc_c, 18.0, if hot(114) || hot(112) || enc.hovered() { gray(70) } else { gray(40) });
+            painter.circle_stroke(enc_c, 18.0, Stroke::new(1.0, gray(90)));
             if enc.dragged() {
                 let d = enc.drag_delta();
                 let acc = ui.data_mut(|m| {
@@ -1146,7 +1193,7 @@ impl App {
                 if glow > 0.0 {
                     painter.rect_filled(r.shrink(3.0), 5.0, YOURS.gamma_multiply(0.5 * glow));
                 }
-                painter.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, format!("{}", i + 1), FontId::proportional(10.0), TEXT_DIM);
+                painter.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, format!("{}", i + 1), FontId::proportional(10.0), text_dim());
                 if resp.drag_started() || resp.is_pointer_button_down_on() && !resp.dragged() && resp.clicked() {
                     pad_press = Some((i as u8, true));
                 }
@@ -1173,11 +1220,11 @@ impl App {
                 // breath meter
                 let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 150.0), Sense::hover());
                 let pnt = ui.painter();
-                pnt.rect_filled(r, 6.0, Color32::from_gray(35));
+                pnt.rect_filled(r, 6.0, gray(35));
                 let b = p.breath_val.get().clamp(0.0, 1.0);
                 let fill = Rect::from_min_max(Pos2::new(r.left(), r.bottom() - b * r.height()), r.max);
                 pnt.rect_filled(fill, 6.0, ARP.lerp_to_gamma(LIVE, b));
-                pnt.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "air", FontId::proportional(10.0), Color32::WHITE);
+                pnt.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "air", FontId::proportional(10.0), fg());
                 ui.vertical(|ui| {
                     let names: [(u8, &str); 5] = [(0, "Auto"), (2, "CC2 Breath"), (11, "CC11 Expression"), (7, "CC7 Volume"), (200, "Aftertouch")];
                     let mut src = p.breath_src.load(Relaxed);
@@ -1204,8 +1251,8 @@ impl App {
                             p.breath_filter.set(f);
                         }
                     });
-                    ui.label(RichText::new("Breath drives expression; blowing harder also opens the filter.").size(10.5).color(TEXT_DIM));
-                    ui.label(RichText::new("Aerophone: MIDI CONTROL on, 'MIDI Ctrl Sound' Off to silence its own sounds.").size(10.5).color(TEXT_DIM));
+                    ui.label(RichText::new("Breath drives expression; blowing harder also opens the filter.").size(10.5).color(text_dim()));
+                    ui.label(RichText::new("Aerophone: MIDI CONTROL on, 'MIDI Ctrl Sound' Off to silence its own sounds.").size(10.5).color(text_dim()));
                 });
             });
         });
@@ -1246,7 +1293,7 @@ impl App {
                 p.arp_rate.store(r as u8, Relaxed);
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Oct").size(11.5).color(TEXT_DIM));
+                ui.label(RichText::new("Oct").size(11.5).color(text_dim()));
                 let mut o = p.arp_oct.load(Relaxed);
                 for i in 1..=4u8 {
                     if ui.selectable_label(o == i, RichText::new(i.to_string()).size(11.5)).clicked() {
@@ -1316,7 +1363,7 @@ impl App {
                 let len = p.drum_len.load(Relaxed) as usize;
                 for r in 0..DRUM_ROWS {
                     let y = rect.top() + r as f32 * chh;
-                    painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), TEXT_DIM);
+                    painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), text_dim());
                     let bits = p.drum_rows[r].load(Relaxed);
                     for s in 0..16 {
                         let x = rect.left() + lw + s as f32 * cw;
@@ -1324,20 +1371,20 @@ impl App {
                         let on = bits & (1 << s) != 0;
                         let beat = (s / 4) % 2 == 0 && len == 16 || (s / 3) % 2 == 0 && len == 12;
                         let mut col = if s >= len {
-                            Color32::from_gray(26)
+                            gray(26)
                         } else if on {
                             GOOD
                         } else if beat {
-                            Color32::from_gray(52)
+                            gray(52)
                         } else {
-                            Color32::from_gray(40)
+                            gray(40)
                         };
                         if s as u8 == step && on {
-                            col = Color32::WHITE;
+                            col = fg();
                         }
                         painter.rect_filled(cell, 3.0, col);
                         if s as u8 == step {
-                            painter.rect_stroke(cell, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                            painter.rect_stroke(cell, 3.0, Stroke::new(1.5, fg()), StrokeKind::Inside);
                         }
                     }
                 }
@@ -1390,7 +1437,7 @@ impl App {
             }
             // progress
             let (r, _) = ui.allocate_exact_size(Vec2::new(180.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(r, 4.0, Color32::from_gray(40));
+            ui.painter().rect_filled(r, 4.0, gray(40));
             if st != lstate::EMPTY {
                 let mut f = r;
                 f.set_width(r.width() * p.loop_pos.get().clamp(0.0, 1.0));
@@ -1414,15 +1461,15 @@ impl App {
                 lstate::REC => "Recording… press to close".to_string(),
                 _ => format!("{} layer{} / {}  ·  {} bars", passes, if passes == 1 { "" } else { "s" }, MAX_PASSES, (beats / 4.0).max(0.25)),
             };
-            ui.label(RichText::new(info).size(11.0).color(TEXT_DIM));
-            ui.label(RichText::new("Each layer keeps its own sound — switch sounds between overdubs.").size(10.5).color(TEXT_DIM));
+            ui.label(RichText::new(info).size(11.0).color(text_dim()));
+            ui.label(RichText::new("Each layer keeps its own sound — switch sounds between overdubs.").size(10.5).color(text_dim()));
         });
     }
 
     // ---------- learn bar: view, scales, songs ----------
     fn learn_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("View").color(TEXT_DIM));
+            ui.label(RichText::new("View").color(text_dim()));
             for (i, n) in ["Falling notes", "Score", "Both"].iter().enumerate() {
                 if ui.selectable_label(self.s.view == i as u8, *n).clicked() {
                     self.s.view = i as u8;
@@ -1496,7 +1543,7 @@ impl App {
                 }
                 let sp = self.speller();
                 let names: Vec<String> = SCALES[sidx].steps.iter().map(|s| sp.name((ROOTS[self.s.scale_root].1 + s) % 12)).collect();
-                ui.label(RichText::new(names.join(" ")).strong().color(GOOD));
+                ui.label(RichText::new(names.join(" ")).strong().color(pick(GOOD, Color32::from_rgb(0x1a, 0x8a, 0x3e))));
                 if self.walk {
                     ui.label(RichText::new(format!("step {}/{} · laps {}", self.walk_pos + 1, self.walk_seq.len(), self.walk_laps)).color(YOURS));
                 }
@@ -1505,17 +1552,17 @@ impl App {
         if self.scale_on {
             let h = SCALES[self.s.scale_idx.min(SCALES.len() - 1)].hint;
             if !h.is_empty() {
-                ui.label(RichText::new(h).size(11.5).color(TEXT_DIM));
+                ui.label(RichText::new(h).size(11.5).color(text_dim()));
             }
         }
         // song bar
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Song").color(TEXT_DIM));
+            ui.label(RichText::new("Song").color(text_dim()));
             let name = self.song.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Open a MIDI file…".into());
             let mut pick = None;
             egui::ComboBox::from_id_salt("songs").selected_text(name).width(220.0).height(400.0).show_ui(ui, |ui| {
                 if self.song_files.is_empty() {
-                    ui.label(RichText::new("No .mid files found yet").color(TEXT_DIM));
+                    ui.label(RichText::new("No .mid files found yet").color(text_dim()));
                 }
                 for f in &self.song_files {
                     let n = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -1527,7 +1574,7 @@ impl App {
                 ui.label(RichText::new(format!(
                     "Drag a .mid onto the window, or drop files in\n{}\n(MuseScore: File › Export › MIDI)",
                     sounds::user_dir().join("songs").display()
-                )).size(11.0).color(TEXT_DIM));
+                )).size(11.0).color(text_dim()));
                 if ui.small_button("↻ Rescan").clicked() {
                     self.song_files = sounds::find_songs();
                 }
@@ -1559,7 +1606,7 @@ impl App {
             let waiting = self.p.song_waiting.load(Relaxed);
             let wlabel = if waiting { "⏳ Waiting for you" } else { "Wait for me" };
             if ui
-                .toggle_value(&mut self.song_wait, RichText::new(wlabel).color(if waiting { YOURS } else { Color32::WHITE }))
+                .toggle_value(&mut self.song_wait, RichText::new(wlabel).color(if waiting { YOURS } else { fg() }))
                 .on_hover_text("Song pauses at each of YOUR notes until you play them")
                 .changed()
             {
@@ -1589,8 +1636,8 @@ impl App {
                         "Piano".into()
                     };
                     let on = self.song_user & (1 << ch) != 0;
-                    let txt = RichText::new(format!("{} · {} ({})", ch + 1, inst, song.notes_per_ch[ch as usize])).size(11.5).color(if on { Color32::BLACK } else { Color32::WHITE });
-                    if ui.add(egui::Button::new(txt).fill(if on { YOURS } else { CARD_HI }).corner_radius(10.0)).clicked() {
+                    let txt = RichText::new(format!("{} · {} ({})", ch + 1, inst, song.notes_per_ch[ch as usize])).size(11.5).color(if on { Color32::BLACK } else { fg() });
+                    if ui.add(egui::Button::new(txt).fill(if on { YOURS } else { card_hi() }).corner_radius(10.0)).clicked() {
                         self.song_user ^= 1 << ch;
                         self.p.song_user.store(self.song_user, Relaxed);
                     }
@@ -1606,22 +1653,22 @@ impl App {
             keys = (0..128u8).filter(|k| self.held[2][*k as usize] > 0).collect();
         }
         if let Some((big, small)) = theory::name_chord(&keys, &self.speller()) {
-            painter.text(rect.left_top() + Vec2::new(14.0, 8.0), Align2::LEFT_TOP, big, FontId::proportional(34.0), Color32::WHITE);
-            painter.text(rect.left_top() + Vec2::new(16.0, 50.0), Align2::LEFT_TOP, small, FontId::proportional(14.0), TEXT_DIM);
+            painter.text(rect.left_top() + Vec2::new(14.0, 8.0), Align2::LEFT_TOP, big, FontId::proportional(34.0), fg());
+            painter.text(rect.left_top() + Vec2::new(16.0, 50.0), Align2::LEFT_TOP, small, FontId::proportional(14.0), text_dim());
         }
     }
 
     fn waterfall(&self, ui: &mut egui::Ui, rect: Rect) {
         let (lo, hi) = self.range();
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(0x0d, 0x0f, 0x12));
+        painter.rect_filled(rect, 0.0, deep());
         let now = now_s(&self.t0);
         let mask = self.scale_mask();
         // lanes
         for k in lo..=hi {
             let (x, w, black) = key_x(rect, k, lo, hi);
             if k % 12 == 0 {
-                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(34)));
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, gray(34)));
             }
             if mask != 0 && mask & (1 << (k % 12)) != 0 {
                 let lane = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(x + w, rect.bottom()));
@@ -1650,7 +1697,7 @@ impl App {
                 let r = Rect::from_min_max(Pos2::new(x + 1.0, yt.max(rect.top())), Pos2::new(x + w - 1.0, yb.min(rect.bottom())));
                 painter.rect_filled(r, 3.0, if yours { col } else { col.gamma_multiply(0.6) });
                 if yours {
-                    painter.rect_stroke(r, 3.0, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.5)), StrokeKind::Inside);
+                    painter.rect_stroke(r, 3.0, Stroke::new(1.0, fg().gamma_multiply(0.5)), StrokeKind::Inside);
                 }
             }
             // hit line
@@ -1690,8 +1737,8 @@ impl App {
         }
         self.chord_label(&painter, rect);
         if self.bars.is_empty() && self.song.is_none() {
-            painter.text(rect.center(), Align2::CENTER_CENTER, "Just play.", FontId::proportional(40.0), Color32::from_gray(60));
-            painter.text(rect.center() + Vec2::new(0.0, 36.0), Align2::CENTER_CENTER, "No keyboard? Your computer keys A W S E D F T G Y H U J K play notes · Z / X shift octave", FontId::proportional(14.0), Color32::from_gray(80));
+            painter.text(rect.center(), Align2::CENTER_CENTER, "Just play.", FontId::proportional(40.0), gray(60));
+            painter.text(rect.center() + Vec2::new(0.0, 36.0), Align2::CENTER_CENTER, "No keyboard? Your computer keys A W S E D F T G Y H U J K play notes · Z / X shift octave", FontId::proportional(14.0), gray(80));
         }
     }
 
@@ -1877,7 +1924,7 @@ impl App {
                 let (x, w, b) = key_x(strip, k, 21, 108);
                 let r = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(w, if b { 7.0 } else { 12.0 }));
                 let inside = k >= lo && k <= hi;
-                let base = if b { Color32::from_gray(30) } else { Color32::from_gray(if inside { 200 } else { 95 }) };
+                let base = if b { gray(30) } else { Color32::from_gray(if inside { 200 } else { 95 }) };
                 let col = if self.held.iter().any(|h| h[k as usize] > 0) { LIVE } else { base };
                 p.rect_filled(if b { r } else { r.shrink2(Vec2::new(0.4, 0.0)) }, 1.0, col);
             }
@@ -1931,7 +1978,7 @@ impl App {
                 let shrink = if b { 1.0 } else { 0.7 };
                 painter.rect_filled(r.shrink2(Vec2::new(shrink, 0.0)), if b { 3.0 } else { 4.0 }, fill);
                 if !b {
-                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0, gray(90)), StrokeKind::Inside);
                 }
                 // scale dots + names
                 if mask != 0 && mask & (1 << (k % 12)) != 0 {
@@ -1943,9 +1990,9 @@ impl App {
                         painter.text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, speller.name(k % 12), FontId::proportional(10.5), Color32::from_rgb(0x1f, 0x7d, 0x3c));
                     }
                 } else if !b && k % 12 == 0 {
-                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, format!("C{}", k / 12 - 1), FontId::proportional(if big { 13.0 } else { 10.0 }), Color32::from_gray(110));
+                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, format!("C{}", k / 12 - 1), FontId::proportional(if big { 13.0 } else { 10.0 }), gray(110));
                 } else if !b && big {
-                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, theory::NOTE_SHARP[(k % 12) as usize], FontId::proportional(12.0), Color32::from_gray(150));
+                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, theory::NOTE_SHARP[(k % 12) as usize], FontId::proportional(12.0), gray(150));
                 }
                 if Some(k) == walk_target {
                     let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
@@ -1990,7 +2037,7 @@ impl App {
 
     fn kb_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Keys").color(TEXT_DIM));
+            ui.label(RichText::new("Keys").color(text_dim()));
             for (size, _) in KB_SIZES {
                 if ui.selectable_label(self.s.kb_size == size, RichText::new(size.to_string()).size(12.5)).clicked() {
                     self.set_kb_size(size);
@@ -2005,10 +2052,10 @@ impl App {
                 }
                 ui.toggle_value(&mut self.s.kb_follow, "Follow").on_hover_text("Slide along when you play outside the visible keys (e.g. after Oct +/−)");
                 let (lo, hi) = self.range();
-                ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(TEXT_DIM));
+                ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(text_dim()));
             }
             ui.separator();
-            ui.label(RichText::new("Layout").color(TEXT_DIM));
+            ui.label(RichText::new("Layout").color(text_dim()));
             for (i, n) in ["Classic", "MiniLab 3"].iter().enumerate() {
                 if ui.selectable_label(self.s.layout == i as u8, *n).clicked() {
                     self.s.layout = i as u8;
@@ -2018,7 +2065,7 @@ impl App {
                 }
             }
             ui.separator();
-            ui.label(RichText::new("Controller").color(TEXT_DIM));
+            ui.label(RichText::new("Controller").color(text_dim()));
             let names = ["Auto-detect", "Off (raw MIDI)", "MiniLab 3"];
             egui::ComboBox::from_id_salt("ctrl").selected_text(names[self.s.controller.min(2) as usize]).width(120.0).show_ui(ui, |ui| {
                 for (i, n) in names.iter().enumerate() {
@@ -2029,7 +2076,7 @@ impl App {
                 ui.label(RichText::new("● MiniLab 3 mapped").size(11.5).color(GOOD)).on_hover_text("Knobs, faders, pads and the main encoder are mapped 1:1");
             }
             ui.separator();
-            ui.label(RichText::new("Wind").color(TEXT_DIM));
+            ui.label(RichText::new("Wind").color(text_dim()));
             let wn = ["Auto-detect", "Off", "On"];
             egui::ComboBox::from_id_salt("wind").selected_text(wn[self.s.wind.min(2) as usize]).width(96.0).show_ui(ui, |ui| {
                 for (i, n) in wn.iter().enumerate() {
@@ -2040,7 +2087,7 @@ impl App {
                 ui.label(RichText::new("● breath").size(11.5).color(ARP));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new("V view · F2 panels · F1 help").size(11.0).color(TEXT_DIM));
+                ui.label(RichText::new("V view · F2 panels · F1 help").size(11.0).color(text_dim()));
             });
         });
     }
@@ -2060,6 +2107,7 @@ impl App {
                     ("Backspace", "undo last loop layer"),
                     ("Esc", "panic: all notes off, stop loop"),
                     ("V", "cycle view: falling notes → score → both"),
+                    ("F3 / ☀🌙 button", "dark / light / follow system theme"),
                     ("F2", "hide / show the sound, arp, drum and looper panels"),
                     ("Drag & drop", ".mid songs or .sf2 sound banks onto the window"),
                     ("Knobs", "drag up/down, scroll, Shift = fine, double-click = reset"),
@@ -2076,6 +2124,16 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let want_light = match self.s.theme {
+            1 => true,
+            2 => ctx.system_theme() == Some(egui::Theme::Light),
+            _ => false,
+        };
+        if want_light != light() || !self.style_done {
+            LIGHT.store(want_light, Relaxed);
+            setup_style(ctx);
+            self.style_done = true;
+        }
         self.apply_controller();
         self.pump();
         self.keyboard_input(ctx);
@@ -2098,25 +2156,25 @@ impl eframe::App for App {
             }
         }
 
-        egui::TopBottomPanel::top("header").frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+        egui::TopBottomPanel::top("header").frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
             self.header(ui);
             if let Some(e) = &self.load_err {
                 ui.label(RichText::new(e).color(BAD));
             }
         });
         if !self.s.hide_modules {
-            egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+            egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
                 self.modules(ui);
             });
         }
-        egui::TopBottomPanel::bottom("kbbar").frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 5, bottom: 0 })).show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("kbbar").frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin { left: 10, right: 10, top: 5, bottom: 0 })).show(ctx, |ui| {
             self.kb_bar(ui);
         });
         egui::TopBottomPanel::bottom("piano")
             .exact_height(if self.s.kb_size <= 37 { 170.0 } else { 140.0 })
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
+            .frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
             .show(ctx, |ui| self.piano(ui));
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
             self.learn_bar(ui);
             ui.add_space(4.0);
             let rect = ui.available_rect_before_wrap();
@@ -2147,15 +2205,18 @@ impl eframe::App for App {
 }
 
 fn setup_style(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = Color32::from_rgb(0x0d, 0x0f, 0x12);
-    v.widgets.inactive.weak_bg_fill = CARD_HI;
-    v.widgets.inactive.bg_fill = CARD_HI;
+    let mut v = if light() { egui::Visuals::light() } else { egui::Visuals::dark() };
+    v.panel_fill = bg();
+    v.window_fill = panel();
+    v.extreme_bg_color = deep();
+    v.widgets.inactive.weak_bg_fill = card_hi();
+    v.widgets.inactive.bg_fill = card_hi();
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x38, 0x3e, 0x48);
     v.selection.bg_fill = LIVE.gamma_multiply(0.85);
     v.selection.stroke = Stroke::new(1.0, Color32::BLACK);
+    if light() {
+        v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0xd4, 0xd8, 0xdf);
+    }
     ctx.set_visuals(v);
     ctx.style_mut(|s| {
         s.spacing.item_spacing = Vec2::new(6.0, 5.0);

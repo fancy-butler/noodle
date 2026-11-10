@@ -182,7 +182,24 @@ impl Speller {
                 }
             }
         }
-        Speller { table, in_key: scale_mask(root_pc, scale) }
+        let in_key = scale_mask(root_pc, scale);
+        if scale.steps.len() == 7 {
+            // out-of-scale notes: sharpen the scale note below, else flatten the one above
+            let base = table;
+            for pc in 0..12usize {
+                if in_key & (1 << pc) != 0 {
+                    continue;
+                }
+                let below = (pc + 11) % 12;
+                let above = (pc + 1) % 12;
+                if in_key & (1 << below) != 0 && base[below].acc < 2 {
+                    table[pc] = Spell { letter: base[below].letter, acc: base[below].acc + 1 };
+                } else if in_key & (1 << above) != 0 && base[above].acc > -2 {
+                    table[pc] = Spell { letter: base[above].letter, acc: base[above].acc - 1 };
+                }
+            }
+        }
+        Speller { table, in_key }
     }
 
     /// Diatonic staff position (C-1 = 0, middle C = 28) and accidental for a MIDI key.
@@ -341,6 +358,10 @@ mod tests {
         let s = Speller::for_scale(0, alt);
         let names: Vec<String> = alt.steps.iter().map(|x| s.name(x % 12)).collect();
         assert_eq!(names.join(" "), "C D♭ E♭ F♭ G♭ A♭ B♭");
+        // out-of-scale F♯ in D Mi Sheberach (D E F G♯ A B C) must read F♯, not G♭
+        let ms = &SCALES[scale_index("Mi Sheberach (Ukrainian Dorian)")];
+        let s = Speller::for_scale(2, ms);
+        assert_eq!(s.name(6), "F♯");
         for sc in SCALES {
             assert!(sc.steps[0] == 0 && sc.steps.windows(2).all(|w| w[0] < w[1] && w[1] < 12), "{}", sc.name);
         }
