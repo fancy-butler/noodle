@@ -25,6 +25,7 @@ Noodle is a lightweight Linux/Windows instrument that behaves like switching on 
 | **Wind controllers** | EWI, Aerophone and other breath controllers are auto-detected. Breath (CC2, CC11, CC7 or aftertouch; it locks onto whichever arrives first) drives expression, with an adjustable response curve and an optional breath-opens-filter amount. The staff can show **written pitch** for B♭/E♭/F instruments and the tin whistle. |
 | **🎮 Game mode** | Rhythm-game training. Notes fall onto the keys to a click track and every hit is judged: Perfect (±45 ms), Great (±90 ms), Good (±140 ms), Miss, or ✗ for a wrong note. You get combo, a score multiplier, accuracy, an S+…D grade and personal bests. Drills come from any scale (up & down, thirds, groups of 4, arpeggio, random walk, sight-reading, rhythm-only) in quarters to sixteenths or mixed rhythms. Any loaded MIDI song can be played as a game too. |
 | **🎶 Drone module** | **Bagpipes:** GHB, Scottish smallpipes, Border, uilleann, Northumbrian, Galician and Asturian gaita, Breton biniou, Bulgarian gaida. Synthesised drones (switch or retune each one) plus a chanter in just intonation against the drones that never drops out between notes. **Shruti box:** Sa–Pa / Sa–Ma / Sa–Ni drones locked to your key. **Harmonium:** any note plays its chord in your chosen key and mode. |
+| **🎻 Tunes** | Browse The Session's 11,000+ Irish, Scottish and English trad tunes: search by any name a tune goes by, filter by type, sort by popularity, pick any setting. Or paste or drop in any ABC tune (klezmer, balfolk, Swedish polskas…). A loaded tune plays as a song, with falling notes, wait mode, game mode and fingering, and Noodle sets the Scale and the drones to its key. The Session data is downloaded on request, credited, and refreshed weekly. |
 | **🪈 Fingering** | Draws the instrument and covers the holes or presses the keys for the note you're playing, with the next note shown faded beside it, and a whole-chart view. Charts: Great Highland chanter, Scottish smallpipes, Leicestershire smallpipes (covered/open), uilleann, soprano recorder, sopilka, tin whistle (any key, including low D), Boehm flute and saxophone (alto, tenor, soprano, baritone or written pitch). Every chart is transcribed from a real fingering chart, not worked out from theory. |
 | **Remembers** | Opens exactly how you left it. |
 
@@ -72,7 +73,7 @@ cargo build --release
 - **Plugin hosting** (CLAP / VST3 / LV2): play Omnisphere, SWAM etc. inside Noodle (Windows natively; Linux via yabridge)
 - **Modelled wind instruments** built for breath controllers (sax, clarinet, flute, whistle)
 - MIDI-learn for any controller
-- **Tune books**: ABC import plus a browser for The Session's tune database, and other ABC collections (klezmer, balfolk, Swedish)
+- EWI and Aerophone key view: the horn drawn on screen with its keys lit from the notes you play
 - Clarinet and oboe fingering
 
 - Noodle's own synth engine (Omnisphere-inspired: layered oscillators, an XY "orb" for morphing)

@@ -1,6 +1,6 @@
 [package]
 name = "noodle"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Fancy Butler"]
@@ -17,6 +17,7 @@ serde_json = "1"
 dirs = "6"
 hound = "3"
 midly = "0.5"
+ureq = "3"
 
 [profile.release]
 opt-level = 3

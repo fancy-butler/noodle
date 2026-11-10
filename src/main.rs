@@ -8,6 +8,7 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod abc;
 mod audio;
 mod drums;
 mod game;
@@ -16,6 +17,7 @@ mod fingering;
 mod midi;
 mod pipe_art;
 mod pipes;
+mod session;
 mod settings;
 mod song;
 mod sounds;

@@ -114,7 +114,7 @@ pub fn find_soundfonts() -> Vec<PathBuf> {
 }
 
 pub fn find_songs() -> Vec<PathBuf> {
-    let mut v = scan(&song_dirs(), &["mid", "midi", "kar"], 1);
+    let mut v = scan(&song_dirs(), &["mid", "midi", "kar", "abc"], 1);
     v.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
     v
 }

@@ -173,6 +173,16 @@ pub struct App {
     pipe_picker: bool,
     last_live: Option<u8>,
     show_chart: bool,
+    tunes_open: bool,
+    tunes: crate::session::Loader,
+    tune_q: String,
+    tune_kind: String,
+    tune_sel: Option<usize>,
+    tune_setting: usize,
+    tune_tab: u8,
+    abc_paste: String,
+    abc_file: Vec<crate::abc::TuneText>,
+    tune_info: Option<crate::abc::TuneInfo>,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -446,6 +456,16 @@ impl App {
             pipe_picker: false,
             last_live: None,
             show_chart: std::env::var("NOODLE_SHOW_CHART").is_ok(),
+            tunes_open: std::env::var("NOODLE_SHOW_TUNES").is_ok(),
+            tunes: Default::default(),
+            tune_q: std::env::var("NOODLE_TUNE_Q").unwrap_or_default(),
+            tune_kind: String::new(),
+            tune_sel: None,
+            tune_setting: 0,
+            tune_tab: 0,
+            abc_paste: String::new(),
+            abc_file: Vec::new(),
+            tune_info: None,
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -787,13 +807,54 @@ impl App {
     }
 
     fn load_song_path(&mut self, path: &std::path::Path) {
+        if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("abc")).unwrap_or(false) {
+            match std::fs::read(path) {
+                Ok(b) => {
+                    let text = String::from_utf8_lossy(&b).to_string();
+                    let tunes = crate::abc::split_tunes(&text);
+                    if tunes.len() == 1 {
+                        self.load_abc(&tunes[0].text);
+                    } else if tunes.is_empty() {
+                        self.song_err = Some("No tunes found in that ABC file.".into());
+                    } else {
+                        self.abc_file = tunes;
+                        self.tune_tab = 2;
+                        self.tunes_open = true;
+                    }
+                }
+                Err(e) => self.song_err = Some(e.to_string()),
+            }
+            return;
+        }
         match song::load(path) {
             Ok(s) => self.set_song(Some(Arc::new(s)), 0),
             Err(e) => self.song_err = Some(e),
         }
     }
 
+    /// Load one ABC tune: play it as a song and set the Scale (and so the drones) to its key.
+    fn load_abc(&mut self, text: &str) {
+        match crate::abc::to_song(text, self.s.main.0, self.s.main.1) {
+            Ok((song, info)) => {
+                self.set_song(Some(Arc::new(song)), 0);
+                self.scale_on = true;
+                self.s.scale_idx = theory::scale_index(info.scale);
+                if let Some(r) = ROOTS.iter().position(|r| r.1 == info.tonic) {
+                    self.s.scale_root = r;
+                }
+                self.rebuild_walk();
+                let m = self.scale_mask();
+                self.p.scale_mask.store(m, Relaxed);
+                self.tune_info = Some(info);
+            }
+            Err(e) => self.song_err = Some(e),
+        }
+    }
+
     fn set_song(&mut self, s: Option<Arc<Song>>, user: u16) {
+        if s.is_none() {
+            self.tune_info = None;
+        }
         self.song_err = None;
         self.song_user = user;
         self.p.song_user.store(user, Relaxed);
@@ -2173,7 +2234,7 @@ impl App {
             let mut pick = None;
             egui::ComboBox::from_id_salt("songs").selected_text(name).width(220.0).height(400.0).show_ui(ui, |ui| {
                 if self.song_files.is_empty() {
-                    ui.label(RichText::new("No .mid files found yet").color(text_dim()));
+                    ui.label(RichText::new("No .mid or .abc files found yet").color(text_dim()));
                 }
                 for f in &self.song_files {
                     let n = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -2183,7 +2244,7 @@ impl App {
                 }
                 ui.separator();
                 ui.label(RichText::new(format!(
-                    "Drag a .mid onto the window, or drop files in\n{}\n(MuseScore: File › Export › MIDI)",
+                    "Drag a .mid or .abc onto the window, or drop files in\n{}\n(MuseScore: File › Export › MIDI)",
                     sounds::user_dir().join("songs").display()
                 )).size(11.0).color(text_dim()));
                 if ui.small_button("↻ Rescan").clicked() {
@@ -2192,6 +2253,9 @@ impl App {
             });
             if let Some(f) = pick {
                 self.load_song_path(&f);
+            }
+            if ui.button("🎻 Tunes").on_hover_text("The Session's 11,000+ trad tunes, or any ABC tune (klezmer, balfolk, Swedish…)").clicked() {
+                self.tunes_open = !self.tunes_open;
             }
             if let Some(e) = &self.song_err {
                 ui.label(RichText::new(e).color(BAD));
@@ -2731,6 +2795,164 @@ impl App {
         }
     }
 
+    fn tunes_window(&mut self, ctx: &egui::Context) {
+        use crate::session::{self, Status};
+        if !self.tunes_open {
+            return;
+        }
+        if matches!(self.tunes.status(), Status::Idle) && session::downloaded() {
+            self.tunes.start(false, ctx.clone());
+        }
+        let mut open = true;
+        let mut load: Option<String> = None;
+        egui::Window::new("🎻 Tunes").open(&mut open).collapsible(false).resizable(true).default_size([860.0, 560.0]).max_height(640.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tune_tab, 0, "The Session");
+                ui.selectable_value(&mut self.tune_tab, 1, "Paste ABC");
+                if !self.abc_file.is_empty() {
+                    ui.selectable_value(&mut self.tune_tab, 2, format!("ABC file ({})", self.abc_file.len()));
+                }
+            });
+            ui.separator();
+            match self.tune_tab {
+                1 => {
+                    ui.label(RichText::new("Paste a tune in ABC notation — from abcnotation.com, Norbeck's, FolkWiki, John Chambers' klezmer collection, a tune book, anywhere. Several tunes at once is fine.").size(12.0).color(text_dim()));
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        ui.add(egui::TextEdit::multiline(&mut self.abc_paste).font(egui::TextStyle::Monospace).desired_rows(16).desired_width(f32::INFINITY).hint_text("X:1\nT:Name\nM:6/8\nK:D\n|:FAA dAA|…"));
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("▶ Load").clicked() {
+                            let tunes = crate::abc::split_tunes(&self.abc_paste);
+                            if tunes.len() > 1 {
+                                self.abc_file = tunes;
+                                self.tune_tab = 2;
+                            } else if let Some(t) = tunes.first() {
+                                load = Some(t.text.clone());
+                            }
+                        }
+                        if ui.button("Clear").clicked() {
+                            self.abc_paste.clear();
+                        }
+                    });
+                }
+                2 => {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for t in &self.abc_file {
+                            if ui.selectable_label(false, &t.title).clicked() {
+                                load = Some(t.text.clone());
+                            }
+                        }
+                    });
+                }
+                _ => match self.tunes.status() {
+                    Status::Idle | Status::Failed(_) if !session::downloaded() || matches!(self.tunes.status(), Status::Failed(_)) => {
+                        if let Status::Failed(e) = self.tunes.status() {
+                            ui.label(RichText::new(e).color(BAD));
+                        }
+                        ui.label("The Session (thesession.org) is the big community tune book for Irish, Scottish and English trad: 11,000+ tunes, most with several settings, searchable by every name they go by.");
+                        ui.label(RichText::new(format!("Noodle downloads its public data export (about 27 MB) once into\n{}\nUpdate it whenever you like; it's refreshed weekly.", session::dir().display())).size(12.0).color(text_dim()));
+                        if ui.button(RichText::new("⬇ Download The Session's tunes").size(15.0)).clicked() {
+                            self.tunes.start(true, ctx.clone());
+                        }
+                    }
+                    Status::Working(msg) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(msg);
+                        });
+                    }
+                    _ => {
+                        let Some(book) = self.tunes.book() else {
+                            ui.spinner();
+                            return;
+                        };
+                        ui.horizontal(|ui| {
+                            let te = ui.add(egui::TextEdit::singleline(&mut self.tune_q).hint_text(format!("🔍 search {} tunes and their other names…", book.tunes.len())).desired_width(300.0));
+                            if te.changed() {
+                                self.tune_sel = None;
+                            }
+                            let kind_label = if self.tune_kind.is_empty() { "All types".to_string() } else { self.tune_kind.clone() };
+                            egui::ComboBox::from_id_salt("tune_kind").selected_text(kind_label).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.tune_kind, String::new(), "All types");
+                                for k in session::KINDS {
+                                    ui.selectable_value(&mut self.tune_kind, k.to_string(), k);
+                                }
+                            });
+                        });
+                        let hits = session::search(&book, &self.tune_q, &self.tune_kind, 400);
+                        if self.tune_sel.is_none() {
+                            self.tune_sel = hits.first().copied();
+                            self.tune_setting = 0;
+                        }
+                        let avail = 430.0;
+                        ui.horizontal_top(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width(380.0);
+                                egui::ScrollArea::vertical().id_salt("tune_list").max_height(avail).show(ui, |ui| {
+                                    if hits.is_empty() {
+                                        ui.label(RichText::new("No tunes match.").color(text_dim()));
+                                    }
+                                    for &i in &hits {
+                                        let t = &book.tunes[i];
+                                        let key = t.settings.first().map(|s| session::pretty_mode(&s.mode)).unwrap_or_default();
+                                        let sel = self.tune_sel == Some(i);
+                                        let r = ui.selectable_label(sel, RichText::new(format!("{}   ·  {} · {}", session::display_name(&t.name), t.kind, key)));
+                                        if r.clicked() {
+                                            self.tune_sel = Some(i);
+                                            self.tune_setting = 0;
+                                        }
+                                        if r.double_clicked() {
+                                            load = Some(t.abc(0));
+                                        }
+                                    }
+                                });
+                            });
+                            ui.separator();
+                            ui.vertical(|ui| {
+                                let Some(t) = self.tune_sel.and_then(|i| book.tunes.get(i)) else { return };
+                                ui.label(RichText::new(session::display_name(&t.name)).size(20.0).strong());
+                                if !t.aliases.is_empty() {
+                                    let a: Vec<&str> = t.aliases.iter().take(6).map(|s| s.as_str()).collect();
+                                    ui.label(RichText::new(format!("Also: {}{}", a.join(" · "), if t.aliases.len() > 6 { " …" } else { "" })).size(12.0).color(text_dim()));
+                                }
+                                ui.label(format!("{} · {} · in {} tunebooks", t.kind, t.meter, t.pop));
+                                let si = self.tune_setting.min(t.settings.len() - 1);
+                                let s = &t.settings[si];
+                                ui.horizontal(|ui| {
+                                    egui::ComboBox::from_id_salt("tune_setting").selected_text(format!("Setting {} of {} · {}", si + 1, t.settings.len(), session::pretty_mode(&s.mode))).width(260.0).show_ui(ui, |ui| {
+                                        for (k, st) in t.settings.iter().enumerate() {
+                                            ui.selectable_value(&mut self.tune_setting, k, format!("Setting {} · {} · {}", k + 1, session::pretty_mode(&st.mode), st.by));
+                                        }
+                                    });
+                                    if ui.button(RichText::new("▶ Load").size(15.0)).clicked() {
+                                        load = Some(t.abc(si));
+                                    }
+                                });
+                                ui.hyperlink_to("Open on thesession.org", format!("https://thesession.org/tunes/{}#setting{}", t.id, s.id));
+                                egui::ScrollArea::vertical().id_salt("tune_abc").max_height(avail - 110.0).show(ui, |ui| {
+                                    ui.label(RichText::new(t.abc(si)).monospace().size(11.5));
+                                });
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Tunes from The Session, shared by its community · data to {}", book.updated)).size(11.0).color(text_dim()));
+                            if ui.small_button("↻ Update").clicked() {
+                                self.tunes.start(true, ctx.clone());
+                            }
+                            ui.hyperlink_to(RichText::new("♥ Support The Session").size(11.0), "https://thesession.org/donate");
+                        });
+                    }
+                },
+            }
+        });
+        if let Some(text) = load {
+            self.load_abc(&text);
+        }
+        if !open {
+            self.tunes_open = false;
+        }
+    }
+
     fn pipe_picker(&mut self, ctx: &egui::Context) {
         if !self.pipe_picker {
             return;
@@ -2950,7 +3172,7 @@ impl eframe::App for App {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                 match ext.as_str() {
                     "sf2" => self.load_sf(p),
-                    "mid" | "midi" | "kar" => {
+                    "mid" | "midi" | "kar" | "abc" => {
                         self.load_song_path(&p);
                         if !self.song_files.contains(&p) {
                             self.song_files.insert(0, p);
@@ -3002,6 +3224,7 @@ impl eframe::App for App {
         self.results(ctx);
         self.pipe_picker(ctx);
         self.chart_window(ctx);
+        self.tunes_window(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();
