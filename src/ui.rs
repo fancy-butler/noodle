@@ -1,0 +1,1633 @@
+// Noodle — the user interface.
+// Copyright (C) 2026 Fancy Butler. GPL-3.0-or-later.
+
+use crate::drums::{KITS, PATTERNS};
+use crate::engine::*;
+use crate::settings::Settings;
+use crate::song::{self, Song};
+use crate::sounds::{self, Loaded, PresetInfo, GM_FAMILIES};
+use crate::theory::{self, Speller, ROOTS, SCALES};
+use crossbeam_channel::{Receiver, Sender};
+use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+// ---------- palette ----------
+const BG: Color32 = Color32::from_rgb(0x12, 0x14, 0x17);
+const PANEL: Color32 = Color32::from_rgb(0x19, 0x1c, 0x21);
+const CARD: Color32 = Color32::from_rgb(0x21, 0x25, 0x2b);
+const CARD_HI: Color32 = Color32::from_rgb(0x2b, 0x30, 0x38);
+const TEXT_DIM: Color32 = Color32::from_rgb(0x8a, 0x93, 0xa0);
+const LIVE: Color32 = Color32::from_rgb(0xff, 0x8a, 0x3d);
+const ARP: Color32 = Color32::from_rgb(0x3d, 0xd6, 0xff);
+const LOOPC: Color32 = Color32::from_rgb(0xb4, 0x8c, 0xff);
+const SONG: Color32 = Color32::from_rgb(0x6b, 0x84, 0xb0);
+const YOURS: Color32 = Color32::from_rgb(0xff, 0xd2, 0x3d);
+const GOOD: Color32 = Color32::from_rgb(0x5a, 0xd1, 0x7a);
+const BAD: Color32 = Color32::from_rgb(0xff, 0x4d, 0x5e);
+
+const SRC_COL: [Color32; 3] = [LIVE, ARP, LOOPC];
+
+const KEY_LO: u8 = 21;
+const KEY_HI: u8 = 108;
+
+const KEYMAP: [(Key, u8); 17] = [
+    (Key::A, 0),
+    (Key::W, 1),
+    (Key::S, 2),
+    (Key::E, 3),
+    (Key::D, 4),
+    (Key::F, 5),
+    (Key::T, 6),
+    (Key::G, 7),
+    (Key::Y, 8),
+    (Key::H, 9),
+    (Key::U, 10),
+    (Key::J, 11),
+    (Key::K, 12),
+    (Key::O, 13),
+    (Key::L, 14),
+    (Key::P, 15),
+    (Key::Semicolon, 16),
+];
+
+struct Bar {
+    key: u8,
+    src: u8,
+    vel: u8,
+    start: f64,
+    end: Option<f64>,
+}
+
+pub struct Handles {
+    pub p: Arc<Params>,
+    pub tx: Sender<Cmd>,
+    pub rx: Receiver<UiEvt>,
+    pub devices: Arc<Mutex<Vec<String>>>,
+    pub sample_rate: u32,
+    pub audio_info: Result<String, String>,
+}
+
+pub struct App {
+    p: Arc<Params>,
+    tx: Sender<Cmd>,
+    rx: Receiver<UiEvt>,
+    devices: Arc<Mutex<Vec<String>>>,
+    sample_rate: u32,
+    audio_info: Result<String, String>,
+    s: Settings,
+    saved_json: String,
+    last_save: f64,
+    // sounds
+    load_tx: Sender<Result<Loaded, String>>,
+    load_rx: Receiver<Result<Loaded, String>>,
+    loading: Option<String>,
+    load_err: Option<String>,
+    sf_paths: Vec<PathBuf>,
+    sf_current: Option<PathBuf>,
+    presets: Vec<PresetInfo>,
+    category: Option<usize>, // None all, Some(0..16) family, Some(99) favourites
+    // notes
+    t0: Instant,
+    bars: Vec<Bar>,
+    held: [[u8; 128]; 3],
+    keys_down: HashMap<Key, u8>,
+    mouse_note: Option<u8>,
+    // scale trainer
+    scale_on: bool,
+    walk: bool,
+    walk_seq: Vec<u8>,
+    walk_pos: usize,
+    walk_laps: u32,
+    wrong: [f64; 128],
+    right: [f64; 128],
+    // song
+    song: Option<Arc<Song>>,
+    song_files: Vec<PathBuf>,
+    song_err: Option<String>,
+    song_user: u16,
+    song_wait: bool,
+    // misc
+    taps: Vec<f64>,
+    music_font: bool,
+    show_help: bool,
+}
+
+fn now_s(t0: &Instant) -> f64 {
+    t0.elapsed().as_secs_f64()
+}
+
+fn is_black(k: u8) -> bool {
+    matches!(k % 12, 1 | 3 | 6 | 8 | 10)
+}
+
+fn white_index(k: u8) -> f32 {
+    (KEY_LO..k).filter(|x| !is_black(*x)).count() as f32
+}
+
+/// Horizontal geometry of a key inside `r`: (left, width, black?)
+fn key_x(r: Rect, k: u8) -> (f32, f32, bool) {
+    let ww = r.width() / 52.0;
+    if is_black(k) {
+        let c = r.left() + (white_index(k - 1) + 1.0) * ww;
+        (c - ww * 0.31, ww * 0.62, true)
+    } else {
+        (r.left() + white_index(k) * ww, ww, false)
+    }
+}
+
+fn arc_points(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
+    let n = 32;
+    (0..=n).map(|i| {
+        let a = a0 + (a1 - a0) * i as f32 / n as f32;
+        c + Vec2::new(a.cos(), a.sin()) * r
+    })
+    .collect()
+}
+
+/// A synth-style knob. Drag up/down (or scroll) to change, double-click to reset.
+fn knob(ui: &mut egui::Ui, label: &str, v: &mut f32, default: f32, col: Color32, fmt: impl Fn(f32) -> String) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(54.0, 64.0), Sense::click_and_drag());
+    let mut changed = false;
+    if resp.dragged() {
+        let d = resp.drag_delta();
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        *v = (*v + (d.x - d.y) * 0.006 * fine).clamp(0.0, 1.0);
+        changed = true;
+    }
+    if resp.hovered() {
+        let sc = ui.input(|i| i.smooth_scroll_delta.y);
+        if sc.abs() > 0.0 {
+            *v = (*v + sc * 0.002).clamp(0.0, 1.0);
+            changed = true;
+        }
+    }
+    if resp.double_clicked() {
+        *v = default;
+        changed = true;
+    }
+    let p = ui.painter();
+    let c = Pos2::new(rect.center().x, rect.top() + 24.0);
+    let r = 17.0;
+    let a0 = std::f32::consts::PI * 0.75;
+    let a1 = std::f32::consts::PI * 2.25;
+    p.circle_filled(c, r - 4.0, CARD_HI);
+    p.add(egui::Shape::line(arc_points(c, r, a0, a1), Stroke::new(3.5, Color32::from_gray(55))));
+    let av = a0 + (a1 - a0) * *v;
+    if *v > 0.003 {
+        p.add(egui::Shape::line(arc_points(c, r, a0, av), Stroke::new(3.5, col)));
+    }
+    let tip = c + Vec2::new(av.cos(), av.sin()) * (r - 6.0);
+    p.line_segment([c, tip], Stroke::new(2.5, Color32::WHITE));
+    let txt = if resp.hovered() || resp.dragged() { fmt(*v) } else { label.to_string() };
+    p.text(Pos2::new(c.x, rect.bottom() - 7.0), Align2::CENTER_CENTER, txt, FontId::proportional(11.5), if resp.hovered() { Color32::WHITE } else { TEXT_DIM });
+    resp.on_hover_text(format!("{label}: {}\nDrag up/down · Shift = fine · double-click resets", fmt(*v)));
+    changed
+}
+
+fn pct(v: f32) -> String {
+    format!("{:.0}%", v * 100.0)
+}
+
+fn card<R>(ui: &mut egui::Ui, title: &str, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(CARD)
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_height(176.0);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).size(12.0).strong().color(TEXT_DIM));
+                ui.add_space(2.0);
+                add(ui)
+            })
+            .inner
+        })
+        .inner
+}
+
+fn big_toggle(ui: &mut egui::Ui, on: bool, label: &str, col: Color32, size: Vec2) -> egui::Response {
+    let fill = if on { col } else { CARD_HI };
+    let tc = if on { Color32::BLACK } else { Color32::WHITE };
+    ui.add_sized(size, egui::Button::new(RichText::new(label).strong().size(14.0).color(tc)).fill(fill).corner_radius(8.0))
+}
+
+impl App {
+    pub fn new(cc: &eframe::CreationContext<'_>, h: Handles) -> Self {
+        let music_font = setup_fonts(&cc.egui_ctx);
+        setup_style(&cc.egui_ctx);
+        let s = Settings::load();
+        s.push_to(&h.p);
+        let (load_tx, load_rx) = crossbeam_channel::unbounded();
+        let sf_paths = sounds::find_soundfonts();
+        let mut app = App {
+            p: h.p,
+            tx: h.tx,
+            rx: h.rx,
+            devices: h.devices,
+            sample_rate: h.sample_rate,
+            audio_info: h.audio_info,
+            saved_json: String::new(),
+            last_save: 0.0,
+            load_tx,
+            load_rx,
+            loading: None,
+            load_err: None,
+            sf_paths,
+            sf_current: None,
+            presets: vec![],
+            category: None,
+            t0: Instant::now(),
+            bars: Vec::with_capacity(4096),
+            held: [[0; 128]; 3],
+            keys_down: HashMap::new(),
+            mouse_note: None,
+            scale_on: s.scale_on,
+            walk: false,
+            walk_seq: vec![],
+            walk_pos: 0,
+            walk_laps: 0,
+            wrong: [-10.0; 128],
+            right: [-10.0; 128],
+            song: None,
+            song_files: sounds::find_songs(),
+            song_err: None,
+            song_user: 0,
+            song_wait: false,
+            taps: vec![],
+            music_font,
+            show_help: false,
+            s,
+        };
+        // pick the soundfont: last used if it still exists, else the best one found
+        let pick = app.s.soundfont.clone().filter(|p| p.exists()).or_else(|| app.sf_paths.first().cloned());
+        match pick {
+            Some(p) => app.load_sf(p),
+            None => app.load_err = Some(format!(
+                "No SoundFont (.sf2) found. Drop one onto this window, or put it in {}",
+                sounds::user_dir().join("soundfonts").display()
+            )),
+        }
+        app.rebuild_walk();
+        app
+    }
+
+    fn load_sf(&mut self, path: PathBuf) {
+        let tx = self.load_tx.clone();
+        let rate = self.sample_rate;
+        self.loading = Some(path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        self.load_err = None;
+        std::thread::spawn(move || {
+            let _ = tx.send(sounds::load_soundfont(&path, rate));
+        });
+    }
+
+    fn preset_name(&self, bp: (i32, i32)) -> String {
+        self.presets
+            .iter()
+            .find(|p| (p.bank, p.prog) == bp)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| if self.presets.is_empty() { "Loading…".into() } else { format!("Bank {} · {}", bp.0, bp.1 + 1) })
+    }
+
+    fn filtered(&self) -> Vec<usize> {
+        self.presets
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.bank < 128)
+            .filter(|(_, p)| match self.category {
+                None => true,
+                Some(99) => self.s.favorites.contains(&(p.bank, p.prog)),
+                Some(f) => sounds::family(p) == f,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn set_preset(&mut self, layer: bool, bp: (i32, i32)) {
+        if layer {
+            self.s.layer = bp;
+        } else {
+            self.s.main = bp;
+        }
+        let _ = self.tx.send(Cmd::Program { layer, bank: bp.0, prog: bp.1 });
+    }
+
+    fn step_preset(&mut self, layer: bool, dir: i32) {
+        let list = self.filtered();
+        if list.is_empty() {
+            return;
+        }
+        let cur = if layer { self.s.layer } else { self.s.main };
+        let pos = list.iter().position(|i| (self.presets[*i].bank, self.presets[*i].prog) == cur);
+        let next = match pos {
+            Some(p) => (p as i32 + dir).rem_euclid(list.len() as i32) as usize,
+            None => 0,
+        };
+        let pr = &self.presets[list[next]];
+        let bp = (pr.bank, pr.prog);
+        self.set_preset(layer, bp);
+    }
+
+    fn speller(&self) -> Speller {
+        if self.scale_on {
+            Speller::for_scale(self.s.scale_root, &SCALES[self.s.scale_idx.min(SCALES.len() - 1)])
+        } else {
+            Speller::default_sharps()
+        }
+    }
+
+    fn scale_mask(&self) -> u16 {
+        if !self.scale_on {
+            return 0;
+        }
+        theory::scale_mask(ROOTS[self.s.scale_root].1, &SCALES[self.s.scale_idx.min(SCALES.len() - 1)])
+    }
+
+    fn rebuild_walk(&mut self) {
+        let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+        let root = 60 + ROOTS[self.s.scale_root].1;
+        let mut up: Vec<u8> = sc.steps.iter().map(|s| root + s).collect();
+        up.push(root + 12);
+        let mut seq = up.clone();
+        seq.extend(up.iter().rev().skip(1));
+        self.walk_seq = seq;
+        self.walk_pos = 0;
+        self.walk_laps = 0;
+        let m = self.scale_mask();
+        self.p.scale_mask.store(m, Relaxed);
+    }
+
+    fn send_note(&self, key: u8, on: bool) {
+        let _ = self.tx.send(Cmd::Midi(if on { [0x90, key, 100] } else { [0x80, key, 0] }));
+    }
+
+    fn load_song_path(&mut self, path: &std::path::Path) {
+        match song::load(path) {
+            Ok(s) => self.set_song(Some(Arc::new(s)), 0),
+            Err(e) => self.song_err = Some(e),
+        }
+    }
+
+    fn set_song(&mut self, s: Option<Arc<Song>>, user: u16) {
+        self.song_err = None;
+        self.song_user = user;
+        self.p.song_user.store(user, Relaxed);
+        let _ = self.tx.send(Cmd::LoadSong(s.clone()));
+        self.song = s;
+    }
+
+    // ---------- event pump ----------
+    fn pump(&mut self) {
+        let now = now_s(&self.t0);
+        while let Ok(ev) = self.rx.try_recv() {
+            match ev {
+                UiEvt::Note { key, vel, src } => {
+                    let si = (src as usize).min(2);
+                    self.held[si][key as usize] = vel;
+                    if vel > 0 {
+                        self.bars.push(Bar { key, src, vel, start: now, end: None });
+                        if src == src::LIVE {
+                            self.judge(key, now);
+                        }
+                    } else if let Some(b) = self.bars.iter_mut().rev().find(|b| b.key == key && b.src == src && b.end.is_none()) {
+                        b.end = Some(now);
+                    }
+                }
+                UiEvt::AllOff { src } => {
+                    let si = (src as usize).min(2);
+                    self.held[si] = [0; 128];
+                    for b in self.bars.iter_mut().filter(|b| b.src == src && b.end.is_none()) {
+                        b.end = Some(now);
+                    }
+                }
+                UiEvt::Program { bank, prog } => self.s.main = (bank, prog),
+                UiEvt::Trash(_) | UiEvt::TrashSong(_) => {} // dropped here, off the audio thread
+            }
+        }
+        while let Ok(res) = self.load_rx.try_recv() {
+            self.loading = None;
+            match res {
+                Ok(l) => {
+                    self.presets = l.presets;
+                    self.sf_current = Some(l.path.clone());
+                    self.s.soundfont = Some(l.path.clone());
+                    if !self.sf_paths.contains(&l.path) {
+                        self.sf_paths.insert(0, l.path);
+                    }
+                    let _ = self.tx.send(Cmd::Synths(l.synths));
+                    for (layer, bp) in [(false, self.s.main), (true, self.s.layer)] {
+                        let ok = self.presets.iter().any(|p| (p.bank, p.prog) == bp);
+                        let bp = if ok { bp } else { self.presets.iter().find(|p| p.bank < 128).map(|p| (p.bank, p.prog)).unwrap_or((0, 0)) };
+                        self.set_preset(layer, bp);
+                    }
+                }
+                Err(e) => self.load_err = Some(e),
+            }
+        }
+        // forget old bars
+        self.bars.retain(|b| b.end.map(|e| now - e < 30.0).unwrap_or(true));
+    }
+
+    fn judge(&mut self, key: u8, now: f64) {
+        if !self.scale_on {
+            return;
+        }
+        if self.walk && !self.walk_seq.is_empty() {
+            let target = self.walk_seq[self.walk_pos];
+            if key == target {
+                self.right[key as usize] = now;
+                self.walk_pos += 1;
+                if self.walk_pos >= self.walk_seq.len() {
+                    self.walk_pos = 0;
+                    self.walk_laps += 1;
+                }
+            } else {
+                self.wrong[key as usize] = now;
+            }
+        } else {
+            let m = self.scale_mask();
+            if m & (1 << (key % 12)) == 0 {
+                self.wrong[key as usize] = now;
+            } else {
+                self.right[key as usize] = now;
+            }
+        }
+    }
+
+    fn keyboard_input(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.focused);
+        if !focused && !self.keys_down.is_empty() {
+            for (_, k) in self.keys_down.drain() {
+                let _ = self.tx.send(Cmd::Midi([0x80, k, 0]));
+            }
+        }
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+        let events = ctx.input(|i| i.events.clone());
+        for ev in events {
+            let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
+            if modifiers.ctrl || modifiers.command || modifiers.alt {
+                continue;
+            }
+            if let Some((_, off)) = KEYMAP.iter().find(|(k, _)| *k == key) {
+                if pressed && !repeat {
+                    let note = ((self.s.kb_octave + 1) * 12 + *off as i32).clamp(0, 127) as u8;
+                    self.keys_down.insert(key, note);
+                    self.send_note(note, true);
+                } else if !pressed {
+                    if let Some(n) = self.keys_down.remove(&key) {
+                        self.send_note(n, false);
+                    }
+                }
+                continue;
+            }
+            if !pressed || repeat {
+                continue;
+            }
+            match key {
+                Key::Z => self.s.kb_octave = (self.s.kb_octave - 1).max(0),
+                Key::X => self.s.kb_octave = (self.s.kb_octave + 1).min(8),
+                Key::Space => {
+                    let on = !self.p.drums_on.load(Relaxed);
+                    self.p.drums_on.store(on, Relaxed);
+                }
+                Key::Enter => {
+                    let _ = self.tx.send(Cmd::LoopButton);
+                }
+                Key::Backspace => {
+                    let _ = self.tx.send(Cmd::LoopUndo);
+                }
+                Key::Escape => {
+                    let _ = self.tx.send(Cmd::Panic);
+                    let _ = self.tx.send(Cmd::LoopStop);
+                }
+                Key::ArrowLeft => self.step_preset(false, -1),
+                Key::ArrowRight => self.step_preset(false, 1),
+                Key::F1 => self.show_help = !self.show_help,
+                _ => {}
+            }
+        }
+    }
+
+    fn autosave(&mut self, now: f64) {
+        if now - self.last_save < 3.0 {
+            return;
+        }
+        self.last_save = now;
+        self.s.pull_from(&self.p);
+        self.s.scale_on = self.scale_on;
+        if let Ok(j) = serde_json::to_string(&self.s) {
+            if j != self.saved_json {
+                self.s.save();
+                self.saved_json = j;
+            }
+        }
+    }
+
+    // ---------- header ----------
+    fn preset_combo(&mut self, ui: &mut egui::Ui, layer: bool, width: f32) {
+        let cur = if layer { self.s.layer } else { self.s.main };
+        let name = self.preset_name(cur);
+        let list = self.filtered();
+        let mut pick = None;
+        let size = if layer { 14.0 } else { 19.0 };
+        egui::ComboBox::from_id_salt(if layer { "layer_preset" } else { "main_preset" })
+            .selected_text(RichText::new(name).size(size).strong().color(if layer { ARP } else { Color32::WHITE }))
+            .width(width)
+            .height(520.0)
+            .show_ui(ui, |ui| {
+                let mut fam = usize::MAX;
+                for i in list {
+                    let pr = &self.presets[i];
+                    let f = sounds::family(pr);
+                    if self.category.is_none() && f != fam && pr.bank == 0 {
+                        fam = f;
+                        ui.label(RichText::new(GM_FAMILIES[f]).size(11.0).color(TEXT_DIM));
+                    }
+                    let fav = if self.s.favorites.contains(&(pr.bank, pr.prog)) { "★ " } else { "" };
+                    let label = format!("{fav}{:03}  {}{}", pr.prog + 1, pr.name, if pr.bank > 0 { format!("  (bank {})", pr.bank) } else { String::new() });
+                    if ui.selectable_label((pr.bank, pr.prog) == cur, label).clicked() {
+                        pick = Some((pr.bank, pr.prog));
+                    }
+                }
+            });
+        if let Some(bp) = pick {
+            self.set_preset(layer, bp);
+        }
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("NOODLE").size(24.0).strong().color(LIVE));
+            ui.add_space(8.0);
+            if ui.add(egui::Button::new(RichText::new("◀").size(18.0))).on_hover_text("Previous sound (←)").clicked() {
+                self.step_preset(false, -1);
+            }
+            self.preset_combo(ui, false, 300.0);
+            if ui.add(egui::Button::new(RichText::new("▶").size(18.0))).on_hover_text("Next sound (→)").clicked() {
+                self.step_preset(false, 1);
+            }
+            let cur = self.s.main;
+            let is_fav = self.s.favorites.contains(&cur);
+            if ui
+                .add(egui::Button::new(RichText::new(if is_fav { "★" } else { "☆" }).size(18.0).color(if is_fav { YOURS } else { TEXT_DIM })).frame(false))
+                .on_hover_text("Favourite this sound")
+                .clicked()
+            {
+                if is_fav {
+                    self.s.favorites.retain(|f| *f != cur);
+                } else {
+                    self.s.favorites.push(cur);
+                }
+            }
+            let cat = match self.category {
+                None => "All sounds".to_string(),
+                Some(99) => "★ Favourites".to_string(),
+                Some(f) => GM_FAMILIES[f].to_string(),
+            };
+            egui::ComboBox::from_id_salt("cat").selected_text(cat).width(130.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.category, None, "All sounds");
+                ui.selectable_value(&mut self.category, Some(99), "★ Favourites");
+                ui.separator();
+                for (i, f) in GM_FAMILIES.iter().enumerate() {
+                    ui.selectable_value(&mut self.category, Some(i), *f);
+                }
+            });
+            ui.separator();
+            let mut mode = self.p.mode.load(Relaxed);
+            for (i, n) in ["Single", "Layer", "Split"].iter().enumerate() {
+                if ui.selectable_label(mode == i as u8, RichText::new(*n).size(14.0)).on_hover_text(match i {
+                    0 => "One sound across the keyboard",
+                    1 => "Two sounds stacked on every key",
+                    _ => "Second sound below the split point",
+                }).clicked() {
+                    mode = i as u8;
+                }
+            }
+            self.p.mode.store(mode, Relaxed);
+            if mode > 0 {
+                if ui.small_button("◀").clicked() {
+                    self.step_preset(true, -1);
+                }
+                self.preset_combo(ui, true, 200.0);
+                if ui.small_button("▶").clicked() {
+                    self.step_preset(true, 1);
+                }
+                let mut lv = self.p.layer_vol.get();
+                if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false)).on_hover_text("Second sound volume").changed() {
+                    self.p.layer_vol.set(lv);
+                }
+                if mode == 2 {
+                    let mut sp = self.p.split.load(Relaxed) as i32;
+                    ui.label(RichText::new("split").color(TEXT_DIM));
+                    if ui
+                        .add(egui::DragValue::new(&mut sp).range(24..=96).custom_formatter(|v, _| theory::note_name_oct(v as u8)))
+                        .on_hover_text("Notes below this go to the second sound")
+                        .changed()
+                    {
+                        self.p.split.store(sp as u8, Relaxed);
+                    }
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            let mut tr = self.p.transpose.load(Relaxed);
+            ui.label(RichText::new("Transpose").color(TEXT_DIM));
+            if ui.small_button("−8va").clicked() {
+                tr -= 12;
+            }
+            if ui.small_button("−").clicked() {
+                tr -= 1;
+            }
+            ui.label(RichText::new(format!("{:+}", tr)).strong().monospace());
+            if ui.small_button("+").clicked() {
+                tr += 1;
+            }
+            if ui.small_button("+8va").clicked() {
+                tr += 12;
+            }
+            self.p.transpose.store(tr.clamp(-36, 36), Relaxed);
+            ui.separator();
+            ui.label(RichText::new("Tempo").color(TEXT_DIM));
+            let mut bpm = self.p.bpm.get();
+            if ui.add(egui::DragValue::new(&mut bpm).range(40.0..=260.0).speed(0.4).fixed_decimals(0).suffix(" bpm")).changed() {
+                self.p.bpm.set(bpm);
+            }
+            if ui.button("Tap").on_hover_text("Tap 3+ times").clicked() {
+                let t = now_s(&self.t0);
+                self.taps.retain(|x| t - x < 2.5);
+                self.taps.push(t);
+                if self.taps.len() >= 3 {
+                    let d = (self.taps[self.taps.len() - 1] - self.taps[0]) / (self.taps.len() - 1) as f64;
+                    self.p.bpm.set((60.0 / d).clamp(40.0, 260.0) as f32);
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Bank").color(TEXT_DIM));
+            let cur = self.sf_current.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
+            let txt = self.loading.clone().map(|l| format!("Loading {l}…")).or(cur).unwrap_or_else(|| "none".into());
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("sf").selected_text(txt).width(170.0).show_ui(ui, |ui| {
+                for p in &self.sf_paths {
+                    let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let mb = std::fs::metadata(p).map(|m| m.len() / 1_000_000).unwrap_or(0);
+                    if ui.selectable_label(Some(p) == self.sf_current.as_ref(), format!("{n}  ({mb} MB)")).on_hover_text(p.display().to_string()).clicked() {
+                        pick = Some(p.clone());
+                    }
+                }
+                ui.separator();
+                ui.label(RichText::new("Drop any .sf2 on the window to add it").size(11.0).color(TEXT_DIM));
+            });
+            if let Some(p) = pick {
+                self.load_sf(p);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("?").on_hover_text("Keys & shortcuts (F1)").clicked() {
+                    self.show_help = !self.show_help;
+                }
+                let cpu = self.p.cpu.get();
+                ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { TEXT_DIM }));
+                match &self.audio_info {
+                    Ok(a) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(TEXT_DIM)),
+                    Err(e) => ui.label(RichText::new("🔇 No audio output").size(11.0).color(BAD)).on_hover_text(e),
+                };
+                let devs = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
+                if devs.is_empty() {
+                    ui.label(RichText::new("○ No MIDI keyboard yet").size(12.0).color(TEXT_DIM)).on_hover_text("Plug one in any time — it's picked up automatically.\nMeanwhile your computer keys A W S E D F T G… play notes.");
+                } else {
+                    ui.label(RichText::new(format!("● {}", devs.join(", "))).size(12.0).color(GOOD));
+                }
+            });
+        });
+    }
+
+    // ---------- module cards ----------
+    fn modules(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                self.fx_card(ui);
+                self.arp_card(ui);
+                self.drum_card(ui);
+                self.loop_card(ui);
+            });
+        });
+    }
+
+    fn fx_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        card(ui, "SOUND", 262.0, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let mut v = p.reverb.get();
+                if knob(ui, "Reverb", &mut v, 0.35, GOOD, pct) {
+                    p.reverb.set(v)
+                }
+                let mut v = p.chorus.get();
+                if knob(ui, "Chorus", &mut v, 0.0, GOOD, pct) {
+                    p.chorus.set(v)
+                }
+                let mut v = p.delay_mix.get();
+                if knob(ui, "Delay", &mut v, 0.0, ARP, pct) {
+                    p.delay_mix.set(v)
+                }
+                let mut v = p.delay_fb.get();
+                if knob(ui, "Repeats", &mut v, 0.35, ARP, pct) {
+                    p.delay_fb.set(v)
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let mut v = p.cutoff.get();
+                if knob(ui, "Filter", &mut v, 1.0, LIVE, |v| if v > 0.995 { "open".into() } else { format!("{:.0} Hz", 40.0 * 500f32.powf(v)) }) {
+                    p.cutoff.set(v)
+                }
+                let mut v = p.resonance.get();
+                if knob(ui, "Reso", &mut v, 0.1, LIVE, pct) {
+                    p.resonance.set(v)
+                }
+                let mut v = p.drive.get();
+                if knob(ui, "Drive", &mut v, 0.0, BAD, pct) {
+                    p.drive.set(v)
+                }
+                let mut v = p.master.get();
+                if knob(ui, "Volume", &mut v, 0.8, Color32::WHITE, pct) {
+                    p.master.set(v)
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Delay time").size(11.0).color(TEXT_DIM));
+                let mut dt = p.delay_time.load(Relaxed) as usize;
+                for (i, (n, _)) in DELAY_TIMES.iter().enumerate() {
+                    if ui.selectable_label(dt == i, RichText::new(*n).size(11.0)).clicked() {
+                        dt = i;
+                    }
+                }
+                p.delay_time.store(dt as u8, Relaxed);
+            });
+        });
+    }
+
+    fn arp_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        card(ui, "ARPEGGIATOR", 190.0, |ui| {
+            ui.horizontal(|ui| {
+                let on = p.arp_on.load(Relaxed);
+                if big_toggle(ui, on, if on { "ARP ON" } else { "ARP OFF" }, ARP, Vec2::new(90.0, 30.0)).clicked() {
+                    p.arp_on.store(!on, Relaxed);
+                }
+                let mut latch = p.arp_latch.load(Relaxed);
+                if ui.checkbox(&mut latch, "Latch").on_hover_text("Keeps playing after you let go").changed() {
+                    p.arp_latch.store(latch, Relaxed);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                let mut m = p.arp_mode.load(Relaxed) as usize;
+                for (i, n) in ARP_MODES.iter().enumerate() {
+                    if ui.selectable_label(m == i, RichText::new(*n).size(11.5)).clicked() {
+                        m = i;
+                    }
+                }
+                p.arp_mode.store(m as u8, Relaxed);
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                let mut r = p.arp_rate.load(Relaxed) as usize;
+                for (i, (n, _)) in ARP_RATES.iter().enumerate() {
+                    if ui.selectable_label(r == i, RichText::new(*n).size(11.5)).clicked() {
+                        r = i;
+                    }
+                }
+                p.arp_rate.store(r as u8, Relaxed);
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Oct").size(11.5).color(TEXT_DIM));
+                let mut o = p.arp_oct.load(Relaxed);
+                for i in 1..=4u8 {
+                    if ui.selectable_label(o == i, RichText::new(i.to_string()).size(11.5)).clicked() {
+                        o = i;
+                    }
+                }
+                p.arp_oct.store(o, Relaxed);
+                let mut g = p.arp_gate.get();
+                if knob(ui, "Gate", &mut g, 0.6, ARP, pct) {
+                    p.arp_gate.set(g.max(0.05));
+                }
+            });
+        });
+    }
+
+    fn drum_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        card(ui, "DRUMS", 500.0, |ui| {
+            ui.horizontal(|ui| {
+                let on = p.drums_on.load(Relaxed);
+                if big_toggle(ui, on, if on { "■ STOP" } else { "▶ PLAY" }, GOOD, Vec2::new(78.0, 26.0)).on_hover_text("Space").clicked() {
+                    p.drums_on.store(!on, Relaxed);
+                }
+                let pat_name = PATTERNS.get(self.s.drum_pattern).map(|p| p.0).unwrap_or("Custom");
+                let mut pick = None;
+                egui::ComboBox::from_id_salt("pattern").selected_text(pat_name).width(150.0).show_ui(ui, |ui| {
+                    for (i, (n, _, _)) in PATTERNS.iter().enumerate() {
+                        if ui.selectable_label(i == self.s.drum_pattern, *n).clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                });
+                if let Some(i) = pick {
+                    self.s.drum_pattern = i;
+                    let (_, rows, len) = PATTERNS[i];
+                    for r in 0..DRUM_ROWS {
+                        p.drum_rows[r].store(rows[r], Relaxed);
+                    }
+                    p.drum_len.store(len, Relaxed);
+                }
+                let kit = p.drum_kit.load(Relaxed);
+                let kname = KITS.iter().find(|k| k.1 == kit).map(|k| k.0).unwrap_or("Kit");
+                egui::ComboBox::from_id_salt("kit").selected_text(kname).width(100.0).show_ui(ui, |ui| {
+                    for (n, prog) in KITS {
+                        if ui.selectable_label(kit == *prog, *n).clicked() {
+                            p.drum_kit.store(*prog, Relaxed);
+                        }
+                    }
+                });
+                let mut len = p.drum_len.load(Relaxed);
+                for l in [12u8, 16] {
+                    if ui.selectable_label(len == l, RichText::new(format!("{l}")).size(11.0)).on_hover_text(if l == 12 { "12 steps: 6/8, 3/4" } else { "16 steps: 4/4" }).clicked() {
+                        len = l;
+                    }
+                }
+                p.drum_len.store(len, Relaxed);
+            });
+            ui.horizontal(|ui| {
+                // step grid
+                let cw = 19.0;
+                let chh = 15.0;
+                let lw = 56.0;
+                let size = Vec2::new(lw + cw * 16.0, chh * DRUM_ROWS as f32);
+                let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+                let painter = ui.painter_at(rect);
+                let step = p.drum_step.load(Relaxed);
+                let len = p.drum_len.load(Relaxed) as usize;
+                for r in 0..DRUM_ROWS {
+                    let y = rect.top() + r as f32 * chh;
+                    painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), TEXT_DIM);
+                    let bits = p.drum_rows[r].load(Relaxed);
+                    for s in 0..16 {
+                        let x = rect.left() + lw + s as f32 * cw;
+                        let cell = Rect::from_min_size(Pos2::new(x + 1.0, y + 1.0), Vec2::new(cw - 2.0, chh - 2.0));
+                        let on = bits & (1 << s) != 0;
+                        let beat = (s / 4) % 2 == 0 && len == 16 || (s / 3) % 2 == 0 && len == 12;
+                        let mut col = if s >= len {
+                            Color32::from_gray(26)
+                        } else if on {
+                            GOOD
+                        } else if beat {
+                            Color32::from_gray(52)
+                        } else {
+                            Color32::from_gray(40)
+                        };
+                        if s as u8 == step && on {
+                            col = Color32::WHITE;
+                        }
+                        painter.rect_filled(cell, 3.0, col);
+                        if s as u8 == step {
+                            painter.rect_stroke(cell, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                        }
+                    }
+                }
+                if resp.clicked() {
+                    if let Some(pos) = resp.interact_pointer_pos() {
+                        let s = ((pos.x - rect.left() - lw) / cw).floor();
+                        let r = ((pos.y - rect.top()) / chh).floor();
+                        if s >= 0.0 && s < 16.0 && r >= 0.0 && (r as usize) < DRUM_ROWS {
+                            let r = r as usize;
+                            let v = p.drum_rows[r].load(Relaxed) ^ (1 << s as u16);
+                            p.drum_rows[r].store(v, Relaxed);
+                            self.s.drum_pattern = usize::MAX;
+                        }
+                    }
+                }
+                ui.vertical(|ui| {
+                    let mut sw = p.swing.get();
+                    if knob(ui, "Swing", &mut sw, 0.0, GOOD, pct) {
+                        p.swing.set(sw);
+                    }
+                    let mut dv = p.drum_vol.get();
+                    if knob(ui, "Level", &mut dv, 0.8, GOOD, pct) {
+                        p.drum_vol.set(dv);
+                    }
+                });
+            });
+        });
+    }
+
+    fn loop_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        let tx = self.tx.clone();
+        let t = now_s(&self.t0);
+        card(ui, "LOOPER", 200.0, |ui| {
+            let st = p.loop_state.load(Relaxed);
+            let pulse = ((t * 4.0).sin() * 0.5 + 0.5) as f32;
+            let (label, col) = match st {
+                lstate::EMPTY => ("● RECORD", BAD),
+                lstate::REC => ("■ CLOSE LOOP", BAD.gamma_multiply(0.6 + 0.4 * pulse)),
+                lstate::PLAY => ("+ OVERDUB", GOOD),
+                lstate::DUB => ("✓ DONE", LIVE.gamma_multiply(0.6 + 0.4 * pulse)),
+                _ => ("▶ PLAY LOOP", GOOD),
+            };
+            if ui
+                .add_sized(Vec2::new(180.0, 46.0), egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::BLACK)).fill(col).corner_radius(10.0))
+                .on_hover_text("Enter")
+                .clicked()
+            {
+                let _ = tx.send(Cmd::LoopButton);
+            }
+            // progress
+            let (r, _) = ui.allocate_exact_size(Vec2::new(180.0, 10.0), Sense::hover());
+            ui.painter().rect_filled(r, 4.0, Color32::from_gray(40));
+            if st != lstate::EMPTY {
+                let mut f = r;
+                f.set_width(r.width() * p.loop_pos.get().clamp(0.0, 1.0));
+                ui.painter().rect_filled(f, 4.0, if st == lstate::REC { BAD } else { LOOPC });
+            }
+            ui.horizontal(|ui| {
+                if ui.button("■ Stop").clicked() {
+                    let _ = tx.send(Cmd::LoopStop);
+                }
+                if ui.button("↶ Undo").on_hover_text("Remove the last layer (Backspace)").clicked() {
+                    let _ = tx.send(Cmd::LoopUndo);
+                }
+                if ui.button("✕").on_hover_text("Clear loop").clicked() {
+                    let _ = tx.send(Cmd::LoopClear);
+                }
+            });
+            let passes = p.loop_passes.load(Relaxed);
+            let beats = p.loop_beats.get();
+            let info = match st {
+                lstate::EMPTY => "Press, play, press again.\nLength snaps to whole bars.".to_string(),
+                lstate::REC => "Recording… press to close".to_string(),
+                _ => format!("{} layer{} / {}  ·  {} bars", passes, if passes == 1 { "" } else { "s" }, MAX_PASSES, (beats / 4.0).max(0.25)),
+            };
+            ui.label(RichText::new(info).size(11.0).color(TEXT_DIM));
+            ui.label(RichText::new("Each layer keeps its own sound — switch sounds between overdubs.").size(10.5).color(TEXT_DIM));
+        });
+    }
+
+    // ---------- learn bar: view, scales, songs ----------
+    fn learn_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("View").color(TEXT_DIM));
+            for (i, n) in ["Falling notes", "Score", "Both"].iter().enumerate() {
+                if ui.selectable_label(self.s.view == i as u8, *n).clicked() {
+                    self.s.view = i as u8;
+                }
+            }
+            ui.separator();
+            let was = self.scale_on;
+            ui.toggle_value(&mut self.scale_on, RichText::new("🎼 Scale").strong());
+            if was != self.scale_on {
+                self.rebuild_walk();
+                if !self.scale_on {
+                    self.walk = false;
+                    self.p.scale_snap.store(false, Relaxed);
+                }
+            }
+            let mut changed = false;
+            egui::ComboBox::from_id_salt("root").selected_text(ROOTS[self.s.scale_root].0).width(46.0).height(400.0).show_ui(ui, |ui| {
+                for (i, r) in ROOTS.iter().enumerate() {
+                    changed |= ui.selectable_value(&mut self.s.scale_root, i, r.0).changed();
+                }
+            });
+            let sidx = self.s.scale_idx.min(SCALES.len() - 1);
+            egui::ComboBox::from_id_salt("scale").selected_text(SCALES[sidx].name).width(220.0).height(500.0).show_ui(ui, |ui| {
+                let mut group = "";
+                for (i, sc) in SCALES.iter().enumerate() {
+                    if sc.group != group {
+                        group = sc.group;
+                        ui.label(RichText::new(group).size(11.0).color(YOURS));
+                    }
+                    changed |= ui.selectable_value(&mut self.s.scale_idx, i, sc.name).changed();
+                }
+            });
+            if changed {
+                self.scale_on = true;
+                self.rebuild_walk();
+            }
+            if self.scale_on {
+                let mut snap = self.p.scale_snap.load(Relaxed);
+                if ui.toggle_value(&mut snap, "Snap").on_hover_text("Wrong notes get bent to the nearest scale note — can't play a bum note").changed() {
+                    self.p.scale_snap.store(snap, Relaxed);
+                }
+                if ui.toggle_value(&mut self.walk, "Walk it").on_hover_text("Play the scale up and down one note at a time; the next note is outlined").changed() {
+                    self.walk_pos = 0;
+                    self.walk_laps = 0;
+                }
+                if ui.button("▶ Hear it").clicked() {
+                    let sc = &SCALES[sidx];
+                    let root = 60 + ROOTS[self.s.scale_root].1;
+                    let mut up: Vec<u8> = sc.steps.iter().map(|s| root + s).collect();
+                    up.push(root + 12);
+                    let s = song::scale_song(&up, self.p.bpm.get(), self.s.main.0, self.s.main.1);
+                    self.set_song(Some(Arc::new(s)), 0);
+                    let _ = self.tx.send(Cmd::SongPlay(true));
+                }
+                let sp = self.speller();
+                let names: Vec<String> = SCALES[sidx].steps.iter().map(|s| sp.name((ROOTS[self.s.scale_root].1 + s) % 12)).collect();
+                ui.label(RichText::new(names.join(" ")).strong().color(GOOD));
+                if self.walk {
+                    ui.label(RichText::new(format!("step {}/{} · laps {}", self.walk_pos + 1, self.walk_seq.len(), self.walk_laps)).color(YOURS));
+                }
+            }
+        });
+        if self.scale_on {
+            let h = SCALES[self.s.scale_idx.min(SCALES.len() - 1)].hint;
+            if !h.is_empty() {
+                ui.label(RichText::new(h).size(11.5).color(TEXT_DIM));
+            }
+        }
+        // song bar
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Song").color(TEXT_DIM));
+            let name = self.song.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Open a MIDI file…".into());
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("songs").selected_text(name).width(220.0).height(400.0).show_ui(ui, |ui| {
+                if self.song_files.is_empty() {
+                    ui.label(RichText::new("No .mid files found yet").color(TEXT_DIM));
+                }
+                for f in &self.song_files {
+                    let n = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    if ui.selectable_label(false, n).on_hover_text(f.display().to_string()).clicked() {
+                        pick = Some(f.clone());
+                    }
+                }
+                ui.separator();
+                ui.label(RichText::new(format!(
+                    "Drag a .mid onto the window, or drop files in\n{}\n(MuseScore: File › Export › MIDI)",
+                    sounds::user_dir().join("songs").display()
+                )).size(11.0).color(TEXT_DIM));
+                if ui.small_button("↻ Rescan").clicked() {
+                    self.song_files = sounds::find_songs();
+                }
+            });
+            if let Some(f) = pick {
+                self.load_song_path(&f);
+            }
+            if let Some(e) = &self.song_err {
+                ui.label(RichText::new(e).color(BAD));
+            }
+            let Some(song) = self.song.clone() else { return };
+            let playing = self.p.song_playing.load(Relaxed);
+            if ui.button("⏮").clicked() {
+                let _ = self.tx.send(Cmd::SongSeek(0.0));
+            }
+            if big_toggle(ui, playing, if playing { "⏸" } else { "▶" }, GOOD, Vec2::new(40.0, 22.0)).clicked() {
+                let _ = self.tx.send(Cmd::SongPlay(!playing));
+            }
+            let mut pos = self.p.song_pos.get() as f32;
+            let fmt = |t: f32| format!("{}:{:02}", (t / 60.0) as u32, (t % 60.0) as u32);
+            ui.label(RichText::new(format!("{} / {}", fmt(pos), fmt(song.dur as f32))).monospace().size(12.0));
+            if ui.add(egui::Slider::new(&mut pos, 0.0..=song.dur as f32).show_value(false)).changed() {
+                let _ = self.tx.send(Cmd::SongSeek(pos as f64));
+            }
+            let mut spd = self.p.song_speed.get() * 100.0;
+            if ui.add(egui::Slider::new(&mut spd, 25.0..=150.0).suffix("%").integer().text("speed")).changed() {
+                self.p.song_speed.set(spd / 100.0);
+            }
+            let waiting = self.p.song_waiting.load(Relaxed);
+            let wlabel = if waiting { "⏳ Waiting for you" } else { "Wait for me" };
+            if ui
+                .toggle_value(&mut self.song_wait, RichText::new(wlabel).color(if waiting { YOURS } else { Color32::WHITE }))
+                .on_hover_text("Song pauses at each of YOUR notes until you play them")
+                .changed()
+            {
+                self.p.song_wait.store(self.song_wait, Relaxed);
+            }
+            let mut sv = self.p.song_vol.get();
+            if ui.add(egui::Slider::new(&mut sv, 0.0..=1.0).show_value(false)).on_hover_text("Song volume").changed() {
+                self.p.song_vol.set(sv);
+            }
+            if ui.button("✕").on_hover_text("Close song").clicked() {
+                self.set_song(None, 0);
+            }
+        });
+        if let Some(song) = self.song.clone() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("You play:").color(YOURS)).on_hover_text("Pick the part(s) you want to play. They go silent and light up yellow.");
+                for ch in 0..16u16 {
+                    if song.channels & (1 << ch) == 0 {
+                        continue;
+                    }
+                    let prog = song.programs[ch as usize];
+                    let inst = if ch == 9 {
+                        "Drums".to_string()
+                    } else if prog >= 0 {
+                        self.presets.iter().find(|p| p.bank == 0 && p.prog == prog as i32).map(|p| p.name.clone()).unwrap_or(format!("Prog {}", prog + 1))
+                    } else {
+                        "Piano".into()
+                    };
+                    let on = self.song_user & (1 << ch) != 0;
+                    let txt = RichText::new(format!("{} · {} ({})", ch + 1, inst, song.notes_per_ch[ch as usize])).size(11.5).color(if on { Color32::BLACK } else { Color32::WHITE });
+                    if ui.add(egui::Button::new(txt).fill(if on { YOURS } else { CARD_HI }).corner_radius(10.0)).clicked() {
+                        self.song_user ^= 1 << ch;
+                        self.p.song_user.store(self.song_user, Relaxed);
+                    }
+                }
+            });
+        }
+    }
+
+    // ---------- visualisations ----------
+    fn chord_label(&self, painter: &egui::Painter, rect: Rect) {
+        let mut keys: Vec<u8> = (0..128u8).filter(|k| self.held[0][*k as usize] > 0).collect();
+        if keys.is_empty() {
+            keys = (0..128u8).filter(|k| self.held[2][*k as usize] > 0).collect();
+        }
+        if let Some((big, small)) = theory::name_chord(&keys, &self.speller()) {
+            painter.text(rect.left_top() + Vec2::new(14.0, 8.0), Align2::LEFT_TOP, big, FontId::proportional(34.0), Color32::WHITE);
+            painter.text(rect.left_top() + Vec2::new(16.0, 50.0), Align2::LEFT_TOP, small, FontId::proportional(14.0), TEXT_DIM);
+        }
+    }
+
+    fn waterfall(&self, ui: &mut egui::Ui, rect: Rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(0x0d, 0x0f, 0x12));
+        let now = now_s(&self.t0);
+        let mask = self.scale_mask();
+        // lanes
+        for k in KEY_LO..=KEY_HI {
+            let (x, w, black) = key_x(rect, k);
+            if k % 12 == 0 {
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(34)));
+            }
+            if mask != 0 && mask & (1 << (k % 12)) != 0 {
+                let lane = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(x + w, rect.bottom()));
+                let c = if k % 12 == ROOTS[self.s.scale_root].1 { GOOD.gamma_multiply(0.13) } else { GOOD.gamma_multiply(if black { 0.06 } else { 0.05 }) };
+                painter.rect_filled(lane, 0.0, c);
+            }
+        }
+        if let Some(song) = &self.song {
+            // Synthesia style: song notes fall onto the keys
+            let pos = self.p.song_pos.get();
+            let speed = 160.0f64;
+            let horizon = rect.height() as f64 / speed;
+            for n in song.notes.iter() {
+                if n.start > pos + horizon {
+                    break;
+                }
+                if n.end < pos || n.key < KEY_LO || n.key > KEY_HI || n.ch == 9 {
+                    continue;
+                }
+                let yb = rect.bottom() - ((n.start - pos) * speed) as f32;
+                let yt = rect.bottom() - ((n.end - pos) * speed) as f32;
+                let (x, w, black) = key_x(rect, n.key);
+                let yours = self.song_user & (1 << n.ch) != 0;
+                let base = if yours { YOURS } else { SONG };
+                let col = if black { base.gamma_multiply(0.75) } else { base };
+                let r = Rect::from_min_max(Pos2::new(x + 1.0, yt.max(rect.top())), Pos2::new(x + w - 1.0, yb.min(rect.bottom())));
+                painter.rect_filled(r, 3.0, if yours { col } else { col.gamma_multiply(0.6) });
+                if yours {
+                    painter.rect_stroke(r, 3.0, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.5)), StrokeKind::Inside);
+                }
+            }
+            // hit line
+            painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0, YOURS.gamma_multiply(0.5)));
+            // your notes still glow at the bottom
+            for b in self.bars.iter().filter(|b| b.end.is_none() && b.key >= KEY_LO && b.key <= KEY_HI) {
+                let (x, w, _) = key_x(rect, b.key);
+                let r = Rect::from_min_max(Pos2::new(x, rect.bottom() - 16.0), Pos2::new(x + w, rect.bottom()));
+                painter.rect_filled(r, 2.0, SRC_COL[(b.src as usize).min(2)]);
+            }
+            if self.p.song_waiting.load(Relaxed) {
+                painter.text(rect.right_top() + Vec2::new(-14.0, 10.0), Align2::RIGHT_TOP, "⏳ your turn — play the yellow notes", FontId::proportional(18.0), YOURS);
+            }
+        } else {
+            // free play: what you play rises from the keys
+            let speed = 110.0f64;
+            for b in &self.bars {
+                if b.key < KEY_LO || b.key > KEY_HI {
+                    continue;
+                }
+                let end = b.end.unwrap_or(now);
+                let yb = rect.bottom() - ((now - end) * speed) as f32;
+                let yt = rect.bottom() - ((now - b.start) * speed) as f32;
+                if yb < rect.top() {
+                    continue;
+                }
+                let (x, w, black) = key_x(rect, b.key);
+                let mut col = SRC_COL[(b.src as usize).min(2)];
+                if mask != 0 && b.src == src::LIVE && mask & (1 << (b.key % 12)) == 0 {
+                    col = BAD;
+                }
+                let a = 0.45 + 0.55 * (b.vel as f32 / 127.0);
+                let col = if black { col.gamma_multiply(0.8 * a) } else { col.gamma_multiply(a) };
+                let r = Rect::from_min_max(Pos2::new(x + 1.5, yt.max(rect.top())), Pos2::new(x + w - 1.5, yb));
+                painter.rect_filled(r, 3.0, col);
+            }
+        }
+        self.chord_label(&painter, rect);
+        if self.bars.is_empty() && self.song.is_none() {
+            painter.text(rect.center(), Align2::CENTER_CENTER, "Just play.", FontId::proportional(40.0), Color32::from_gray(60));
+            painter.text(rect.center() + Vec2::new(0.0, 36.0), Align2::CENTER_CENTER, "No keyboard? Your computer keys A W S E D F T G Y H U J K play notes · Z / X shift octave", FontId::proportional(14.0), Color32::from_gray(80));
+        }
+    }
+
+    /// Draw a SMuFL glyph (Bravura) with its baseline at `y`. `space` = staff space in px.
+    fn glyph(&self, painter: &egui::Painter, ch: char, x: f32, y: f32, space: f32, col: Color32) -> f32 {
+        let font = FontId::new(space * 4.0, FontFamily::Name("music".into()));
+        let galley = painter.layout_no_wrap(ch.to_string(), font, col);
+        let base = galley.rows.first().map(|r| r.pos.y + r.row.glyphs.first().map(|g| g.pos.y).unwrap_or(0.0)).unwrap_or(0.0);
+        let w = galley.size().x;
+        painter.galley(Pos2::new(x, y - base), galley, col);
+        w
+    }
+
+    fn score(&self, ui: &mut egui::Ui, rect: Rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_rgb(0xf3, 0xef, 0xe6));
+        let ink = Color32::from_rgb(0x1c, 0x1c, 0x22);
+        let sp = (rect.height() / 19.0).clamp(6.0, 16.0); // staff space
+        let half = sp / 2.0;
+        let cy = rect.center().y + sp * 0.5;
+        let y_of = |step: i32| cy - step as f32 * half;
+        let left = rect.left() + 14.0;
+        let right = rect.right() - 10.0;
+        for s in [2, 4, 6, 8, 10, -2, -4, -6, -8, -10] {
+            painter.line_segment([Pos2::new(left, y_of(s)), Pos2::new(right, y_of(s))], Stroke::new(1.0, ink.gamma_multiply(0.7)));
+        }
+        // brace-ish system line
+        painter.line_segment([Pos2::new(left, y_of(10)), Pos2::new(left, y_of(-10))], Stroke::new(2.0, ink));
+        let clef_x = left + 6.0;
+        if self.music_font {
+            self.glyph(&painter, '\u{E050}', clef_x, y_of(4), sp, ink); // G clef on G4 line
+            self.glyph(&painter, '\u{E062}', clef_x, y_of(-4), sp, ink); // F clef on F3 line
+        } else {
+            painter.text(Pos2::new(clef_x, y_of(6)), Align2::LEFT_CENTER, "G", FontId::proportional(sp * 3.0), ink);
+            painter.text(Pos2::new(clef_x, y_of(-6)), Align2::LEFT_CENTER, "F", FontId::proportional(sp * 3.0), ink);
+        }
+        let speller = self.speller();
+        let has_song = self.song.is_some();
+        let now_x = if has_song { left + (right - left) * 0.3 } else { right - 60.0 };
+        let px_per_s = 110.0f64;
+        let clip_left = left + sp * 4.0;
+        painter.line_segment([Pos2::new(now_x, y_of(14)), Pos2::new(now_x, y_of(-14))], Stroke::new(1.5, LIVE.gamma_multiply(0.5)));
+
+        let draw_note = |key: u8, x: f32, x_end: f32, col: Color32, tail: bool| {
+            if x < clip_left - 4.0 || x > right {
+                return;
+            }
+            let (step, acc) = theory::staff_step(&speller, key);
+            let treble = key >= 60;
+            let y = y_of(step);
+            // ledger lines
+            let mut ledgers: Vec<i32> = vec![];
+            if treble {
+                if step <= 0 {
+                    let mut s = 0;
+                    while s >= step {
+                        ledgers.push(s);
+                        s -= 2;
+                    }
+                }
+                let mut s = 12;
+                while s <= step {
+                    ledgers.push(s);
+                    s += 2;
+                }
+            } else {
+                if step >= 0 {
+                    ledgers.push(0);
+                }
+                let mut s = -12;
+                while s >= step {
+                    ledgers.push(s);
+                    s -= 2;
+                }
+            }
+            for l in ledgers {
+                painter.line_segment([Pos2::new(x - sp * 0.95, y_of(l)), Pos2::new(x + sp * 0.95, y_of(l))], Stroke::new(1.2, ink));
+            }
+            if tail && x_end > x + sp {
+                painter.line_segment([Pos2::new(x, y), Pos2::new(x_end.min(right), y)], Stroke::new(sp * 0.45, col.gamma_multiply(0.35)));
+            }
+            if self.music_font {
+                self.glyph(&painter, '\u{E0A4}', x - sp * 0.59, y, sp, col);
+                if acc != 0 {
+                    let g = match acc {
+                        -2 => '\u{E264}',
+                        -1 => '\u{E260}',
+                        1 => '\u{E262}',
+                        _ => '\u{E263}',
+                    };
+                    self.glyph(&painter, g, x - sp * 1.9, y, sp, col);
+                }
+            } else {
+                painter.circle_filled(Pos2::new(x, y), half * 1.1, col);
+                if acc != 0 {
+                    painter.text(Pos2::new(x - sp * 1.4, y), Align2::CENTER_CENTER, theory::acc_str(acc), FontId::proportional(sp * 1.6), col);
+                }
+            }
+        };
+
+        let now = now_s(&self.t0);
+        if let Some(song) = &self.song {
+            let pos = self.p.song_pos.get();
+            let back = ((now_x - clip_left) as f64) / px_per_s;
+            let ahead = ((right - now_x) as f64) / px_per_s;
+            for n in song.notes.iter() {
+                if n.start > pos + ahead {
+                    break;
+                }
+                if n.end < pos - back || n.ch == 9 {
+                    continue;
+                }
+                let yours = self.song_user & (1 << n.ch) != 0;
+                if self.song_user != 0 && !yours {
+                    continue; // only show your part when you've picked one
+                }
+                let x = now_x + ((n.start - pos) * px_per_s) as f32;
+                let xe = now_x + ((n.end - pos) * px_per_s) as f32;
+                let col = if yours { Color32::from_rgb(0xb0, 0x7a, 0x00) } else { ink };
+                draw_note(n.key, x, xe, col, true);
+            }
+        }
+        for b in &self.bars {
+            let end = b.end.unwrap_or(now);
+            let x = now_x - ((now - b.start) * px_per_s) as f32;
+            let xe = now_x - ((now - end) * px_per_s) as f32;
+            if xe < clip_left {
+                continue;
+            }
+            let mut col = match b.src {
+                src::LIVE => Color32::from_rgb(0xd9, 0x5f, 0x0e),
+                src::ARP => Color32::from_rgb(0x0a, 0x8c, 0xb0),
+                _ => Color32::from_rgb(0x6c, 0x45, 0xc8),
+            };
+            if self.scale_on && b.src == src::LIVE && self.scale_mask() & (1 << (b.key % 12)) == 0 {
+                col = Color32::from_rgb(0xd0, 0x20, 0x30);
+            }
+            draw_note(b.key, x, xe, col, true);
+        }
+        if self.scale_on && self.walk && !self.walk_seq.is_empty() {
+            let k = self.walk_seq[self.walk_pos];
+            let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
+            draw_note(k, now_x + 36.0, now_x + 36.0, Color32::from_rgb(0x2e, 0x9e, 0x4f).gamma_multiply(0.55 + 0.45 * pulse), false);
+            painter.text(Pos2::new(now_x + 36.0, y_of(15)), Align2::CENTER_CENTER, format!("next: {}", speller.name(k % 12)), FontId::proportional(13.0), Color32::from_rgb(0x2e, 0x9e, 0x4f));
+        }
+        // chord name in ink
+        let mut keys: Vec<u8> = (0..128u8).filter(|k| self.held[0][*k as usize] > 0).collect();
+        if keys.is_empty() {
+            keys = (0..128u8).filter(|k| self.held[2][*k as usize] > 0).collect();
+        }
+        if let Some((big, small)) = theory::name_chord(&keys, &speller) {
+            painter.text(Pos2::new(left + sp * 5.0, rect.top() + 4.0), Align2::LEFT_TOP, big, FontId::proportional(26.0), ink);
+            painter.text(Pos2::new(left + sp * 5.0, rect.top() + 34.0), Align2::LEFT_TOP, small, FontId::proportional(12.0), ink.gamma_multiply(0.6));
+        }
+    }
+
+    fn piano(&mut self, ui: &mut egui::Ui) {
+        let rect = ui.available_rect_before_wrap();
+        let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+        let painter = ui.painter_at(rect);
+        let now = now_s(&self.t0);
+        let mask = self.scale_mask();
+        let root_pc = ROOTS[self.s.scale_root].1;
+        let speller = self.speller();
+        let walk_target = if self.scale_on && self.walk { self.walk_seq.get(self.walk_pos).copied() } else { None };
+        let song_now: Vec<(u8, bool)> = match &self.song {
+            Some(s) => {
+                let pos = self.p.song_pos.get();
+                s.notes.iter().take_while(|n| n.start <= pos + 0.02).filter(|n| n.end > pos && n.ch != 9).map(|n| (n.key, self.song_user & (1 << n.ch) != 0)).collect()
+            }
+            None => vec![],
+        };
+        let state_col = |k: u8| -> Option<Color32> {
+            for s in 0..3 {
+                if self.held[s][k as usize] > 0 {
+                    return Some(SRC_COL[s]);
+                }
+            }
+            if let Some((_, yours)) = song_now.iter().find(|(kk, _)| *kk == k) {
+                return Some(if *yours { YOURS } else { SONG });
+            }
+            None
+        };
+        let bh = rect.height() * 0.62;
+        for black in [false, true] {
+            for k in KEY_LO..=KEY_HI {
+                let (x, w, b) = key_x(rect, k);
+                if b != black {
+                    continue;
+                }
+                let r = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(w, if b { bh } else { rect.height() }));
+                let base = if b { Color32::from_rgb(0x18, 0x19, 0x1c) } else { Color32::from_rgb(0xf4, 0xf1, 0xea) };
+                let mut fill = base;
+                if let Some(c) = state_col(k) {
+                    fill = c;
+                }
+                let wr = (now - self.wrong[k as usize]) as f32;
+                if wr < 0.45 {
+                    fill = BAD.gamma_multiply(1.0 - wr / 0.45 * 0.5);
+                }
+                let shrink = if b { 1.0 } else { 0.7 };
+                painter.rect_filled(r.shrink2(Vec2::new(shrink, 0.0)), if b { 3.0 } else { 4.0 }, fill);
+                if !b {
+                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+                }
+                // scale dots + names
+                if mask != 0 && mask & (1 << (k % 12)) != 0 {
+                    let is_root = k % 12 == root_pc;
+                    let cy = if b { r.bottom() - 10.0 } else { r.bottom() - 26.0 };
+                    let c = Pos2::new(r.center().x, cy);
+                    painter.circle_filled(c, if is_root { 6.0 } else { 4.5 }, if is_root { Color32::from_rgb(0x1f, 0x9d, 0x4c) } else { GOOD });
+                    if !b {
+                        painter.text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, speller.name(k % 12), FontId::proportional(10.5), Color32::from_rgb(0x1f, 0x7d, 0x3c));
+                    }
+                } else if !b && k % 12 == 0 {
+                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, format!("C{}", k / 12 - 1), FontId::proportional(10.0), Color32::from_gray(120));
+                }
+                if Some(k) == walk_target {
+                    let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
+                    painter.rect_stroke(r.shrink(1.5), 4.0, Stroke::new(3.0, YOURS.gamma_multiply(0.5 + 0.5 * pulse)), StrokeKind::Inside);
+                }
+                let rt = (now - self.right[k as usize]) as f32;
+                if rt < 0.35 && self.walk {
+                    painter.rect_stroke(r.shrink(1.0), 4.0, Stroke::new(3.0, GOOD.gamma_multiply(1.0 - rt / 0.35)), StrokeKind::Inside);
+                }
+            }
+        }
+        // mouse playing (with glissando)
+        let pointer_key = |pos: Pos2| -> Option<u8> {
+            if !rect.contains(pos) {
+                return None;
+            }
+            if pos.y < rect.top() + bh {
+                for k in KEY_LO..=KEY_HI {
+                    let (x, w, b) = key_x(rect, k);
+                    if b && pos.x >= x && pos.x < x + w {
+                        return Some(k);
+                    }
+                }
+            }
+            (KEY_LO..=KEY_HI).find(|&k| {
+                let (x, w, b) = key_x(rect, k);
+                !b && pos.x >= x && pos.x < x + w
+            })
+        };
+        let down = resp.is_pointer_button_down_on() || resp.dragged();
+        let target = if down { resp.interact_pointer_pos().and_then(pointer_key) } else { None };
+        if target != self.mouse_note {
+            if let Some(k) = self.mouse_note {
+                self.send_note(k, false);
+            }
+            if let Some(k) = target {
+                self.send_note(k, true);
+            }
+            self.mouse_note = target;
+        }
+    }
+
+    fn help(&mut self, ctx: &egui::Context) {
+        if !self.show_help {
+            return;
+        }
+        egui::Window::new("Keys & shortcuts").collapsible(false).resizable(false).open(&mut self.show_help).show(ctx, |ui| {
+            egui::Grid::new("help").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
+                for (k, v) in [
+                    ("A W S E D F T G Y H U J K O L P ;", "play notes (piano layout on your computer keys)"),
+                    ("Z / X", "octave down / up for computer keys"),
+                    ("← / →", "previous / next sound"),
+                    ("Space", "drums play / stop"),
+                    ("Enter", "looper: record → close → overdub → done"),
+                    ("Backspace", "undo last loop layer"),
+                    ("Esc", "panic: all notes off, stop loop"),
+                    ("Drag & drop", ".mid songs or .sf2 sound banks onto the window"),
+                    ("Knobs", "drag up/down, scroll, Shift = fine, double-click = reset"),
+                    ("MIDI", "any keyboard is picked up automatically, even if you plug it in later. Pads on channel 10 play drums. Program Change switches sounds."),
+                ] {
+                    ui.label(RichText::new(k).strong().monospace());
+                    ui.label(v);
+                    ui.end_row();
+                }
+            });
+        });
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump();
+        self.keyboard_input(ctx);
+        // drag & drop
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for f in dropped {
+            if let Some(p) = f.path {
+                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                match ext.as_str() {
+                    "sf2" => self.load_sf(p),
+                    "mid" | "midi" | "kar" => {
+                        self.load_song_path(&p);
+                        if !self.song_files.contains(&p) {
+                            self.song_files.insert(0, p);
+                        }
+                    }
+                    "mscz" | "musicxml" | "mxl" => self.song_err = Some("MuseScore files: use File › Export › MIDI for now (MusicXML import is planned)".into()),
+                    _ => {}
+                }
+            }
+        }
+
+        egui::TopBottomPanel::top("header").frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+            self.header(ui);
+            if let Some(e) = &self.load_err {
+                ui.label(RichText::new(e).color(BAD));
+            }
+        });
+        egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+            self.modules(ui);
+        });
+        egui::TopBottomPanel::bottom("piano")
+            .exact_height(132.0)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
+            .show(ctx, |ui| self.piano(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
+            self.learn_bar(ui);
+            ui.add_space(4.0);
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, Sense::hover());
+            match self.s.view {
+                0 => self.waterfall(ui, rect),
+                1 => self.score(ui, rect),
+                _ => {
+                    let split = rect.top() + rect.height() * 0.55;
+                    let top = Rect::from_min_max(rect.min, Pos2::new(rect.right(), split - 2.0));
+                    let bot = Rect::from_min_max(Pos2::new(rect.left(), split + 2.0), rect.max);
+                    self.score(ui, top);
+                    self.waterfall(ui, bot);
+                }
+            }
+        });
+        self.help(ctx);
+        let now = now_s(&self.t0);
+        self.autosave(now);
+        ctx.request_repaint();
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.s.pull_from(&self.p);
+        self.s.scale_on = self.scale_on;
+        self.s.save();
+    }
+}
+
+fn setup_style(ctx: &egui::Context) {
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = BG;
+    v.window_fill = PANEL;
+    v.extreme_bg_color = Color32::from_rgb(0x0d, 0x0f, 0x12);
+    v.widgets.inactive.weak_bg_fill = CARD_HI;
+    v.widgets.inactive.bg_fill = CARD_HI;
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x38, 0x3e, 0x48);
+    v.selection.bg_fill = LIVE.gamma_multiply(0.85);
+    v.selection.stroke = Stroke::new(1.0, Color32::BLACK);
+    ctx.set_visuals(v);
+    ctx.style_mut(|s| {
+        s.spacing.item_spacing = Vec2::new(6.0, 5.0);
+        s.spacing.button_padding = Vec2::new(7.0, 3.0);
+    });
+}
+
+/// Bravura (SIL OFL) for clefs/noteheads, plus a system symbol font for ♯ ♭ in text.
+fn setup_fonts(ctx: &egui::Context) -> bool {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("bravura".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/Bravura.otf"))));
+    fonts.families.insert(FontFamily::Name("music".into()), vec!["bravura".into()]);
+    let candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
+        "C:\\Windows\\Fonts\\seguisym.ttf",
+    ];
+    let mut added = false;
+    for c in candidates {
+        if let Ok(bytes) = std::fs::read(c) {
+            fonts.font_data.insert("symbols".into(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.families.entry(FontFamily::Proportional).or_default().push("symbols".into());
+            added = true;
+            break;
+        }
+    }
+    if !added {
+        fonts.families.entry(FontFamily::Proportional).or_default().push("bravura".into());
+    }
+    ctx.set_fonts(fonts);
+    true
+}

@@ -1,0 +1,65 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04   # older glibc = runs on more distros
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: package
+        run: |
+          mkdir -p dist/noodle
+          cp target/release/noodle packaging/noodle.desktop packaging/install.sh LICENSE README.md dist/noodle/
+          tar -C dist -czf noodle-linux-x86_64.tar.gz noodle
+      - uses: actions/upload-artifact@v4
+        with: { name: noodle-linux-x86_64, path: noodle-linux-x86_64.tar.gz }
+      - name: grab the FluidR3 GM bank (MIT licence) for the Windows bundle
+        run: |
+          sudo apt-get install -y fluid-soundfont-gm
+          mkdir -p sf
+          cp /usr/share/sounds/sf2/FluidR3_GM.sf2 sf/
+          cp /usr/share/doc/fluid-soundfont-gm/copyright sf/FluidR3_GM-LICENSE.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: soundfont, path: sf/ }
+
+  windows:
+    runs-on: windows-latest
+    needs: [linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/download-artifact@v4
+        with: { name: soundfont, path: dist/noodle/soundfonts }
+      - name: package
+        shell: bash
+        run: |
+          cp target/release/noodle.exe LICENSE README.md dist/noodle/
+          cd dist && 7z a ../noodle-windows-x86_64.zip noodle
+      - uses: actions/upload-artifact@v4
+        with: { name: noodle-windows-x86_64, path: noodle-windows-x86_64.zip }
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: noodle-* }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            noodle-linux-x86_64/noodle-linux-x86_64.tar.gz
+            noodle-windows-x86_64/noodle-windows-x86_64.zip

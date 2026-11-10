@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Noodle
+GenericName=Instant keyboard instrument
+Comment=Plug in a MIDI keyboard and play. Instantly.
+Exec=noodle
+Icon=audio-x-generic
+Terminal=false
+Categories=AudioVideo;Audio;Music;Education;
+Keywords=midi;piano;synth;keyboard;scales;looper;drums;
