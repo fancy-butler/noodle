@@ -13,6 +13,9 @@ use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Key, Pos2, Rect, R
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
+
+#[path = "game_screen.rs"]
+mod game_screen;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -449,7 +452,7 @@ impl App {
             wind_name: String::new(),
             scale_filter: String::new(),
             style_done: false,
-            game_mode: false,
+            game_mode: std::env::var("NOODLE_GAME").is_ok(),
             game: None,
             show_results: false,
             drone_running: false,
@@ -556,6 +559,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn game_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("🎮 GAME").strong().color(YOURS));
@@ -682,6 +686,23 @@ impl App {
     }
 
     fn range(&self) -> (u8, u8) {
+        // in a game, zoom the keys to the notes you have to play (whole octaves, at least two)
+        if let Some(g) = self.game.as_ref().filter(|_| self.game_mode) {
+            let mine = g.chart.notes.iter().filter(|n| g.mask & (1 << n.ch) != 0 && n.ch != 9).map(|n| n.key);
+            let (mut lo, mut hi) = (127u8, 0u8);
+            for k in mine {
+                lo = lo.min(k);
+                hi = hi.max(k);
+            }
+            if lo <= hi {
+                let lo = (lo / 12) * 12;
+                let mut hi = (hi / 12) * 12 + 12;
+                if hi - lo < 24 {
+                    hi = lo + 24;
+                }
+                return (lo.min(103), hi.min(127));
+            }
+        }
         let size = self.s.kb_size.clamp(12, 88);
         let lo = self.s.kb_lo.min(127 - size + 1);
         (lo, lo + size - 1)
@@ -1017,6 +1038,15 @@ impl App {
                 Key::Escape => {
                     let _ = self.tx.send(Cmd::Panic);
                     let _ = self.tx.send(Cmd::LoopStop);
+                    if self.game_mode {
+                        // playing → menu → out of Game mode
+                        if self.game.is_some() {
+                            let _ = self.tx.send(Cmd::SongPlay(false));
+                            self.game = None;
+                        } else {
+                            self.exit_game();
+                        }
+                    }
                 }
                 Key::ArrowLeft => self.step_preset(false, -1),
                 Key::ArrowRight => self.step_preset(false, 1),
@@ -2224,9 +2254,7 @@ impl App {
                 ui.label(RichText::new(line).size(11.5).color(text_dim()));
             }
         }
-        if self.game_mode {
-            self.game_bar(ui);
-        }
+
         // song bar
         ui.horizontal(|ui| {
             ui.label(RichText::new("Song").color(text_dim()));
@@ -2396,7 +2424,14 @@ impl App {
                     painter.rect_stroke(r, 3.0, Stroke::new(1.0, fg().gamma_multiply(0.5)), StrokeKind::Inside);
                 }
             }
-            // hit line
+            // hit line (glows in Game mode)
+            if self.game.is_some() {
+                for i in 0..12 {
+                    let h = 3.0 * i as f32;
+                    let band = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - h - 3.0), Pos2::new(rect.right(), rect.bottom() - h));
+                    painter.rect_filled(band, 0.0, YOURS.gamma_multiply(0.10 * (1.0 - i as f32 / 12.0)));
+                }
+            }
             painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0, YOURS.gamma_multiply(0.5)));
             if let Some(g) = self.game.as_ref() {
                 let now = now_s(&self.t0);
@@ -2421,13 +2456,6 @@ impl App {
                     painter.text(rect.center_top() + Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, format!("{}", g.combo), FontId::proportional(54.0 * pulse), YOURS.gamma_multiply(0.9));
                     painter.text(rect.center_top() + Vec2::new(0.0, 84.0), Align2::CENTER_CENTER, "COMBO", FontId::proportional(14.0), text_dim());
                 }
-                let mult = 1 + (g.combo / 25).min(3);
-                painter.text(rect.right_top() + Vec2::new(-14.0, 10.0), Align2::RIGHT_TOP, format!("{:07}", g.score), FontId::monospace(26.0), fg());
-                painter.text(rect.right_top() + Vec2::new(-14.0, 42.0), Align2::RIGHT_TOP, format!("{:.1}%  ·  ×{}", g.accuracy() * 100.0, mult), FontId::proportional(14.0), text_dim());
-                // progress
-                let prog = (self.p.song_pos.get() / g.chart.dur.max(0.1)).clamp(0.0, 1.0) as f32;
-                let bar = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width() * prog, 4.0));
-                painter.rect_filled(bar, 0.0, YOURS.gamma_multiply(0.8));
                 // streak glow
                 if g.combo >= 25 {
                     painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(3.0, YOURS.gamma_multiply(0.35)), StrokeKind::Inside);
@@ -2993,6 +3021,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn results(&mut self, ctx: &egui::Context) {
         if !self.show_results {
             return;
@@ -3190,7 +3219,7 @@ impl eframe::App for App {
                 ui.label(RichText::new(e).color(BAD));
             }
         });
-        if !self.s.hide_modules {
+        if !self.s.hide_modules && !self.game_mode {
             egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
                 self.modules(ui);
             });
@@ -3203,6 +3232,12 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
             .show(ctx, |ui| self.piano(ui));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
+            if self.game_mode {
+                let rect = ui.available_rect_before_wrap();
+                ui.allocate_rect(rect, Sense::hover());
+                self.game_screen(ui, rect);
+                return;
+            }
             self.learn_bar(ui);
             ui.add_space(4.0);
             let rect = ui.available_rect_before_wrap();
@@ -3221,7 +3256,6 @@ impl eframe::App for App {
         });
         self.help(ctx);
         self.game_tick();
-        self.results(ctx);
         self.pipe_picker(ctx);
         self.chart_window(ctx);
         self.tunes_window(ctx);
