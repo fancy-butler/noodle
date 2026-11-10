@@ -28,27 +28,87 @@ pub struct Scale {
 }
 
 pub const SCALES: &[Scale] = &[
-    Scale { name: "Major (Ionian)", group: "Irish / Scottish", steps: &[0, 2, 4, 5, 7, 9, 11], hint: "The backbone of Irish and Scottish tunes. D and G major sit right under a D whistle and the fiddle." },
-    Scale { name: "Mixolydian", group: "Irish / Scottish", steps: &[0, 2, 4, 5, 7, 9, 10], hint: "Major with a flat 7th. All over reels and pipe tunes (A Mixolydian on a D whistle = same holes as D major)." },
-    Scale { name: "Dorian", group: "Irish / Scottish", steps: &[0, 2, 3, 5, 7, 9, 10], hint: "Minor with a raised 6th. E Dorian and A Dorian are classic minor-ish session keys." },
-    Scale { name: "Aeolian (Natural minor)", group: "Irish / Scottish", steps: &[0, 2, 3, 5, 7, 8, 10], hint: "Plain natural minor; E minor and B minor tunes on a D whistle." },
-    Scale { name: "Major pentatonic", group: "Irish / Scottish", steps: &[0, 2, 4, 7, 9], hint: "Five notes, no 4th or 7th. Very old-school Scottish/Gaelic sound." },
+    // ---- everyday
+    Scale { name: "Major (Ionian)", group: "Everyday", steps: &[0, 2, 4, 5, 7, 9, 11], hint: "Do-re-mi. Most pop, folk, hymns and kids' songs." },
+    Scale { name: "Natural minor (Aeolian)", group: "Everyday", steps: &[0, 2, 3, 5, 7, 8, 10], hint: "The plain, sad-sounding minor; tons of rock and ballads." },
+    Scale { name: "Harmonic minor", group: "Everyday", steps: &[0, 2, 3, 5, 7, 8, 11], hint: "Minor with a raised 7th: that classical / Middle-Eastern pull back to the root." },
+    Scale { name: "Melodic minor", group: "Everyday", steps: &[0, 2, 3, 5, 7, 9, 11], hint: "Jazz minor (same up and down). Parent of lots of jazz scales." },
+    Scale { name: "Major pentatonic", group: "Everyday", steps: &[0, 2, 4, 7, 9], hint: "Five notes, no clashes. Folk, country, Celtic, Chinese and West African tunes all live here." },
+    Scale { name: "Minor pentatonic", group: "Everyday", steps: &[0, 3, 5, 7, 10], hint: "The rock / blues solo box." },
+    Scale { name: "Blues", group: "Everyday", steps: &[0, 3, 5, 6, 7, 10], hint: "Minor pentatonic + the flat-5 blue note." },
+    Scale { name: "Major blues", group: "Everyday", steps: &[0, 2, 3, 4, 7, 9], hint: "Major pentatonic + the minor 3rd you slide off. Country, gospel, Motown." },
+    // ---- church modes
+    Scale { name: "Dorian", group: "Modes", steps: &[0, 2, 3, 5, 7, 9, 10], hint: "Minor with a bright 6th. Funk, Santana, 'So What', lots of folk." },
+    Scale { name: "Phrygian", group: "Modes", steps: &[0, 1, 3, 5, 7, 8, 10], hint: "Minor with a flat 2nd — dark, Spanish, metal." },
+    Scale { name: "Lydian", group: "Modes", steps: &[0, 2, 4, 6, 7, 9, 11], hint: "Major with a raised 4th — dreamy, film-score floaty." },
+    Scale { name: "Mixolydian", group: "Modes", steps: &[0, 2, 4, 5, 7, 9, 10], hint: "Major with a flat 7th — rock, blues, bagpipes." },
+    Scale { name: "Locrian", group: "Modes", steps: &[0, 1, 3, 5, 6, 8, 10], hint: "Diminished root chord; unstable, mostly a jazz/metal colour." },
+    // ---- Irish / Scottish
+    Scale { name: "Irish/Scottish: Major (Ionian)", group: "Irish / Scottish", steps: &[0, 2, 4, 5, 7, 9, 11], hint: "Backbone of Irish and Scottish tunes. D and G major sit right under a D whistle and the fiddle." },
+    Scale { name: "Irish/Scottish: Mixolydian", group: "Irish / Scottish", steps: &[0, 2, 4, 5, 7, 9, 10], hint: "Major with a flat 7th. All over reels and pipe tunes (A Mixolydian on a D whistle = same holes as D major)." },
+    Scale { name: "Irish/Scottish: Dorian", group: "Irish / Scottish", steps: &[0, 2, 3, 5, 7, 9, 10], hint: "Minor with a raised 6th. E Dorian and A Dorian are classic minor-ish session keys." },
+    Scale { name: "Irish/Scottish: Aeolian", group: "Irish / Scottish", steps: &[0, 2, 3, 5, 7, 8, 10], hint: "Plain natural minor; E minor and B minor tunes on a D whistle." },
+    Scale { name: "Irish/Scottish: Pentatonic", group: "Irish / Scottish", steps: &[0, 2, 4, 7, 9], hint: "No 4th or 7th. Very old-school Scottish / Gaelic sound." },
+    // ---- klezmer
     Scale { name: "Freygish (Ahava Rabboh)", group: "Klezmer", steps: &[0, 1, 4, 5, 7, 8, 10], hint: "THE klezmer mode: flat 2nd + major 3rd gives that augmented-2nd cry. Also called Phrygian dominant." },
-    Scale { name: "Mi Sheberach (Ukrainian Dorian)", group: "Klezmer", steps: &[0, 2, 3, 6, 7, 9, 10], hint: "Minor with a raised 4th — the doina / terkisher sound." },
-    Scale { name: "Harmonic minor", group: "Klezmer", steps: &[0, 2, 3, 5, 7, 8, 11], hint: "Natural minor with a raised 7th. Freygish is this scale started from its 5th." },
+    Scale { name: "Mi Sheberach (Ukrainian Dorian)", group: "Klezmer", steps: &[0, 2, 3, 6, 7, 9, 10], hint: "Minor with a raised 4th — the doina / terkisher sound. Also called Dorian ♯4 / Romanian minor." },
+    Scale { name: "Klezmer harmonic minor", group: "Klezmer", steps: &[0, 2, 3, 5, 7, 8, 11], hint: "Natural minor with a raised 7th. Freygish is this scale started from its 5th." },
     Scale { name: "Adonai Malach (≈ Mixolydian)", group: "Klezmer", steps: &[0, 2, 4, 5, 7, 9, 10], hint: "Major with a flat 7th; in practice players often flatten the 3rd up high." },
     Scale { name: "Magen Avot (≈ natural minor)", group: "Klezmer", steps: &[0, 2, 3, 5, 7, 8, 10], hint: "Basically natural minor, used for slower, darker pieces." },
-    Scale { name: "Natural minor", group: "Classic", steps: &[0, 2, 3, 5, 7, 8, 10], hint: "" },
-    Scale { name: "Melodic minor", group: "Classic", steps: &[0, 2, 3, 5, 7, 9, 11], hint: "Jazz melodic minor (same up and down)." },
-    Scale { name: "Phrygian", group: "Classic", steps: &[0, 1, 3, 5, 7, 8, 10], hint: "" },
-    Scale { name: "Lydian", group: "Classic", steps: &[0, 2, 4, 6, 7, 9, 11], hint: "" },
-    Scale { name: "Locrian", group: "Classic", steps: &[0, 1, 3, 5, 6, 8, 10], hint: "" },
-    Scale { name: "Minor pentatonic", group: "Classic", steps: &[0, 3, 5, 7, 10], hint: "" },
-    Scale { name: "Blues", group: "Classic", steps: &[0, 3, 5, 6, 7, 10], hint: "Minor pentatonic plus the flat 5 'blue note'." },
-    Scale { name: "Double harmonic", group: "Classic", steps: &[0, 1, 4, 5, 7, 8, 11], hint: "Byzantine / Arabic Hijaz-Kar flavour." },
-    Scale { name: "Whole tone", group: "Classic", steps: &[0, 2, 4, 6, 8, 10], hint: "" },
-    Scale { name: "Chromatic", group: "Classic", steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], hint: "" },
+    // ---- jazz
+    Scale { name: "Bebop dominant", group: "Jazz", steps: &[0, 2, 4, 5, 7, 9, 10, 11], hint: "Mixolydian + a passing major 7th so chord tones land on the beat." },
+    Scale { name: "Bebop major", group: "Jazz", steps: &[0, 2, 4, 5, 7, 8, 9, 11], hint: "Major + a passing ♯5/♭6." },
+    Scale { name: "Bebop minor (Dorian)", group: "Jazz", steps: &[0, 2, 3, 4, 5, 7, 9, 10], hint: "Dorian + a passing major 3rd." },
+    Scale { name: "Lydian dominant", group: "Jazz", steps: &[0, 2, 4, 6, 7, 9, 10], hint: "Mixolydian with a ♯4. Over 7♯11 chords; also 'the Simpsons scale'." },
+    Scale { name: "Altered (Super Locrian)", group: "Jazz", steps: &[0, 1, 3, 4, 6, 8, 10], hint: "Every tension at once, over an altered dominant (7alt)." },
+    Scale { name: "Lydian augmented", group: "Jazz", steps: &[0, 2, 4, 6, 8, 9, 11], hint: "Lydian with a ♯5. Over maj7♯5." },
+    Scale { name: "Dorian ♭2 (Phrygian ♮6)", group: "Jazz", steps: &[0, 1, 3, 5, 7, 9, 10], hint: "2nd mode of melodic minor. Over sus♭9 chords." },
+    Scale { name: "Mixolydian ♭6", group: "Jazz", steps: &[0, 2, 4, 5, 7, 8, 10], hint: "Major-ish bottom, minor-ish top. Also called Aeolian dominant / Hindu." },
+    Scale { name: "Locrian ♮2 (half-diminished)", group: "Jazz", steps: &[0, 2, 3, 5, 6, 8, 10], hint: "Over m7♭5 chords." },
+    Scale { name: "Diminished (half-whole)", group: "Jazz", steps: &[0, 1, 3, 4, 6, 7, 9, 10], hint: "Symmetric 8-note scale over 7♭9 chords." },
+    Scale { name: "Diminished (whole-half)", group: "Jazz", steps: &[0, 2, 3, 5, 6, 8, 9, 11], hint: "Symmetric 8-note scale over dim7 chords." },
+    Scale { name: "Harmonic major", group: "Jazz", steps: &[0, 2, 4, 5, 7, 8, 11], hint: "Major with a ♭6. Bittersweet." },
+    // ---- harmonic minor modes
+    Scale { name: "Phrygian dominant", group: "Harmonic-minor modes", steps: &[0, 1, 4, 5, 7, 8, 10], hint: "Same as Freygish. Flamenco, Arabic Hijaz (approx.), metal." },
+    Scale { name: "Locrian ♮6", group: "Harmonic-minor modes", steps: &[0, 1, 3, 5, 6, 9, 10], hint: "2nd mode of harmonic minor." },
+    Scale { name: "Ionian ♯5", group: "Harmonic-minor modes", steps: &[0, 2, 4, 5, 8, 9, 11], hint: "3rd mode of harmonic minor." },
+    Scale { name: "Lydian ♯2", group: "Harmonic-minor modes", steps: &[0, 3, 4, 6, 7, 9, 11], hint: "6th mode of harmonic minor. Exotic, bright." },
+    Scale { name: "Ultralocrian", group: "Harmonic-minor modes", steps: &[0, 1, 3, 4, 6, 8, 9], hint: "7th mode of harmonic minor (diminished-7th flavour)." },
+    // ---- Middle East / Balkans / Romani / Spain
+    Scale { name: "Double harmonic (Byzantine)", group: "Middle East / Balkans / Spain", steps: &[0, 1, 4, 5, 7, 8, 11], hint: "Two augmented 2nds. Arabic Hijaz Kar, Indian Bhairav. 12-tone approximation — real maqamat use quarter tones." },
+    Scale { name: "Hungarian minor (Gypsy minor)", group: "Middle East / Balkans / Spain", steps: &[0, 2, 3, 6, 7, 8, 11], hint: "Harmonic minor with a ♯4." },
+    Scale { name: "Hungarian major", group: "Middle East / Balkans / Spain", steps: &[0, 3, 4, 6, 7, 9, 10], hint: "♯2, ♯4, ♭7 — unusual and bright." },
+    Scale { name: "Neapolitan minor", group: "Middle East / Balkans / Spain", steps: &[0, 1, 3, 5, 7, 8, 11], hint: "Harmonic minor with a ♭2." },
+    Scale { name: "Neapolitan major", group: "Middle East / Balkans / Spain", steps: &[0, 1, 3, 5, 7, 9, 11], hint: "Melodic minor with a ♭2." },
+    Scale { name: "Persian", group: "Middle East / Balkans / Spain", steps: &[0, 1, 4, 5, 6, 8, 11], hint: "Very chromatic, ♭5 and ♭6." },
+    Scale { name: "Spanish 8-tone (flamenco)", group: "Middle East / Balkans / Spain", steps: &[0, 1, 3, 4, 5, 6, 8, 10], hint: "Phrygian with both 3rds (and a ♭5) — flamenco guitar territory." },
+    // ---- East Asia / Indonesia
+    Scale { name: "Hirajoshi", group: "East Asia", steps: &[0, 2, 3, 7, 8], hint: "Japanese koto tuning." },
+    Scale { name: "In (Miyako-bushi)", group: "East Asia", steps: &[0, 1, 5, 7, 8], hint: "Japanese — the 'Sakura' sound." },
+    Scale { name: "Insen", group: "East Asia", steps: &[0, 1, 5, 7, 10], hint: "Japanese, shakuhachi-ish." },
+    Scale { name: "Iwato", group: "East Asia", steps: &[0, 1, 5, 6, 10], hint: "Japanese, very dark." },
+    Scale { name: "Kumoi", group: "East Asia", steps: &[0, 2, 3, 7, 9], hint: "Japanese, gentle minor." },
+    Scale { name: "Yo", group: "East Asia", steps: &[0, 2, 5, 7, 9], hint: "Japanese folk (no semitones)." },
+    Scale { name: "Ryukyu (Okinawa)", group: "East Asia", steps: &[0, 4, 5, 7, 11], hint: "Okinawan — bright and sunny." },
+    Scale { name: "Pelog (approx.)", group: "East Asia", steps: &[0, 1, 3, 7, 8], hint: "Balinese/Javanese gamelan, squeezed into 12-tone tuning." },
+    // ---- India (thaats, 12-tone approximations)
+    Scale { name: "Bhairav", group: "India (thaat, approx.)", steps: &[0, 1, 4, 5, 7, 8, 11], hint: "Morning raga family. (Bilawal = Major, Kafi = Dorian, Khamaj = Mixolydian, Asavari = Aeolian, Bhairavi = Phrygian, Kalyan = Lydian.)" },
+    Scale { name: "Todi", group: "India (thaat, approx.)", steps: &[0, 1, 3, 6, 7, 8, 11], hint: "♭2, ♭3, ♯4, ♭6 — intense." },
+    Scale { name: "Purvi", group: "India (thaat, approx.)", steps: &[0, 1, 4, 6, 7, 8, 11], hint: "Evening raga family." },
+    Scale { name: "Marwa", group: "India (thaat, approx.)", steps: &[0, 1, 4, 6, 7, 9, 11], hint: "Sunset raga family." },
+    // ---- symmetric & oddballs
+    Scale { name: "Whole tone", group: "Symmetric & strange", steps: &[0, 2, 4, 6, 8, 10], hint: "No semitones — dream sequences, Debussy." },
+    Scale { name: "Augmented", group: "Symmetric & strange", steps: &[0, 3, 4, 7, 8, 11], hint: "Two augmented triads interlocked." },
+    Scale { name: "Tritone", group: "Symmetric & strange", steps: &[0, 1, 4, 6, 7, 10], hint: "Two major triads a tritone apart." },
+    Scale { name: "Prometheus", group: "Symmetric & strange", steps: &[0, 2, 4, 6, 9, 10], hint: "Scriabin's 'mystic' sound." },
+    Scale { name: "Enigmatic", group: "Symmetric & strange", steps: &[0, 1, 4, 6, 8, 10, 11], hint: "Verdi's puzzle scale." },
+    Scale { name: "Messiaen mode 3", group: "Symmetric & strange", steps: &[0, 2, 3, 4, 6, 7, 8, 10, 11], hint: "Whole-half-half, repeated." },
+    Scale { name: "Chromatic", group: "Symmetric & strange", steps: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], hint: "Everything." },
 ];
+
+pub fn scale_index(name: &str) -> usize {
+    SCALES.iter().position(|s| s.name == name).unwrap_or(0)
+}
 
 const LETTER_PC: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
 const LETTERS: [&str; 7] = ["C", "D", "E", "F", "G", "A", "B"];
@@ -263,13 +323,27 @@ mod tests {
     #[test]
     fn spelling() {
         // D harmonic minor
-        let s = Speller::for_scale(2, &SCALES[7]);
-        let names: Vec<String> = SCALES[7].steps.iter().map(|x| s.name((2 + x) % 12)).collect();
+        let hm = &SCALES[scale_index("Harmonic minor")];
+        let s = Speller::for_scale(2, hm);
+        let names: Vec<String> = hm.steps.iter().map(|x| s.name((2 + x) % 12)).collect();
         assert_eq!(names.join(" "), "D E F G A B♭ C♯");
         // E freygish
-        let s = Speller::for_scale(4, &SCALES[5]);
-        let names: Vec<String> = SCALES[5].steps.iter().map(|x| s.name((4 + x) % 12)).collect();
+        let fr = &SCALES[scale_index("Freygish (Ahava Rabboh)")];
+        let s = Speller::for_scale(4, fr);
+        let names: Vec<String> = fr.steps.iter().map(|x| s.name((4 + x) % 12)).collect();
         assert_eq!(names.join(" "), "E F G♯ A B C D");
+        // A Lydian ♯2: A B♯ C♯ D♯ E F♯ G♯ ; C Altered: C D♭ E♭ F♭ G♭ A♭ B♭
+        let l2 = &SCALES[scale_index("Lydian ♯2")];
+        let s = Speller::for_scale(9, l2);
+        let names: Vec<String> = l2.steps.iter().map(|x| s.name((9 + x) % 12)).collect();
+        assert_eq!(names.join(" "), "A B♯ C♯ D♯ E F♯ G♯");
+        let alt = &SCALES[scale_index("Altered (Super Locrian)")];
+        let s = Speller::for_scale(0, alt);
+        let names: Vec<String> = alt.steps.iter().map(|x| s.name(x % 12)).collect();
+        assert_eq!(names.join(" "), "C D♭ E♭ F♭ G♭ A♭ B♭");
+        for sc in SCALES {
+            assert!(sc.steps[0] == 0 && sc.steps.windows(2).all(|w| w[0] < w[1] && w[1] < 12), "{}", sc.name);
+        }
         // middle C on staff = 0, E4 = 2, B3 = -1
         let d = Speller::default_sharps();
         assert_eq!(staff_step(&d, 60).0, 0);

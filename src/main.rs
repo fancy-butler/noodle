@@ -196,7 +196,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     render(1.0, "loop stopped (tail)", &mut eng);
 
     // song playback through the second synth
-    let up: Vec<u8> = theory::SCALES[5].steps.iter().map(|s| 62 + s).chain(std::iter::once(74)).collect();
+    let up: Vec<u8> = theory::SCALES[theory::scale_index("Freygish (Ahava Rabboh)")].steps.iter().map(|s| 62 + s).chain(std::iter::once(74)).collect();
     let s = song::scale_song(&up, 160.0, 0, 71);
     let dur = s.dur;
     tx.send(Cmd::LoadSong(Some(Arc::new(s)))).unwrap();
@@ -226,6 +226,49 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if !waiting || p.song_pos.get() <= pos_before {
         fails.push("wait mode didn't pause/resume".into());
     }
+
+    // controller mapping: MiniLab 3 knob 1 (CC74) → filter, fader 1 (CC82) → volume, encoder (CC114) → browse
+    p.cc_map[74].store(engine::target::FILTER, Relaxed);
+    p.cc_map[82].store(engine::target::MASTER, Relaxed);
+    p.cc_map[114].store(engine::target::BROWSE, Relaxed);
+    p.cc_map[102].store(engine::target::PAD0, Relaxed);
+    while urx.try_recv().is_ok() {}
+    tx.send(Cmd::Midi([0xB0, 74, 32])).unwrap();
+    tx.send(Cmd::Midi([0xB0, 82, 127])).unwrap();
+    tx.send(Cmd::Midi([0xB0, 114, 65])).unwrap();
+    tx.send(Cmd::Midi([0xB0, 102, 100])).unwrap();
+    render(0.05, "controller CCs", &mut eng);
+    let (mut browse, mut pad) = (0, 0);
+    while let Ok(e) = urx.try_recv() {
+        match e {
+            UiEvt::Browse(d) => browse += d as i32,
+            UiEvt::Pad { vel, .. } if vel > 0 => pad += 1,
+            _ => {}
+        }
+    }
+    println!("  CC74→filter {:.2}, CC82→volume {:.2}, encoder steps {browse}, pad hits {pad}", p.cutoff.get(), p.master.get());
+    if (p.cutoff.get() - 32.0 / 127.0).abs() > 0.01 || p.master.get() < 0.99 || browse != 1 || pad != 1 {
+        fails.push("controller mapping".into());
+    }
+    p.master.set(0.8);
+
+    // wind controller: breath (CC2) must control loudness
+    p.wind_on.store(true, Relaxed);
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 66 }).unwrap(); // tenor sax
+    tx.send(Cmd::Midi([0xB0, 2, 120])).unwrap();
+    tx.send(note(62, true)).unwrap();
+    render(0.1, "  (wind settle)", &mut eng);
+    let loud = render(0.6, "wind: sax, strong breath", &mut eng);
+    tx.send(Cmd::Midi([0xB0, 2, 25])).unwrap();
+    render(0.1, "  (breath drops)", &mut eng);
+    let soft = render(0.6, "wind: sax, soft breath", &mut eng);
+    tx.send(note(62, false)).unwrap();
+    println!("  breath lock = CC{}, rms strong {:.4} vs soft {:.4}", p.breath_locked.load(Relaxed), loud.1, soft.1);
+    if soft.1 * 2.0 > loud.1 || p.breath_locked.load(Relaxed) != 2 {
+        fails.push("breath doesn't control volume".into());
+    }
+    p.wind_on.store(false, Relaxed);
+    render(0.3, "  (wind off)", &mut eng);
 
     // UI events made it out
     let mut notes = 0;

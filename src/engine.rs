@@ -59,6 +59,48 @@ pub mod src {
     pub const LOOP: u8 = 2;
 }
 
+/// What a mapped MIDI CC controls (Params::cc_map).
+pub mod target {
+    pub const NONE: u8 = 0;
+    pub const FILTER: u8 = 1;
+    pub const RESO: u8 = 2;
+    pub const DRIVE: u8 = 3;
+    pub const DELAY: u8 = 4;
+    pub const REVERB: u8 = 5;
+    pub const REPEATS: u8 = 6;
+    pub const CHORUS: u8 = 7;
+    pub const ARP_GATE: u8 = 8;
+    pub const MASTER: u8 = 9;
+    pub const LAYER_VOL: u8 = 10;
+    pub const DRUM_VOL: u8 = 11;
+    pub const SONG_VOL: u8 = 12;
+    pub const SWING: u8 = 13;
+    pub const BROWSE: u8 = 20;
+    pub const CATEGORY: u8 = 21;
+    pub const PAD0: u8 = 30; // 30..37 → drum rows
+
+    pub fn name(t: u8) -> &'static str {
+        match t {
+            FILTER => "Filter",
+            RESO => "Reso",
+            DRIVE => "Drive",
+            DELAY => "Delay",
+            REVERB => "Reverb",
+            REPEATS => "Repeats",
+            CHORUS => "Chorus",
+            ARP_GATE => "Arp gate",
+            MASTER => "Volume",
+            LAYER_VOL => "Layer",
+            DRUM_VOL => "Drums",
+            SONG_VOL => "Song",
+            SWING => "Swing",
+            BROWSE => "Sounds",
+            CATEGORY => "Category",
+            _ => "—",
+        }
+    }
+}
+
 pub mod lstate {
     pub const EMPTY: u8 = 0;
     pub const REC: u8 = 1;
@@ -118,6 +160,14 @@ pub struct Params {
     pub sample_rate: AtomicU32,
     pub synth_ready: AtomicBool,
     pub beat: AF64,
+    pub cc_map: [AtomicU8; 128],
+    // wind controllers (EWI, Aerophone…): breath → expression
+    pub wind_on: AtomicBool,
+    pub breath_src: AtomicU8, // 0 auto, 2/7/11 = that CC, 200 = aftertouch
+    pub breath_curve: AF32,   // 0 soft … 0.5 linear … 1 hard
+    pub breath_filter: AF32,  // how much breath opens the filter
+    pub breath_val: AF32,     // engine → UI
+    pub breath_locked: AtomicU8,
 }
 
 impl Params {
@@ -167,6 +217,13 @@ impl Params {
             sample_rate: AtomicU32::new(48000),
             synth_ready: AtomicBool::new(false),
             beat: AF64::new(0.0),
+            cc_map: std::array::from_fn(|_| AtomicU8::new(0)),
+            wind_on: AtomicBool::new(false),
+            breath_src: AtomicU8::new(0),
+            breath_curve: AF32::new(0.5),
+            breath_filter: AF32::new(0.0),
+            breath_val: AF32::new(1.0),
+            breath_locked: AtomicU8::new(0),
         }
     }
 }
@@ -197,6 +254,14 @@ pub enum UiEvt {
     Program { bank: i32, prog: i32 },
     Trash(Box<SynthPair>),
     TrashSong(Arc<Song>),
+    /// every incoming CC (for the controller view)
+    Cc { cc: u8, val: u8 },
+    Bend(i16),
+    /// drum pad hit: note number on channel 10, or mapped pad index
+    Pad { note: u8, vel: u8 },
+    /// relative encoder: browse sounds / categories
+    Browse(i8),
+    Category(i8),
 }
 
 #[derive(Clone, Copy)]
@@ -272,6 +337,9 @@ pub struct Engine {
     wait_keys: [bool; 128],
     waiting: bool,
     wait_done_t: f64,
+    enc_last: [u8; 128],
+    breath_lock: u8,
+    wind_was: bool,
 }
 
 #[inline]
@@ -345,6 +413,9 @@ impl Engine {
             wait_keys: [false; 128],
             waiting: false,
             wait_done_t: -1.0,
+            enc_last: [64; 128],
+            breath_lock: 0,
+            wind_was: false,
         }
     }
 
@@ -525,6 +596,7 @@ impl Engine {
         if ch == 9 && (st == 0x90 || st == 0x80) {
             // drum pads on channel 10 play the drum kit
             let on = st == 0x90 && m[2] > 0;
+            let _ = self.tx.try_send(UiEvt::Pad { note: m[1], vel: if on { m[2] } else { 0 } });
             if on {
                 self.msg(DRUM_CH, 0x90, m[1] as i32, m[2] as i32);
             } else {
@@ -533,11 +605,45 @@ impl Engine {
             self.lp_record(9, if on { 0x90 } else { 0x80 }, m[1], m[2]);
             return;
         }
+        if self.p.wind_on.load(Relaxed) {
+            let id = match st {
+                0xB0 if matches!(m[1], 2 | 7 | 11) => m[1],
+                0xD0 | 0xA0 => 200,
+                _ => 0,
+            };
+            if id != 0 {
+                let val = if st == 0xD0 { m[1] } else { m[2] };
+                let want = self.p.breath_src.load(Relaxed);
+                let accept = if want == 0 {
+                    // lock onto the first breath-type message we see (EWIs can send several at once)
+                    if self.breath_lock == 0 {
+                        self.breath_lock = id;
+                        self.p.breath_locked.store(id, Relaxed);
+                    }
+                    self.breath_lock == id
+                } else {
+                    want == id
+                };
+                if st == 0xB0 {
+                    let _ = self.tx.try_send(UiEvt::Cc { cc: m[1], val });
+                }
+                if accept {
+                    self.breath(val);
+                }
+                return;
+            }
+        }
         match st {
             0x90 if m[2] > 0 => self.live_on(m[1] & 0x7F, m[2]),
             0x90 | 0x80 => self.live_off(m[1] & 0x7F),
             0xB0 => {
                 let cc = m[1];
+                let _ = self.tx.try_send(UiEvt::Cc { cc, val: m[2] });
+                let t = self.p.cc_map[(cc & 0x7F) as usize].load(Relaxed);
+                if t != target::NONE {
+                    self.apply_target(t, cc, m[2]);
+                    return; // mapped controls don't leak into the synth
+                }
                 if cc == 0 || cc == 32 {
                     return; // bank select handled by the browser
                 }
@@ -551,6 +657,10 @@ impl Engine {
                 }
             }
             0xE0 | 0xD0 | 0xA0 => {
+                if st == 0xE0 {
+                    let v = ((m[2] as i16) << 7 | m[1] as i16) - 8192;
+                    let _ = self.tx.try_send(UiEvt::Bend(v));
+                }
                 for c in [MAIN_CH, LAYER_CH] {
                     self.msg(c, st as i32, m[1] as i32, m[2] as i32);
                     self.lp_record(c as u8, st, m[1], m[2]);
@@ -561,6 +671,66 @@ impl Engine {
                 self.main_prog = (bank, m[1] as i32);
                 self.set_program(MAIN_CH, bank, m[1] as i32);
                 let _ = self.tx.try_send(UiEvt::Program { bank, prog: m[1] as i32 });
+            }
+            _ => {}
+        }
+    }
+
+    /// Breath → expression (CC11) on the playing channels, with a response curve.
+    fn breath(&mut self, val: u8) {
+        let x = val as f32 / 127.0;
+        let c = self.p.breath_curve.get().clamp(0.0, 1.0);
+        let e = 2f32.powf((c - 0.5) * 3.0); // soft <1 … hard >1
+        let y = x.powf(e);
+        self.p.breath_val.set(y);
+        let v = (y * 127.0).round() as u8;
+        for ch in [MAIN_CH, LAYER_CH] {
+            self.msg(ch, 0xB0, 11, v as i32);
+            self.lp_record(ch as u8, 0xB0, 11, v);
+        }
+    }
+
+    /// Relative encoders send small offsets around 64; absolute ones jump around.
+    fn enc_dir(&mut self, cc: u8, val: u8) -> i8 {
+        let d = if (56..=72).contains(&val) {
+            (val as i16 - 64).signum() as i8
+        } else {
+            (val as i16 - self.enc_last[cc as usize] as i16).signum() as i8
+        };
+        self.enc_last[cc as usize] = val;
+        d
+    }
+
+    fn apply_target(&mut self, t: u8, cc: u8, val: u8) {
+        let v = val as f32 / 127.0;
+        let p = &self.p;
+        match t {
+            target::FILTER => p.cutoff.set(v),
+            target::RESO => p.resonance.set(v),
+            target::DRIVE => p.drive.set(v),
+            target::DELAY => p.delay_mix.set(v),
+            target::REVERB => p.reverb.set(v),
+            target::REPEATS => p.delay_fb.set(v),
+            target::CHORUS => p.chorus.set(v),
+            target::ARP_GATE => p.arp_gate.set(v.max(0.05)),
+            target::MASTER => p.master.set(v),
+            target::LAYER_VOL => p.layer_vol.set(v),
+            target::DRUM_VOL => p.drum_vol.set(v),
+            target::SONG_VOL => p.song_vol.set(v),
+            target::SWING => p.swing.set(v),
+            target::BROWSE | target::CATEGORY => {
+                let d = self.enc_dir(cc, val);
+                if d != 0 {
+                    let _ = self.tx.try_send(if t == target::BROWSE { UiEvt::Browse(d) } else { UiEvt::Category(d) });
+                }
+            }
+            x if (target::PAD0..target::PAD0 + DRUM_ROWS as u8).contains(&x) => {
+                let row = (x - target::PAD0) as usize;
+                if val > 0 {
+                    self.msg(DRUM_CH, 0x90, DRUM_NOTES[row] as i32, val as i32);
+                    self.lp_record(9, 0x90, DRUM_NOTES[row], val);
+                }
+                let _ = self.tx.try_send(UiEvt::Pad { note: 36 + row as u8, vel: val });
             }
             _ => {}
         }
@@ -1100,6 +1270,19 @@ impl Engine {
             return;
         }
         self.apply_params();
+        let wind = self.p.wind_on.load(Relaxed);
+        if wind != self.wind_was {
+            self.wind_was = wind;
+            self.breath_lock = 0;
+            self.p.breath_locked.store(0, Relaxed);
+            self.p.breath_val.set(1.0);
+            for ch in [MAIN_CH, LAYER_CH] {
+                self.msg(ch, 0xB0, 11, 127);
+            }
+        }
+        if self.p.breath_src.load(Relaxed) != 0 {
+            self.breath_lock = 0;
+        }
         let mut done = 0;
         let sr = self.sr;
         while done < n {
@@ -1127,7 +1310,11 @@ impl Engine {
             let dcomp = 1.0 / (1.0 + drive * 2.5);
             let master = self.p.master.get();
             // filter
-            let target = self.p.cutoff.get().clamp(0.0, 1.0);
+            let mut target = self.p.cutoff.get().clamp(0.0, 1.0);
+            if wind {
+                let bf = self.p.breath_filter.get().clamp(0.0, 1.0);
+                target *= 1.0 - bf * 0.85 * (1.0 - self.p.breath_val.get());
+            }
             self.cut_s += (target - self.cut_s) * 0.2;
             let filt_on = self.cut_s < 0.995;
             let fc = 40.0 * 500f32.powf(self.cut_s);

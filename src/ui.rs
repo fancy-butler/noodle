@@ -8,7 +8,7 @@ use crate::song::{self, Song};
 use crate::sounds::{self, Loaded, PresetInfo, GM_FAMILIES};
 use crate::theory::{self, Speller, ROOTS, SCALES};
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Key, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering::Relaxed;
@@ -31,8 +31,6 @@ const BAD: Color32 = Color32::from_rgb(0xff, 0x4d, 0x5e);
 
 const SRC_COL: [Color32; 3] = [LIVE, ARP, LOOPC];
 
-const KEY_LO: u8 = 21;
-const KEY_HI: u8 = 108;
 
 const KEYMAP: [(Key, u8); 17] = [
     (Key::A, 0),
@@ -114,6 +112,16 @@ pub struct App {
     taps: Vec<f64>,
     music_font: bool,
     show_help: bool,
+    // controller
+    ml3_active: bool,
+    ml3_seen: bool,
+    cc_vals: [u8; 128],
+    cc_seen: [f64; 128],
+    bend: i16,
+    pad_hit: [f64; 8],
+    wind_active: bool,
+    wind_name: String,
+    scale_filter: String,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -124,20 +132,55 @@ fn is_black(k: u8) -> bool {
     matches!(k % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-fn white_index(k: u8) -> f32 {
-    (KEY_LO..k).filter(|x| !is_black(*x)).count() as f32
+fn white_index(lo: u8, k: u8) -> f32 {
+    (lo..k).filter(|x| !is_black(*x)).count() as f32
 }
 
-/// Horizontal geometry of a key inside `r`: (left, width, black?)
-fn key_x(r: Rect, k: u8) -> (f32, f32, bool) {
-    let ww = r.width() / 52.0;
+/// Horizontal geometry of key `k` when keys lo..=hi fill `r`: (left, width, black?)
+fn key_x(r: Rect, k: u8, lo: u8, hi: u8) -> (f32, f32, bool) {
+    let whites = (lo..=hi).filter(|x| !is_black(*x)).count().max(1) as f32;
+    let ww = r.width() / whites;
     if is_black(k) {
-        let c = r.left() + (white_index(k - 1) + 1.0) * ww;
+        let c = r.left() + (white_index(lo, k.saturating_sub(1)) + 1.0) * ww;
         (c - ww * 0.31, ww * 0.62, true)
     } else {
-        (r.left() + white_index(k) * ww, ww, false)
+        (r.left() + white_index(lo, k) * ww, ww, false)
     }
 }
+
+/// Common controller sizes and where they start by default.
+pub const KB_SIZES: [(u8, u8); 7] = [(25, 48), (32, 41), (37, 48), (49, 36), (61, 36), (76, 28), (88, 21)];
+
+/// MiniLab 3 factory CCs (Arturia support chart): knobs 1-8, faders 1-4, main encoder, shift+encoder.
+pub const MINILAB3_MAP: [(u8, u8); 14] = [
+    (74, target::FILTER),
+    (71, target::RESO),
+    (76, target::DRIVE),
+    (77, target::DELAY),
+    (93, target::REVERB),
+    (18, target::REPEATS),
+    (19, target::CHORUS),
+    (16, target::ARP_GATE),
+    (82, target::MASTER),
+    (83, target::LAYER_VOL),
+    (85, target::DRUM_VOL),
+    (17, target::SONG_VOL),
+    (114, target::BROWSE),
+    (112, target::CATEGORY),
+];
+/// Staff transposition (written pitch) for transposing instruments: (label, semitones added to concert pitch)
+pub const WRITTEN: [(&str, i32); 7] = [
+    ("Concert pitch", 0),
+    ("B♭ (soprano sax, clarinet, trumpet)", 2),
+    ("B♭ tenor sax (+9th)", 14),
+    ("E♭ alto sax", 9),
+    ("E♭ baritone sax", 21),
+    ("F (horn)", 7),
+    ("Tin whistle (written 8vb)", -12),
+];
+
+const ML3_KNOBS: [u8; 8] = [74, 71, 76, 77, 93, 18, 19, 16];
+const ML3_FADERS: [u8; 4] = [82, 83, 85, 17];
 
 fn arc_points(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
     let n = 32;
@@ -188,18 +231,87 @@ fn knob(ui: &mut egui::Ui, label: &str, v: &mut f32, default: f32, col: Color32,
     changed
 }
 
+fn tget(p: &Params, t: u8) -> f32 {
+    match t {
+        target::FILTER => p.cutoff.get(),
+        target::RESO => p.resonance.get(),
+        target::DRIVE => p.drive.get(),
+        target::DELAY => p.delay_mix.get(),
+        target::REVERB => p.reverb.get(),
+        target::REPEATS => p.delay_fb.get(),
+        target::CHORUS => p.chorus.get(),
+        target::ARP_GATE => p.arp_gate.get(),
+        target::MASTER => p.master.get(),
+        target::LAYER_VOL => p.layer_vol.get(),
+        target::DRUM_VOL => p.drum_vol.get(),
+        target::SONG_VOL => p.song_vol.get(),
+        target::SWING => p.swing.get(),
+        _ => 0.0,
+    }
+}
+
+fn tset(p: &Params, t: u8, v: f32) {
+    match t {
+        target::FILTER => p.cutoff.set(v),
+        target::RESO => p.resonance.set(v),
+        target::DRIVE => p.drive.set(v),
+        target::DELAY => p.delay_mix.set(v),
+        target::REVERB => p.reverb.set(v),
+        target::REPEATS => p.delay_fb.set(v),
+        target::CHORUS => p.chorus.set(v),
+        target::ARP_GATE => p.arp_gate.set(v.max(0.05)),
+        target::MASTER => p.master.set(v),
+        target::LAYER_VOL => p.layer_vol.set(v),
+        target::DRUM_VOL => p.drum_vol.set(v),
+        target::SONG_VOL => p.song_vol.set(v),
+        target::SWING => p.swing.set(v),
+        _ => {}
+    }
+}
+
+/// Vertical fader. Drag the cap.
+fn fader(ui: &mut egui::Ui, label: &str, v: &mut f32, col: Color32, hot: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(32.0, 118.0), Sense::click_and_drag());
+    let track = Rect::from_min_max(Pos2::new(rect.center().x - 2.0, rect.top() + 6.0), Pos2::new(rect.center().x + 2.0, rect.bottom() - 22.0));
+    let mut changed = false;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *v = (1.0 - (pos.y - track.top()) / track.height()).clamp(0.0, 1.0);
+            changed = true;
+        }
+    }
+    let p = ui.painter();
+    p.rect_filled(track, 2.0, Color32::from_gray(45));
+    let y = track.bottom() - *v * track.height();
+    p.rect_filled(Rect::from_min_max(Pos2::new(track.left(), y), track.right_bottom()), 2.0, col.gamma_multiply(0.7));
+    let cap = Rect::from_center_size(Pos2::new(rect.center().x, y), Vec2::new(26.0, 10.0));
+    p.rect_filled(cap, 3.0, if hot { Color32::WHITE } else { Color32::from_gray(200) });
+    p.line_segment([Pos2::new(cap.left() + 3.0, y), Pos2::new(cap.right() - 3.0, y)], Stroke::new(1.5, Color32::from_gray(60)));
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 8.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if hot { Color32::WHITE } else { TEXT_DIM });
+    resp.on_hover_text(format!("{label}: {}", pct(*v)));
+    changed
+}
+
+fn midi_short(n: &str) -> String {
+    n.chars().take(22).collect()
+}
+
 fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
 fn card<R>(ui: &mut egui::Ui, title: &str, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card_h(ui, title, width, 176.0, add)
+}
+
+fn card_h<R>(ui: &mut egui::Ui, title: &str, width: f32, height: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(CARD)
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(width);
-            ui.set_height(176.0);
+            ui.set_height(height);
             ui.vertical(|ui| {
                 ui.label(RichText::new(title).size(12.0).strong().color(TEXT_DIM));
                 ui.add_space(2.0);
@@ -261,6 +373,15 @@ impl App {
             taps: vec![],
             music_font,
             show_help: false,
+            ml3_active: false,
+            ml3_seen: false,
+            cc_vals: [0; 128],
+            cc_seen: [-10.0; 128],
+            bend: 0,
+            pad_hit: [-10.0; 8],
+            wind_active: false,
+            wind_name: String::new(),
+            scale_filter: String::new(),
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -333,6 +454,98 @@ impl App {
         self.set_preset(layer, bp);
     }
 
+    fn range(&self) -> (u8, u8) {
+        let size = self.s.kb_size.clamp(12, 88);
+        let lo = self.s.kb_lo.min(127 - size + 1);
+        (lo, lo + size - 1)
+    }
+
+    fn set_kb_size(&mut self, size: u8) {
+        let lo = KB_SIZES.iter().find(|(s, _)| *s == size).map(|(_, l)| *l).unwrap_or(21);
+        self.s.kb_size = size;
+        self.s.kb_lo = lo;
+    }
+
+    /// Slide the on-screen keyboard by octaves so `key` is visible (follows the Oct buttons).
+    fn follow(&mut self, key: u8) {
+        if !self.s.kb_follow || self.s.kb_size >= 88 {
+            return;
+        }
+        let (mut lo, mut hi) = self.range();
+        let size = self.s.kb_size;
+        while key < lo && lo >= 12 {
+            lo -= 12;
+            hi -= 12;
+        }
+        while key > hi && hi + 12 <= 127 {
+            lo += 12;
+            hi += 12;
+        }
+        let _ = size;
+        self.s.kb_lo = lo;
+    }
+
+    fn apply_controller(&mut self) {
+        let devs = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
+        let ml3 = devs.iter().any(|d| {
+            let l = d.to_lowercase().replace(' ', "");
+            l.contains("minilab3") || l.contains("minilabmk3")
+        });
+        let want = match self.s.controller {
+            1 => false,
+            2 => true,
+            _ => ml3,
+        };
+        if want != self.ml3_active {
+            self.ml3_active = want;
+            for a in self.p.cc_map.iter() {
+                a.store(target::NONE, Relaxed);
+            }
+            if want {
+                for (cc, t) in MINILAB3_MAP {
+                    self.p.cc_map[cc as usize].store(t, Relaxed);
+                }
+                for i in 0..8u8 {
+                    self.p.cc_map[(102 + i) as usize].store(target::PAD0 + i, Relaxed);
+                }
+            }
+        }
+        // wind controllers
+        let wind_dev = devs.iter().find(|d| {
+            let l = d.to_lowercase();
+            l.contains("ewi") || l.contains("aerophone") || ["ae-30", "ae-20", "ae-10", "ae-05", "ae-01", "ae-5"].iter().any(|m| l.contains(m))
+        });
+        self.wind_name = wind_dev.cloned().unwrap_or_default();
+        let wind = match self.s.wind {
+            1 => false,
+            2 => true,
+            _ => wind_dev.is_some(),
+        };
+        if wind != self.wind_active {
+            self.wind_active = wind;
+            self.p.wind_on.store(wind, Relaxed);
+            if wind && wind_dev.is_some() && !self.s.wind_setup_done {
+                // first time: a breath-friendly sound and the staff in view
+                self.s.wind_setup_done = true;
+                if self.s.main == (0, 0) {
+                    self.set_preset(false, (0, 66)); // GM Tenor Sax
+                }
+                if self.s.view == 0 {
+                    self.s.view = 2;
+                }
+            }
+        }
+        // first time we see a MiniLab 3: switch to its layout + 25 keys
+        if ml3 && !self.ml3_seen {
+            self.ml3_seen = true;
+            if self.s.controller == 0 && !self.s.ml3_setup_done {
+                self.s.ml3_setup_done = true;
+                self.s.layout = 1;
+                self.set_kb_size(25);
+            }
+        }
+    }
+
     fn speller(&self) -> Speller {
         if self.scale_on {
             Speller::for_scale(self.s.scale_root, &SCALES[self.s.scale_idx.min(SCALES.len() - 1)])
@@ -393,6 +606,7 @@ impl App {
                         self.bars.push(Bar { key, src, vel, start: now, end: None });
                         if src == src::LIVE {
                             self.judge(key, now);
+                            self.follow(key);
                         }
                     } else if let Some(b) = self.bars.iter_mut().rev().find(|b| b.key == key && b.src == src && b.end.is_none()) {
                         b.end = Some(now);
@@ -407,6 +621,26 @@ impl App {
                 }
                 UiEvt::Program { bank, prog } => self.s.main = (bank, prog),
                 UiEvt::Trash(_) | UiEvt::TrashSong(_) => {} // dropped here, off the audio thread
+                UiEvt::Cc { cc, val } => {
+                    self.cc_vals[cc as usize] = val;
+                    self.cc_seen[cc as usize] = now;
+                }
+                UiEvt::Bend(v) => self.bend = v,
+                UiEvt::Pad { note, vel } => {
+                    if vel > 0 && (36..44).contains(&note) {
+                        self.pad_hit[(note - 36) as usize] = now;
+                    }
+                }
+                UiEvt::Browse(d) => self.step_preset(false, d as i32),
+                UiEvt::Category(d) => {
+                    let cur = self.category.map(|c| if c == 99 { -1 } else { c as i32 }).unwrap_or(-2);
+                    let next = (cur + d as i32).clamp(-2, 15);
+                    self.category = match next {
+                        -2 => None,
+                        -1 => Some(99),
+                        n => Some(n as usize),
+                    };
+                }
             }
         }
         while let Ok(res) = self.load_rx.try_recv() {
@@ -510,6 +744,8 @@ impl App {
                 Key::ArrowLeft => self.step_preset(false, -1),
                 Key::ArrowRight => self.step_preset(false, 1),
                 Key::F1 => self.show_help = !self.show_help,
+                Key::F2 => self.s.hide_modules = !self.s.hide_modules,
+                Key::V => self.s.view = (self.s.view + 1) % 3,
                 _ => {}
             }
         }
@@ -711,10 +947,17 @@ impl App {
     fn modules(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                self.fx_card(ui);
-                self.arp_card(ui);
-                self.drum_card(ui);
+                if self.s.layout == 1 {
+                    self.minilab_card(ui);
+                } else {
+                    self.fx_card(ui);
+                }
+                if self.wind_active {
+                    self.wind_card(ui);
+                }
                 self.loop_card(ui);
+                self.drum_card(ui);
+                self.arp_card(ui);
             });
         });
     }
@@ -769,6 +1012,201 @@ impl App {
                     }
                 }
                 p.delay_time.store(dt as u8, Relaxed);
+            });
+        });
+    }
+
+    /// Controller-shaped panel laid out like the MiniLab 3's top surface so every
+    /// knob, fader, pad and strip sits where it is on the hardware.
+    fn minilab_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        let now = now_s(&self.t0);
+        let mapped = self.ml3_active;
+        let title = if mapped { "MINILAB 3  ·  mapped 1:1" } else { "MINILAB 3 LAYOUT  ·  not detected (Controller: MiniLab 3 to force)" };
+        let cur_name = self.preset_name(self.s.main);
+        let cat = match self.category {
+            None => "All sounds".to_string(),
+            Some(99) => "Favourites".to_string(),
+            Some(f) => GM_FAMILIES[f].to_string(),
+        };
+        let mut browse = 0i32;
+        let mut pad_press: Option<(u8, bool)> = None;
+        card_h(ui, title, 610.0, 196.0, |ui| {
+            let (area, _) = ui.allocate_exact_size(Vec2::new(610.0, 176.0), Sense::hover());
+            let o = area.min;
+            let painter = ui.painter().clone();
+            let hot = |cc: u8| now - self.cc_seen[cc as usize] < 0.5;
+            // --- left column: shift/hold, oct, touch strips
+            let btn = |r: Rect, label: &str, lit: bool| {
+                painter.rect_filled(r, 4.0, if lit { Color32::WHITE } else { CARD_HI });
+                painter.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.5), if lit { Color32::BLACK } else { TEXT_DIM });
+            };
+            btn(Rect::from_min_size(o + Vec2::new(0.0, 0.0), Vec2::new(40.0, 18.0)), "Shift", hot(9) && self.cc_vals[9] > 0);
+            btn(Rect::from_min_size(o + Vec2::new(46.0, 0.0), Vec2::new(40.0, 18.0)), "Hold", false);
+            btn(Rect::from_min_size(o + Vec2::new(0.0, 24.0), Vec2::new(40.0, 18.0)), "Oct −", false);
+            btn(Rect::from_min_size(o + Vec2::new(46.0, 24.0), Vec2::new(40.0, 18.0)), "Oct +", false);
+            let strip_l = Rect::from_min_size(o + Vec2::new(6.0, 50.0), Vec2::new(28.0, 120.0));
+            let strip_r = Rect::from_min_size(o + Vec2::new(52.0, 50.0), Vec2::new(28.0, 120.0));
+            for r in [strip_l, strip_r] {
+                painter.rect_filled(r, 5.0, Color32::from_gray(38));
+            }
+            let by = strip_l.center().y - (self.bend as f32 / 8192.0) * (strip_l.height() / 2.0 - 6.0);
+            painter.rect_filled(Rect::from_center_size(Pos2::new(strip_l.center().x, by), Vec2::new(24.0, 6.0)), 2.0, if self.bend != 0 { LIVE } else { Color32::from_gray(140) });
+            let mv = self.cc_vals[1] as f32 / 127.0;
+            painter.rect_filled(Rect::from_min_max(Pos2::new(strip_r.left(), strip_r.bottom() - mv * strip_r.height()), strip_r.max), 5.0, ARP.gamma_multiply(0.8));
+            painter.text(strip_l.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "bend", FontId::proportional(9.5), TEXT_DIM);
+            painter.text(strip_r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "mod", FontId::proportional(9.5), Color32::WHITE);
+            // --- display + main encoder
+            let disp = Rect::from_min_size(o + Vec2::new(98.0, 0.0), Vec2::new(84.0, 118.0));
+            painter.rect_filled(disp, 6.0, Color32::from_rgb(8, 9, 11));
+            let screen = Rect::from_min_size(disp.min + Vec2::new(6.0, 6.0), Vec2::new(72.0, 46.0));
+            painter.rect_filled(screen, 3.0, Color32::from_rgb(18, 22, 28));
+            let (mut l1, mut l2) = (String::new(), String::new());
+            for w in cur_name.split_whitespace() {
+                if l2.is_empty() && l1.chars().count() + w.chars().count() < 12 {
+                    if !l1.is_empty() {
+                        l1.push(' ');
+                    }
+                    l1.push_str(w);
+                } else {
+                    if !l2.is_empty() {
+                        l2.push(' ');
+                    }
+                    l2.push_str(w);
+                }
+            }
+            let l2: String = l2.chars().take(13).collect();
+            let (l1, l2) = (l1.as_str(), l2.as_str());
+            painter.text(screen.min + Vec2::new(4.0, 4.0), Align2::LEFT_TOP, cat.chars().take(12).collect::<String>(), FontId::proportional(8.5), TEXT_DIM);
+            painter.text(screen.min + Vec2::new(4.0, 17.0), Align2::LEFT_TOP, l1.trim(), FontId::proportional(11.0), Color32::WHITE);
+            painter.text(screen.min + Vec2::new(4.0, 30.0), Align2::LEFT_TOP, l2.trim(), FontId::proportional(11.0), Color32::WHITE);
+            let enc_c = Pos2::new(disp.center().x, disp.bottom() - 32.0);
+            let enc_r = Rect::from_center_size(enc_c, Vec2::splat(44.0));
+            let enc = ui.interact(enc_r, ui.id().with("ml3enc"), Sense::click_and_drag());
+            painter.circle_filled(enc_c, 18.0, if hot(114) || hot(112) || enc.hovered() { Color32::from_gray(70) } else { Color32::from_gray(40) });
+            painter.circle_stroke(enc_c, 18.0, Stroke::new(1.0, Color32::from_gray(90)));
+            if enc.dragged() {
+                let d = enc.drag_delta();
+                let acc = ui.data_mut(|m| {
+                    let a = m.get_temp_mut_or_default::<f32>(ui.id().with("ml3acc"));
+                    *a += d.x - d.y;
+                    let steps = (*a / 24.0).trunc();
+                    *a -= steps * 24.0;
+                    steps as i32
+                });
+                browse += acc;
+            }
+            let sc = if enc.hovered() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
+            if sc.abs() > 0.5 {
+                browse += if sc > 0.0 { -1 } else { 1 };
+            }
+            enc.on_hover_text("Main encoder: browse sounds (Shift + turn on the hardware = category)");
+            // --- 8 knobs, 2 rows of 4
+            for (i, cc) in ML3_KNOBS.iter().enumerate() {
+                let t = p.cc_map[*cc as usize].load(Relaxed);
+                let t = if t == target::NONE { MINILAB3_MAP[i].1 } else { t };
+                let x = 192.0 + (i % 4) as f32 * 58.0;
+                let y = (i / 4) as f32 * 60.0;
+                let r = Rect::from_min_size(o + Vec2::new(x, y), Vec2::new(56.0, 62.0));
+                if hot(*cc) {
+                    painter.circle_filled(r.center_top() + Vec2::new(0.0, 24.0), 23.0, LIVE.gamma_multiply(0.25));
+                }
+                ui.scope_builder(UiBuilder::new().max_rect(r), |ui| {
+                    let mut v = tget(&p, t);
+                    let col = match t {
+                        target::FILTER | target::RESO => LIVE,
+                        target::DRIVE => BAD,
+                        target::DELAY | target::REPEATS | target::ARP_GATE => ARP,
+                        _ => GOOD,
+                    };
+                    if knob(ui, target::name(t), &mut v, tget(&Params::new(), t), col, pct) {
+                        tset(&p, t, v);
+                    }
+                });
+            }
+            // --- 4 faders
+            for (i, cc) in ML3_FADERS.iter().enumerate() {
+                let t = MINILAB3_MAP[8 + i].1;
+                let r = Rect::from_min_size(o + Vec2::new(434.0 + i as f32 * 42.0, 0.0), Vec2::new(36.0, 120.0));
+                ui.scope_builder(UiBuilder::new().max_rect(r), |ui| {
+                    let mut v = tget(&p, t);
+                    if fader(ui, target::name(t), &mut v, GOOD, hot(*cc)) {
+                        tset(&p, t, v);
+                    }
+                });
+            }
+            // --- 8 pads under the knobs/faders
+            for i in 0..8usize {
+                let r = Rect::from_min_size(o + Vec2::new(98.0 + i as f32 * 63.0, 128.0), Vec2::new(55.0, 44.0));
+                let resp = ui.interact(r, ui.id().with(("ml3pad", i)), Sense::click_and_drag());
+                let age = (now - self.pad_hit[i]) as f32;
+                let glow = (1.0 - age / 0.35).clamp(0.0, 1.0);
+                painter.rect_filled(r, 6.0, Color32::from_rgb(14, 15, 18));
+                painter.rect_stroke(r, 6.0, Stroke::new(2.0 + 2.0 * glow, YOURS.gamma_multiply(0.35 + 0.65 * glow)), StrokeKind::Inside);
+                if glow > 0.0 {
+                    painter.rect_filled(r.shrink(3.0), 5.0, YOURS.gamma_multiply(0.5 * glow));
+                }
+                painter.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, format!("{}", i + 1), FontId::proportional(10.0), TEXT_DIM);
+                if resp.drag_started() || resp.is_pointer_button_down_on() && !resp.dragged() && resp.clicked() {
+                    pad_press = Some((i as u8, true));
+                }
+                if resp.drag_stopped() {
+                    pad_press = Some((i as u8, false));
+                }
+                resp.on_hover_text("Pad: drum hit (pads send notes on channel 10)");
+            }
+        });
+        if browse != 0 {
+            self.step_preset(false, browse.signum());
+        }
+        if let Some((i, on)) = pad_press {
+            let note = 36 + i;
+            let _ = self.tx.send(Cmd::Midi(if on { [0x99, note, 110] } else { [0x89, note, 0] }));
+        }
+    }
+
+    fn wind_card(&mut self, ui: &mut egui::Ui) {
+        let p = self.p.clone();
+        let title = if self.wind_name.is_empty() { "WIND".to_string() } else { format!("WIND · {}", midi_short(&self.wind_name)) };
+        card(ui, &title, 250.0, |ui| {
+            ui.horizontal_top(|ui| {
+                // breath meter
+                let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 150.0), Sense::hover());
+                let pnt = ui.painter();
+                pnt.rect_filled(r, 6.0, Color32::from_gray(35));
+                let b = p.breath_val.get().clamp(0.0, 1.0);
+                let fill = Rect::from_min_max(Pos2::new(r.left(), r.bottom() - b * r.height()), r.max);
+                pnt.rect_filled(fill, 6.0, ARP.lerp_to_gamma(LIVE, b));
+                pnt.text(r.center_bottom() + Vec2::new(0.0, -8.0), Align2::CENTER_CENTER, "air", FontId::proportional(10.0), Color32::WHITE);
+                ui.vertical(|ui| {
+                    let names: [(u8, &str); 5] = [(0, "Auto"), (2, "CC2 Breath"), (11, "CC11 Expression"), (7, "CC7 Volume"), (200, "Aftertouch")];
+                    let mut src = p.breath_src.load(Relaxed);
+                    let locked = p.breath_locked.load(Relaxed);
+                    let cur = names.iter().find(|n| n.0 == src).map(|n| n.1).unwrap_or("Auto");
+                    let label = if src == 0 && locked != 0 {
+                        format!("Auto → {}", names.iter().find(|n| n.0 == locked).map(|n| n.1).unwrap_or("?"))
+                    } else {
+                        cur.to_string()
+                    };
+                    egui::ComboBox::from_id_salt("breath_src").selected_text(label).width(170.0).show_ui(ui, |ui| {
+                        for (id, n) in names {
+                            ui.selectable_value(&mut src, id, n);
+                        }
+                    });
+                    p.breath_src.store(src, Relaxed);
+                    ui.horizontal(|ui| {
+                        let mut c = p.breath_curve.get();
+                        if knob(ui, "Response", &mut c, 0.5, ARP, |v| if v < 0.4 { "soft".into() } else if v > 0.6 { "hard".into() } else { "linear".into() }) {
+                            p.breath_curve.set(c);
+                        }
+                        let mut f = p.breath_filter.get();
+                        if knob(ui, "Air→Filter", &mut f, 0.3, LIVE, pct) {
+                            p.breath_filter.set(f);
+                        }
+                    });
+                    ui.label(RichText::new("Breath drives expression; blowing harder also opens the filter.").size(10.5).color(TEXT_DIM));
+                    ui.label(RichText::new("Aerophone: MIDI CONTROL on, 'MIDI Ctrl Sound' Off to silence its own sounds.").size(10.5).color(TEXT_DIM));
+                });
             });
         });
     }
@@ -990,6 +1428,14 @@ impl App {
                     self.s.view = i as u8;
                 }
             }
+            let lbl = if self.s.score_dark { "🌙 Dark staff" } else { "☀ Paper staff" };
+            ui.toggle_value(&mut self.s.score_dark, lbl).on_hover_text("Staff colours");
+            let w = (self.s.written as usize).min(WRITTEN.len() - 1);
+            egui::ComboBox::from_id_salt("written").selected_text(WRITTEN[w].0.split(" (").next().unwrap_or("")).width(118.0).show_ui(ui, |ui| {
+                for (i, (n, _)) in WRITTEN.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.written, i as u8, *n);
+                }
+            }).response.on_hover_text("Show the staff in written pitch for your instrument (sax, clarinet, whistle…)");
             ui.separator();
             let was = self.scale_on;
             ui.toggle_value(&mut self.scale_on, RichText::new("🎼 Scale").strong());
@@ -1007,9 +1453,17 @@ impl App {
                 }
             });
             let sidx = self.s.scale_idx.min(SCALES.len() - 1);
-            egui::ComboBox::from_id_salt("scale").selected_text(SCALES[sidx].name).width(220.0).height(500.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("scale").selected_text(SCALES[sidx].name).width(220.0).height(560.0).show_ui(ui, |ui| {
+                let te = ui.add(egui::TextEdit::singleline(&mut self.scale_filter).hint_text(format!("🔍 search {} scales…", SCALES.len())).desired_width(200.0));
+                if !te.has_focus() && self.scale_filter.is_empty() {
+                    te.request_focus(); // type straight away; keys don't play notes while searching
+                }
+                let f = self.scale_filter.to_lowercase();
                 let mut group = "";
                 for (i, sc) in SCALES.iter().enumerate() {
+                    if !f.is_empty() && !sc.name.to_lowercase().contains(&f) && !sc.group.to_lowercase().contains(&f) && !sc.hint.to_lowercase().contains(&f) {
+                        continue;
+                    }
                     if sc.group != group {
                         group = sc.group;
                         ui.label(RichText::new(group).size(11.0).color(YOURS));
@@ -1019,6 +1473,7 @@ impl App {
             });
             if changed {
                 self.scale_on = true;
+                self.scale_filter.clear();
                 self.rebuild_walk();
             }
             if self.scale_on {
@@ -1157,13 +1612,14 @@ impl App {
     }
 
     fn waterfall(&self, ui: &mut egui::Ui, rect: Rect) {
+        let (lo, hi) = self.range();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, Color32::from_rgb(0x0d, 0x0f, 0x12));
         let now = now_s(&self.t0);
         let mask = self.scale_mask();
         // lanes
-        for k in KEY_LO..=KEY_HI {
-            let (x, w, black) = key_x(rect, k);
+        for k in lo..=hi {
+            let (x, w, black) = key_x(rect, k, lo, hi);
             if k % 12 == 0 {
                 painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, Color32::from_gray(34)));
             }
@@ -1182,12 +1638,12 @@ impl App {
                 if n.start > pos + horizon {
                     break;
                 }
-                if n.end < pos || n.key < KEY_LO || n.key > KEY_HI || n.ch == 9 {
+                if n.end < pos || n.key < lo || n.key > hi || n.ch == 9 {
                     continue;
                 }
                 let yb = rect.bottom() - ((n.start - pos) * speed) as f32;
                 let yt = rect.bottom() - ((n.end - pos) * speed) as f32;
-                let (x, w, black) = key_x(rect, n.key);
+                let (x, w, black) = key_x(rect, n.key, lo, hi);
                 let yours = self.song_user & (1 << n.ch) != 0;
                 let base = if yours { YOURS } else { SONG };
                 let col = if black { base.gamma_multiply(0.75) } else { base };
@@ -1200,8 +1656,8 @@ impl App {
             // hit line
             painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0, YOURS.gamma_multiply(0.5)));
             // your notes still glow at the bottom
-            for b in self.bars.iter().filter(|b| b.end.is_none() && b.key >= KEY_LO && b.key <= KEY_HI) {
-                let (x, w, _) = key_x(rect, b.key);
+            for b in self.bars.iter().filter(|b| b.end.is_none() && b.key >= lo && b.key <= hi) {
+                let (x, w, _) = key_x(rect, b.key, lo, hi);
                 let r = Rect::from_min_max(Pos2::new(x, rect.bottom() - 16.0), Pos2::new(x + w, rect.bottom()));
                 painter.rect_filled(r, 2.0, SRC_COL[(b.src as usize).min(2)]);
             }
@@ -1212,7 +1668,7 @@ impl App {
             // free play: what you play rises from the keys
             let speed = 110.0f64;
             for b in &self.bars {
-                if b.key < KEY_LO || b.key > KEY_HI {
+                if b.key < lo || b.key > hi {
                     continue;
                 }
                 let end = b.end.unwrap_or(now);
@@ -1221,7 +1677,7 @@ impl App {
                 if yb < rect.top() {
                     continue;
                 }
-                let (x, w, black) = key_x(rect, b.key);
+                let (x, w, black) = key_x(rect, b.key, lo, hi);
                 let mut col = SRC_COL[(b.src as usize).min(2)];
                 if mask != 0 && b.src == src::LIVE && mask & (1 << (b.key % 12)) == 0 {
                     col = BAD;
@@ -1251,8 +1707,9 @@ impl App {
 
     fn score(&self, ui: &mut egui::Ui, rect: Rect) {
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(0xf3, 0xef, 0xe6));
-        let ink = Color32::from_rgb(0x1c, 0x1c, 0x22);
+        let dark = self.s.score_dark;
+        painter.rect_filled(rect, 0.0, if dark { Color32::from_rgb(0x14, 0x17, 0x1c) } else { Color32::from_rgb(0xf3, 0xef, 0xe6) });
+        let ink = if dark { Color32::from_rgb(0xd6, 0xdb, 0xe3) } else { Color32::from_rgb(0x1c, 0x1c, 0x22) };
         let sp = (rect.height() / 19.0).clamp(6.0, 16.0); // staff space
         let half = sp / 2.0;
         let cy = rect.center().y + sp * 0.5;
@@ -1272,7 +1729,15 @@ impl App {
             painter.text(Pos2::new(clef_x, y_of(6)), Align2::LEFT_CENTER, "G", FontId::proportional(sp * 3.0), ink);
             painter.text(Pos2::new(clef_x, y_of(-6)), Align2::LEFT_CENTER, "F", FontId::proportional(sp * 3.0), ink);
         }
-        let speller = self.speller();
+        let woff = WRITTEN[(self.s.written as usize).min(WRITTEN.len() - 1)].1;
+        let speller = if self.scale_on {
+            let pc = ((ROOTS[self.s.scale_root].1 as i32 + woff).rem_euclid(12)) as u8;
+            let ri = ROOTS.iter().position(|r| r.1 == pc).unwrap_or(0);
+            Speller::for_scale(ri, &SCALES[self.s.scale_idx.min(SCALES.len() - 1)])
+        } else {
+            Speller::default_sharps()
+        };
+        let wk = |k: u8| (k as i32 + woff).clamp(0, 127) as u8;
         let has_song = self.song.is_some();
         let now_x = if has_song { left + (right - left) * 0.3 } else { right - 60.0 };
         let px_per_s = 110.0f64;
@@ -1283,6 +1748,7 @@ impl App {
             if x < clip_left - 4.0 || x > right {
                 return;
             }
+            let key = wk(key);
             let (step, acc) = theory::staff_step(&speller, key);
             let treble = key >= 60;
             let y = y_of(step);
@@ -1354,7 +1820,7 @@ impl App {
                 }
                 let x = now_x + ((n.start - pos) * px_per_s) as f32;
                 let xe = now_x + ((n.end - pos) * px_per_s) as f32;
-                let col = if yours { Color32::from_rgb(0xb0, 0x7a, 0x00) } else { ink };
+                let col = if yours { if dark { YOURS } else { Color32::from_rgb(0xb0, 0x7a, 0x00) } } else { ink };
                 draw_note(n.key, x, xe, col, true);
             }
         }
@@ -1365,26 +1831,33 @@ impl App {
             if xe < clip_left {
                 continue;
             }
-            let mut col = match b.src {
-                src::LIVE => Color32::from_rgb(0xd9, 0x5f, 0x0e),
-                src::ARP => Color32::from_rgb(0x0a, 0x8c, 0xb0),
-                _ => Color32::from_rgb(0x6c, 0x45, 0xc8),
+            let mut col = match (b.src, dark) {
+                (src::LIVE, false) => Color32::from_rgb(0xd9, 0x5f, 0x0e),
+                (src::ARP, false) => Color32::from_rgb(0x0a, 0x8c, 0xb0),
+                (_, false) => Color32::from_rgb(0x6c, 0x45, 0xc8),
+                (src::LIVE, true) => LIVE,
+                (src::ARP, true) => ARP,
+                (_, true) => LOOPC,
             };
             if self.scale_on && b.src == src::LIVE && self.scale_mask() & (1 << (b.key % 12)) == 0 {
-                col = Color32::from_rgb(0xd0, 0x20, 0x30);
+                col = if dark { BAD } else { Color32::from_rgb(0xd0, 0x20, 0x30) };
             }
             draw_note(b.key, x, xe, col, true);
         }
         if self.scale_on && self.walk && !self.walk_seq.is_empty() {
             let k = self.walk_seq[self.walk_pos];
             let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
-            draw_note(k, now_x + 36.0, now_x + 36.0, Color32::from_rgb(0x2e, 0x9e, 0x4f).gamma_multiply(0.55 + 0.45 * pulse), false);
-            painter.text(Pos2::new(now_x + 36.0, y_of(15)), Align2::CENTER_CENTER, format!("next: {}", speller.name(k % 12)), FontId::proportional(13.0), Color32::from_rgb(0x2e, 0x9e, 0x4f));
+            draw_note(k, now_x + 36.0, now_x + 36.0, (if dark { GOOD } else { Color32::from_rgb(0x2e, 0x9e, 0x4f) }).gamma_multiply(0.55 + 0.45 * pulse), false);
+            painter.text(Pos2::new(now_x + 36.0, y_of(15)), Align2::CENTER_CENTER, format!("next: {}", speller.name(wk(k) % 12)), FontId::proportional(13.0), Color32::from_rgb(0x2e, 0x9e, 0x4f));
         }
         // chord name in ink
         let mut keys: Vec<u8> = (0..128u8).filter(|k| self.held[0][*k as usize] > 0).collect();
         if keys.is_empty() {
             keys = (0..128u8).filter(|k| self.held[2][*k as usize] > 0).collect();
+        }
+        let keys: Vec<u8> = keys.into_iter().map(wk).collect();
+        if woff != 0 {
+            painter.text(Pos2::new(right - 8.0, rect.top() + 6.0), Align2::RIGHT_TOP, format!("written for {}", WRITTEN[(self.s.written as usize).min(WRITTEN.len() - 1)].0), FontId::proportional(11.0), ink.gamma_multiply(0.6));
         }
         if let Some((big, small)) = theory::name_chord(&keys, &speller) {
             painter.text(Pos2::new(left + sp * 5.0, rect.top() + 4.0), Align2::LEFT_TOP, big, FontId::proportional(26.0), ink);
@@ -1393,11 +1866,30 @@ impl App {
     }
 
     fn piano(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.available_rect_before_wrap();
+        let (lo, hi) = self.range();
+        let mut rect = ui.available_rect_before_wrap();
+        if self.s.kb_size < 88 {
+            // mini 88-key overview: where the visible keys sit on a full piano
+            let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 12.0));
+            rect.min.y += 16.0;
+            let p = ui.painter();
+            for k in 21..=108u8 {
+                let (x, w, b) = key_x(strip, k, 21, 108);
+                let r = Rect::from_min_size(Pos2::new(x, strip.top()), Vec2::new(w, if b { 7.0 } else { 12.0 }));
+                let inside = k >= lo && k <= hi;
+                let base = if b { Color32::from_gray(30) } else { Color32::from_gray(if inside { 200 } else { 95 }) };
+                let col = if self.held.iter().any(|h| h[k as usize] > 0) { LIVE } else { base };
+                p.rect_filled(if b { r } else { r.shrink2(Vec2::new(0.4, 0.0)) }, 1.0, col);
+            }
+            let (x0, _, _) = key_x(strip, lo, 21, 108);
+            let (x1, w1, _) = key_x(strip, hi, 21, 108);
+            p.rect_stroke(Rect::from_min_max(Pos2::new(x0 - 1.0, strip.top() - 1.0), Pos2::new(x1 + w1 + 1.0, strip.bottom() + 1.0)), 2.0, Stroke::new(1.5, LIVE), StrokeKind::Outside);
+        }
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let now = now_s(&self.t0);
         let mask = self.scale_mask();
+        let big = self.s.kb_size <= 37;
         let root_pc = ROOTS[self.s.scale_root].1;
         let speller = self.speller();
         let walk_target = if self.scale_on && self.walk { self.walk_seq.get(self.walk_pos).copied() } else { None };
@@ -1421,8 +1913,8 @@ impl App {
         };
         let bh = rect.height() * 0.62;
         for black in [false, true] {
-            for k in KEY_LO..=KEY_HI {
-                let (x, w, b) = key_x(rect, k);
+            for k in lo..=hi {
+                let (x, w, b) = key_x(rect, k, lo, hi);
                 if b != black {
                     continue;
                 }
@@ -1451,7 +1943,9 @@ impl App {
                         painter.text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, speller.name(k % 12), FontId::proportional(10.5), Color32::from_rgb(0x1f, 0x7d, 0x3c));
                     }
                 } else if !b && k % 12 == 0 {
-                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, format!("C{}", k / 12 - 1), FontId::proportional(10.0), Color32::from_gray(120));
+                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, format!("C{}", k / 12 - 1), FontId::proportional(if big { 13.0 } else { 10.0 }), Color32::from_gray(110));
+                } else if !b && big {
+                    painter.text(Pos2::new(r.center().x, r.bottom() - 10.0), Align2::CENTER_CENTER, theory::NOTE_SHARP[(k % 12) as usize], FontId::proportional(12.0), Color32::from_gray(150));
                 }
                 if Some(k) == walk_target {
                     let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
@@ -1469,15 +1963,15 @@ impl App {
                 return None;
             }
             if pos.y < rect.top() + bh {
-                for k in KEY_LO..=KEY_HI {
-                    let (x, w, b) = key_x(rect, k);
+                for k in lo..=hi {
+                    let (x, w, b) = key_x(rect, k, lo, hi);
                     if b && pos.x >= x && pos.x < x + w {
                         return Some(k);
                     }
                 }
             }
-            (KEY_LO..=KEY_HI).find(|&k| {
-                let (x, w, b) = key_x(rect, k);
+            (lo..=hi).find(|&k| {
+                let (x, w, b) = key_x(rect, k, lo, hi);
                 !b && pos.x >= x && pos.x < x + w
             })
         };
@@ -1494,6 +1988,63 @@ impl App {
         }
     }
 
+    fn kb_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Keys").color(TEXT_DIM));
+            for (size, _) in KB_SIZES {
+                if ui.selectable_label(self.s.kb_size == size, RichText::new(size.to_string()).size(12.5)).clicked() {
+                    self.set_kb_size(size);
+                }
+            }
+            if self.s.kb_size < 88 {
+                if ui.small_button("◀ oct").clicked() && self.s.kb_lo >= 12 {
+                    self.s.kb_lo -= 12;
+                }
+                if ui.small_button("oct ▶").clicked() && self.range().1 + 12 <= 127 {
+                    self.s.kb_lo += 12;
+                }
+                ui.toggle_value(&mut self.s.kb_follow, "Follow").on_hover_text("Slide along when you play outside the visible keys (e.g. after Oct +/−)");
+                let (lo, hi) = self.range();
+                ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(TEXT_DIM));
+            }
+            ui.separator();
+            ui.label(RichText::new("Layout").color(TEXT_DIM));
+            for (i, n) in ["Classic", "MiniLab 3"].iter().enumerate() {
+                if ui.selectable_label(self.s.layout == i as u8, *n).clicked() {
+                    self.s.layout = i as u8;
+                    if i == 1 && self.s.kb_size == 88 {
+                        self.set_kb_size(25);
+                    }
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Controller").color(TEXT_DIM));
+            let names = ["Auto-detect", "Off (raw MIDI)", "MiniLab 3"];
+            egui::ComboBox::from_id_salt("ctrl").selected_text(names[self.s.controller.min(2) as usize]).width(120.0).show_ui(ui, |ui| {
+                for (i, n) in names.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.controller, i as u8, *n);
+                }
+            });
+            if self.ml3_active {
+                ui.label(RichText::new("● MiniLab 3 mapped").size(11.5).color(GOOD)).on_hover_text("Knobs, faders, pads and the main encoder are mapped 1:1");
+            }
+            ui.separator();
+            ui.label(RichText::new("Wind").color(TEXT_DIM));
+            let wn = ["Auto-detect", "Off", "On"];
+            egui::ComboBox::from_id_salt("wind").selected_text(wn[self.s.wind.min(2) as usize]).width(96.0).show_ui(ui, |ui| {
+                for (i, n) in wn.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.wind, i as u8, *n);
+                }
+            }).response.on_hover_text("EWI / Aerophone / any breath controller: breath → expression");
+            if self.wind_active {
+                ui.label(RichText::new("● breath").size(11.5).color(ARP));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new("V view · F2 panels · F1 help").size(11.0).color(TEXT_DIM));
+            });
+        });
+    }
+
     fn help(&mut self, ctx: &egui::Context) {
         if !self.show_help {
             return;
@@ -1508,6 +2059,8 @@ impl App {
                     ("Enter", "looper: record → close → overdub → done"),
                     ("Backspace", "undo last loop layer"),
                     ("Esc", "panic: all notes off, stop loop"),
+                    ("V", "cycle view: falling notes → score → both"),
+                    ("F2", "hide / show the sound, arp, drum and looper panels"),
                     ("Drag & drop", ".mid songs or .sf2 sound banks onto the window"),
                     ("Knobs", "drag up/down, scroll, Shift = fine, double-click = reset"),
                     ("MIDI", "any keyboard is picked up automatically, even if you plug it in later. Pads on channel 10 play drums. Program Change switches sounds."),
@@ -1523,6 +2076,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_controller();
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop
@@ -1550,11 +2104,16 @@ impl eframe::App for App {
                 ui.label(RichText::new(e).color(BAD));
             }
         });
-        egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
-            self.modules(ui);
+        if !self.s.hide_modules {
+            egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
+                self.modules(ui);
+            });
+        }
+        egui::TopBottomPanel::bottom("kbbar").frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 5, bottom: 0 })).show(ctx, |ui| {
+            self.kb_bar(ui);
         });
         egui::TopBottomPanel::bottom("piano")
-            .exact_height(132.0)
+            .exact_height(if self.s.kb_size <= 37 { 170.0 } else { 140.0 })
             .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
             .show(ctx, |ui| self.piano(ui));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
@@ -1625,9 +2184,8 @@ fn setup_fonts(ctx: &egui::Context) -> bool {
             break;
         }
     }
-    if !added {
-        fonts.families.entry(FontFamily::Proportional).or_default().push("bravura".into());
-    }
+    let _ = added;
+    fonts.families.entry(FontFamily::Proportional).or_default().push("bravura".into());
     ctx.set_fonts(fonts);
     true
 }

@@ -44,6 +44,20 @@ pub struct Settings {
     pub scale_snap: bool,
     pub kb_octave: i32,
     pub favorites: Vec<(i32, i32)>,
+    pub kb_size: u8,
+    pub kb_lo: u8,
+    pub kb_follow: bool,
+    pub layout: u8,     // 0 classic, 1 MiniLab 3
+    pub controller: u8, // 0 auto-detect, 1 off, 2 MiniLab 3
+    pub score_dark: bool,
+    pub hide_modules: bool,
+    pub ml3_setup_done: bool,
+    pub wind: u8, // 0 auto-detect, 1 off, 2 on
+    pub breath_src: u8,
+    pub breath_curve: f32,
+    pub breath_filter: f32,
+    pub wind_setup_done: bool,
+    pub written: u8, // staff transposition preset
 }
 
 impl Default for Settings {
@@ -85,6 +99,20 @@ impl Default for Settings {
             scale_snap: false,
             kb_octave: 4,
             favorites: vec![],
+            kb_size: 88,
+            kb_lo: 21,
+            kb_follow: true,
+            layout: 0,
+            controller: 0,
+            score_dark: false,
+            hide_modules: false,
+            ml3_setup_done: false,
+            wind: 0,
+            breath_src: 0,
+            breath_curve: 0.5,
+            breath_filter: 0.3,
+            wind_setup_done: false,
+            written: 0,
         }
     }
 }
@@ -139,6 +167,9 @@ impl Settings {
         p.drum_vol.set(self.drum_vol);
         p.swing.set(self.swing);
         p.scale_snap.store(self.scale_snap, Relaxed);
+        p.breath_src.store(self.breath_src, Relaxed);
+        p.breath_curve.set(self.breath_curve);
+        p.breath_filter.set(self.breath_filter);
     }
 
     pub fn pull_from(&mut self, p: &Params) {
@@ -169,5 +200,8 @@ impl Settings {
         self.drum_vol = p.drum_vol.get();
         self.swing = p.swing.get();
         self.scale_snap = p.scale_snap.load(Relaxed);
+        self.breath_src = p.breath_src.load(Relaxed);
+        self.breath_curve = p.breath_curve.get();
+        self.breath_filter = p.breath_filter.get();
     }
 }

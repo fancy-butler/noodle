@@ -18,8 +18,11 @@ Noodle is a lightweight Linux/Windows instrument that behaves like switching on 
 | **Drum machine** | 8-row step sequencer with 16 or 12 steps (4/4, 6/8, 3/4), swing, 8 kits, and presets including Synthpop, Power ballad, Bulgar (3+3+2), Hora, Reel and Jig. Drum pads on MIDI channel 10 play the kit live. |
 | **Looper** | One button: record → close (snaps to whole bars) → overdub → done. Up to 6 layers, and **each layer keeps its own sound**, so you can loop bass, switch to strings and loop again. Undo removes the last layer. |
 | **See your notes** | Falling-notes view, a scrolling grand staff with real notation (Bravura font, proper sharps and flats), or both. Live chord and interval naming. |
-| **Scales** | Pick a root and scale. The keys light up with note names, and wrong notes flash red. **Walk it** steps you up and down the scale one note at a time, **Hear it** plays it, and **Snap** bends wrong notes to the nearest scale note. The scale list includes klezmer modes (Freygish/Ahava Rabboh, Mi Sheberach, Adonai Malach, Magen Avot, harmonic minor) and Irish/Scottish modes (Ionian, Mixolydian, Dorian, Aeolian, pentatonic). |
+| **Scales** | Pick a root and scale. The keys light up with note names, and wrong notes flash red. **Walk it** steps you up and down the scale one note at a time, **Hear it** plays it, and **Snap** bends wrong notes to the nearest scale note. There are 66 searchable scales in these groups: everyday (major/minor/pentatonic/blues), church modes, Irish/Scottish, klezmer, jazz (bebop, altered, Lydian dominant, diminished…), harmonic-minor modes, Middle East/Balkans/Spain, East Asia, Indian thaats and symmetric scales. Each one is properly spelled on the staff. |
 | **Songs** | Open any `.mid` (MuseScore: *File › Export › MIDI*). Notes fall onto the keys Synthesia-style. Pick **which part you play** and it goes silent and turns yellow. Speed runs from 25 to 150 %. **Wait for me** pauses the song until you hit your notes. |
+| **Any keyboard size** | 25 / 32 / 37 / 49 / 61 / 76 / 88 keys on screen. A mini 88-key strip shows where your keys sit on a full piano, and **Follow** slides the view when you hit Oct +/−. |
+| **MiniLab 3, 1:1** | Auto-detected. A panel laid out like its top surface: 8 knobs → Filter, Reso, Drive, Delay, Reverb, Repeats, Chorus, Arp gate; 4 faders → Volume, Layer, Drums, Song; main encoder browses sounds (Shift + turn = category); pads play drums; the bend/mod strips are shown live. Mapped controls never leak into the synth. |
+| **Wind controllers** | EWI, Aerophone and other breath controllers are auto-detected. Breath (CC2, CC11, CC7 or aftertouch; it locks onto whichever arrives first) drives expression, with an adjustable response curve and an optional breath-opens-filter amount. The staff can show **written pitch** for B♭/E♭/F instruments and the tin whistle. |
 | **Remembers** | Opens exactly how you left it. |
 
 ## Keys
@@ -33,6 +36,8 @@ Noodle is a lightweight Linux/Windows instrument that behaves like switching on 
 | `Enter` | looper button |
 | `Backspace` | undo last loop layer |
 | `Esc` | panic (all notes off) |
+| `V` | cycle view: falling notes / score / both |
+| `F2` | hide / show the panels |
 | `F1` | help |
 
 ## Install
@@ -59,6 +64,11 @@ cargo build --release
 ```
 
 ## Roadmap
+
+- **SFZ instruments**: the open sampler format. ConvertWithMoss turns Ableton Sampler (.adv/.adg), Kontakt, EXS and more into SFZ
+- **Plugin hosting** (CLAP / VST3 / LV2): play Omnisphere, SWAM etc. inside Noodle (Windows natively; Linux via yabridge)
+- **Modelled wind instruments** built for breath controllers (sax, clarinet, flute, whistle)
+- MIDI-learn for any controller
 
 - Noodle's own synth engine (Omnisphere-inspired: layered oscillators, an XY "orb" for morphing)
 - MusicXML / MuseScore import
