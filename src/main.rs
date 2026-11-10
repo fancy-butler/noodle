@@ -60,7 +60,7 @@ fn main() {
             (None, Err(format!("No audio: {e}")))
         }
     };
-    let sample_rate = audio.as_ref().map(|a| a.sample_rate).unwrap_or(rate);
+    let sample_rate = audio.as_ref().map(|a| a.sample_rate).unwrap_or(p.sample_rate.load(Relaxed));
     audio::spawn_watchdog(engine.clone(), p.clone(), sample_rate);
 
     let options = eframe::NativeOptions {

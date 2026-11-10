@@ -33,54 +33,82 @@ pub fn default_rate() -> u32 {
         .unwrap_or(48000)
 }
 
-/// Open the default output and prove it's really running (the callback fires).
-/// Tries a small low-latency buffer first, then the device's default.
+/// Open an output and prove it keeps running (the callback keeps firing).
+/// On Linux we try PipeWire / Pulse directly before ALSA's "default", and for
+/// each device a small low-latency buffer first, then the device's default.
 pub fn start(engine: SharedEngine, p: Arc<Params>) -> Result<Audio, String> {
     let host = cpal::default_host();
     eprintln!("noodle: audio host = {:?}", host.id());
-    let device = host.default_output_device().ok_or("no audio output device found")?;
-    let name = device.name().unwrap_or_else(|_| "default".into());
-    let sup = device.default_output_config().map_err(|e| e.to_string())?;
-    let rate = sup.sample_rate().0;
-    let fmt = sup.sample_format();
-    eprintln!("noodle: audio device = {name}, {rate} Hz, {} ch, {fmt:?}", sup.channels());
+    let mut candidates: Vec<cpal::Device> = Vec::new();
+    if cfg!(target_os = "linux") {
+        if let Ok(devs) = host.output_devices() {
+            let devs: Vec<cpal::Device> = devs.collect();
+            for want in ["pipewire", "pulse"] {
+                if let Some(d) = devs.iter().find(|d| d.name().map(|n| n == want).unwrap_or(false)) {
+                    candidates.push(d.clone());
+                }
+            }
+        }
+    }
+    if let Some(d) = host.default_output_device() {
+        candidates.push(d);
+    }
+    if candidates.is_empty() {
+        return Err("no audio output device found".into());
+    }
     let mut last_err = String::from("audio stream never started");
-    for (label, size) in [("256 frames", cpal::BufferSize::Fixed(256)), ("device default", cpal::BufferSize::Default)] {
-        let mut cfg: cpal::StreamConfig = sup.config();
-        cfg.buffer_size = size;
-        let built = match fmt {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &cfg, engine.clone(), p.clone()),
-            cpal::SampleFormat::I16 => build::<i16>(&device, &cfg, engine.clone(), p.clone()),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &cfg, engine.clone(), p.clone()),
-            cpal::SampleFormat::I32 => build::<i32>(&device, &cfg, engine.clone(), p.clone()),
-            other => Err(format!("unsupported sample format {other:?}")),
-        };
-        let stream = match built {
+    for device in candidates {
+        let name = device.name().unwrap_or_else(|_| "default".into());
+        let sup = match device.default_output_config() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("noodle: audio buffer {label}: couldn't open ({e})");
-                last_err = e;
+                eprintln!("noodle: audio device {name}: no usable config ({e})");
+                last_err = e.to_string();
                 continue;
             }
         };
-        if let Err(e) = stream.play() {
-            eprintln!("noodle: audio buffer {label}: couldn't start ({e})");
-            last_err = e.to_string();
-            continue;
-        }
-        // wait for proof of life
-        let before = p.audio_beats.load(Relaxed);
-        let t = Instant::now();
-        while t.elapsed() < Duration::from_millis(800) {
-            if p.audio_beats.load(Relaxed) > before + 2 {
-                eprintln!("noodle: audio running ({label})");
+        let rate = sup.sample_rate().0;
+        let fmt = sup.sample_format();
+        eprintln!("noodle: trying audio device {name}: {rate} Hz, {} ch, {fmt:?}", sup.channels());
+        engine.lock().unwrap_or_else(|x| x.into_inner()).set_sample_rate(rate as f32);
+        for (label, size) in [("256 frames", cpal::BufferSize::Fixed(256)), ("device default", cpal::BufferSize::Default)] {
+            let mut cfg: cpal::StreamConfig = sup.config();
+            cfg.buffer_size = size;
+            let built = match fmt {
+                cpal::SampleFormat::F32 => build::<f32>(&device, &cfg, engine.clone(), p.clone()),
+                cpal::SampleFormat::I16 => build::<i16>(&device, &cfg, engine.clone(), p.clone()),
+                cpal::SampleFormat::U16 => build::<u16>(&device, &cfg, engine.clone(), p.clone()),
+                cpal::SampleFormat::I32 => build::<i32>(&device, &cfg, engine.clone(), p.clone()),
+                other => Err(format!("unsupported sample format {other:?}")),
+            };
+            let stream = match built {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("noodle:   {label}: couldn't open ({e})");
+                    last_err = e;
+                    continue;
+                }
+            };
+            if let Err(e) = stream.play() {
+                eprintln!("noodle:   {label}: couldn't start ({e})");
+                last_err = e.to_string();
+                continue;
+            }
+            // proof of life: callbacks must keep coming for most of a second, not just a first burst
+            std::thread::sleep(Duration::from_millis(300));
+            let a = p.audio_beats.load(Relaxed);
+            std::thread::sleep(Duration::from_millis(600));
+            let b = p.audio_beats.load(Relaxed);
+            // 600 ms of audio at this rate, in callbacks of at most ~4096 frames
+            let expected_min = ((rate as f64 * 0.6) / 4096.0).floor().max(2.0) as u64;
+            if b.saturating_sub(a) >= expected_min {
+                eprintln!("noodle: audio running on {name} ({label}, {} callbacks in 0.6 s)", b - a);
                 return Ok(Audio { _stream: stream, sample_rate: rate, device: name, buffer: label.into() });
             }
-            std::thread::sleep(Duration::from_millis(20));
+            eprintln!("noodle:   {label}: stream started but stalled ({} callbacks in 0.6 s)", b - a);
+            last_err = format!("{name} stalled");
+            drop(stream);
         }
-        eprintln!("noodle: audio buffer {label}: stream opened but the sound card never asked for audio");
-        last_err = "the sound card never asked for audio".into();
-        drop(stream);
     }
     Err(last_err)
 }

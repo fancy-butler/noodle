@@ -424,6 +424,19 @@ impl Engine {
         }
     }
 
+    /// Called before the stream starts (never on the audio thread).
+    pub fn set_sample_rate(&mut self, sr: f32) {
+        if (sr - self.sr).abs() < 1.0 {
+            return;
+        }
+        self.sr = sr;
+        let dlen = (sr as usize) * 4;
+        self.dl = vec![0.0; dlen];
+        self.dr = vec![0.0; dlen];
+        self.dpos = 0;
+        self.p.sample_rate.store(sr as u32, Relaxed);
+    }
+
     fn vis(&self, key: u8, vel: u8, src: u8) {
         let _ = self.tx.try_send(UiEvt::Note { key, vel, src });
     }
