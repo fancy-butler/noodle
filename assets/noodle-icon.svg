@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Noodle app icon. Original artwork, Fancy Butler, GPL-3.0-or-later. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffa45c"/>
+      <stop offset="1" stop-color="#f06a22"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="8" y="8" width="240" height="240" rx="54"/></clipPath>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#bg)"/>
+  <g clip-path="url(#tile)">
+    <!-- keys -->
+    <rect x="0" y="178" width="256" height="80" fill="#fbf3e2"/>
+    <g fill="#fbf3e2" stroke="#e2d4b8" stroke-width="3">
+      <rect x="8" y="178" width="48" height="80"/>
+      <rect x="56" y="178" width="48" height="80"/>
+      <rect x="104" y="178" width="48" height="80"/>
+      <rect x="152" y="178" width="48" height="80"/>
+      <rect x="200" y="178" width="48" height="80"/>
+    </g>
+    <g fill="#2a1d14">
+      <rect x="42" y="178" width="28" height="40" rx="4"/>
+      <rect x="90" y="178" width="28" height="40" rx="4"/>
+      <rect x="186" y="178" width="28" height="40" rx="4"/>
+    </g>
+    <rect x="0" y="172" width="256" height="8" fill="#2a1d14" opacity="0.85"/>
+  </g>
+  <!-- the noodle: one slurpy waveform -->
+  <path d="M 30 112 C 52 52, 78 52, 92 104 S 128 158, 146 100 S 186 40, 204 92 C 212 116, 224 122, 232 104"
+        fill="none" stroke="#5a2a10" stroke-opacity="0.35" stroke-width="30" stroke-linecap="round" transform="translate(3 6)"/>
+  <path d="M 30 112 C 52 52, 78 52, 92 104 S 128 158, 146 100 S 186 40, 204 92 C 212 116, 224 122, 232 104"
+        fill="none" stroke="#fff4d6" stroke-width="26" stroke-linecap="round"/>
+  <path d="M 30 112 C 52 52, 78 52, 92 104 S 128 158, 146 100 S 186 40, 204 92 C 212 116, 224 122, 232 104"
+        fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="6" stroke-linecap="round" transform="translate(-4 -6)"/>
+</svg>

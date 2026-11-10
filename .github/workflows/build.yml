@@ -19,7 +19,7 @@ jobs:
       - name: package
         run: |
           mkdir -p dist/noodle
-          cp target/release/noodle packaging/noodle.desktop packaging/install.sh LICENSE README.md dist/noodle/
+          cp target/release/noodle packaging/noodle.desktop packaging/install.sh assets/noodle-icon.png LICENSE README.md dist/noodle/
           tar -C dist -czf noodle-linux-x86_64.tar.gz noodle
       - uses: actions/upload-artifact@v4
         with: { name: noodle-linux-x86_64, path: noodle-linux-x86_64.tar.gz }

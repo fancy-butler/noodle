@@ -5,6 +5,10 @@ here="$(cd "$(dirname "$0")" && pwd)"
 bin="$here/noodle"; [ -f "$bin" ] || bin="$here/../target/release/noodle"
 install -Dm755 "$bin" "$HOME/.local/bin/noodle"
 install -Dm644 "$here/noodle.desktop" "$HOME/.local/share/applications/noodle.desktop"
+icon="$here/noodle-icon.png"; [ -f "$icon" ] || icon="$here/../assets/noodle-icon.png"
+install -Dm644 "$icon" "$HOME/.local/share/icons/hicolor/256x256/apps/noodle.png"
+gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+update-desktop-database -q "$HOME/.local/share/applications" 2>/dev/null || true
 mkdir -p "$HOME/.local/share/noodle/soundfonts" "$HOME/.local/share/noodle/songs"
 echo "Installed → ~/.local/bin/noodle (and an app-menu entry)."
 if ! ls /usr/share/soundfonts/*.sf2 /usr/share/sounds/sf2/*.sf2 "$HOME/.local/share/noodle/soundfonts/"*.sf2 >/dev/null 2>&1; then
