@@ -13,6 +13,7 @@ mod drums;
 mod game;
 mod engine;
 mod midi;
+mod pipe_art;
 mod pipes;
 mod settings;
 mod song;

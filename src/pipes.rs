@@ -90,6 +90,22 @@ pub const PIPES: &[Pipe] = &[
         tone: 1,
         note: "Single bass drone; ornament-heavy style.",
     },
+    Pipe {
+        name: "Medieval market pipes",
+        tonic: 69,
+        drones: &[(-12, "Tenor", true), (-24, "Bass", true), (-5, "Fifth", false)],
+        scale: "Mixolydian",
+        tone: 0,
+        note: "Marktsackpfeife-style reconstruction: loud, mouth-blown, separate drone stocks. Tunings vary by maker.",
+    },
+    Pipe {
+        name: "Hümmelchen",
+        tonic: 67,
+        drones: &[(-12, "Tenor", true), (-24, "Bass", false), (-5, "Fifth", true)],
+        scale: "Mixolydian",
+        tone: 2,
+        note: "Small, quiet Renaissance German pipe (after Praetorius). Reconstructions vary.",
+    },
 ];
 
 /// Shruti box drone patterns: semitones relative to Sa.

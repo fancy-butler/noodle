@@ -170,6 +170,7 @@ pub struct App {
     game: Option<Game>,
     show_results: bool,
     drone_running: bool,
+    pipe_picker: bool,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -438,6 +439,7 @@ impl App {
             game: None,
             show_results: false,
             drone_running: false,
+            pipe_picker: false,
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -1539,36 +1541,37 @@ impl App {
                     ui.label(RichText::new("Bagpipes: drones + a just-tuned chanter that never drops out.\nShruti: Sa–Pa drones to sing with.\nHarmonium: one key = the right chord in your Scale key.").size(11.5).color(text_dim()));
                 }
                 1 => {
-                    let mut pick = None;
-                    egui::ComboBox::from_id_salt("pipe").selected_text(crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name).width(200.0).show_ui(ui, |ui| {
-                        for (i, pp) in crate::pipes::PIPES.iter().enumerate() {
-                            if ui.selectable_label(i == self.s.pipe_idx, pp.name).on_hover_text(pp.note).clicked() {
-                                pick = Some(i);
-                            }
-                        }
-                    });
-                    if let Some(i) = pick {
-                        self.select_pipe(i);
-                    }
                     let pp = &crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)];
                     let tonic = self.p.pipe_tonic.load(Relaxed);
                     if self.s.pipe_drones.len() != pp.drones.len() {
                         self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
                     }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
-                        for (i, d) in pp.drones.iter().enumerate() {
-                            let on = self.s.pipe_drones[i];
-                            let nn = theory::note_name_oct((tonic as i32 + d.0 as i32).clamp(0, 127) as u8);
-                            let txt = RichText::new(format!("{} {}", d.1, nn)).size(11.5).color(if on { Color32::BLACK } else { fg() });
-                            if ui.add(egui::Button::new(txt).fill(if on { GOOD } else { card_hi() }).corner_radius(9.0)).on_hover_text("Drone on/off").clicked() {
-                                self.s.pipe_drones[i] = !on;
+                    ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(200.0);
+                            if ui.button(RichText::new(format!("{} ▾", pp.name)).strong()).on_hover_text("Choose a bagpipe").clicked() {
+                                self.pipe_picker = true;
                             }
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                                for (i, d) in pp.drones.iter().enumerate() {
+                                    let on = self.s.pipe_drones[i];
+                                    let nn = theory::note_name_oct((tonic as i32 + d.0 as i32).clamp(0, 127) as u8);
+                                    let txt = RichText::new(format!("{} {}", d.1, nn)).size(11.0).color(if on { Color32::BLACK } else { fg() });
+                                    if ui.add(egui::Button::new(txt).fill(if on { GOOD } else { card_hi() }).corner_radius(9.0)).on_hover_text("Drone on/off").clicked() {
+                                        self.s.pipe_drones[i] = !on;
+                                    }
+                                }
+                            });
+                            ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
+                            ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes (a wind controller's breath still stops it)");
+                        });
+                        let (r, resp) = ui.allocate_exact_size(Vec2::new(78.0, 92.0), Sense::click());
+                        ui.painter().rect_filled(r, 8.0, deep());
+                        crate::pipe_art::draw(ui.painter(), r.shrink(4.0), self.s.pipe_idx);
+                        if resp.on_hover_text(pp.note).clicked() {
+                            self.pipe_picker = true;
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
-                        ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes (a wind controller's breath still stops it)");
                     });
                 }
                 2 => {
@@ -2542,6 +2545,46 @@ impl App {
         }
     }
 
+    fn pipe_picker(&mut self, ctx: &egui::Context) {
+        if !self.pipe_picker {
+            return;
+        }
+        let mut open = true;
+        let mut pick = None;
+        egui::Window::new("Choose your pipes").collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            egui::Grid::new("pipes_grid").spacing([10.0, 10.0]).show(ui, |ui| {
+                for (i, pp) in crate::pipes::PIPES.iter().enumerate() {
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(150.0, 172.0), Sense::click());
+                    let sel = i == self.s.pipe_idx;
+                    let bgc = if resp.hovered() { card_hi() } else { card_bg() };
+                    ui.painter().rect_filled(r, 10.0, bgc);
+                    if sel {
+                        ui.painter().rect_stroke(r, 10.0, Stroke::new(2.5, LIVE), StrokeKind::Inside);
+                    }
+                    let art = Rect::from_min_size(r.min + Vec2::new(15.0, 8.0), Vec2::new(120.0, 120.0));
+                    ui.painter().rect_filled(art, 8.0, deep());
+                    crate::pipe_art::draw(ui.painter(), art.shrink(6.0), i);
+                    ui.painter().text(Pos2::new(r.center().x, r.bottom() - 34.0), Align2::CENTER_CENTER, pp.name, FontId::proportional(12.5), fg());
+                    let drones = pp.drones.iter().filter(|d| d.2).count();
+                    let key = if matches!(pp.tonic % 12, 1 | 3 | 8 | 10) { theory::NOTE_FLAT[(pp.tonic % 12) as usize] } else { theory::NOTE_SHARP[(pp.tonic % 12) as usize] };
+                    ui.painter().text(Pos2::new(r.center().x, r.bottom() - 16.0), Align2::CENTER_CENTER, format!("{key} · {drones} drone{}", if drones == 1 { "" } else { "s" }), FontId::proportional(11.0), text_dim());
+                    if resp.on_hover_text(pp.note).clicked() {
+                        pick = Some(i);
+                    }
+                    if i % 4 == 3 {
+                        ui.end_row();
+                    }
+                }
+            });
+        });
+        if let Some(i) = pick {
+            self.select_pipe(i);
+            self.pipe_picker = false;
+        } else if !open {
+            self.pipe_picker = false;
+        }
+    }
+
     fn results(&mut self, ctx: &egui::Context) {
         if !self.show_results {
             return;
@@ -2771,6 +2814,7 @@ impl eframe::App for App {
         self.help(ctx);
         self.game_tick();
         self.results(ctx);
+        self.pipe_picker(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();
