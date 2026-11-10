@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Fancy Butler. GPL-3.0-or-later.
 
 use crate::drums::{KITS, PATTERNS};
+use crate::game::{self, Game};
 use crate::engine::*;
 use crate::settings::Settings;
 use crate::song::{self, Song};
@@ -165,6 +166,10 @@ pub struct App {
     wind_name: String,
     scale_filter: String,
     style_done: bool,
+    game_mode: bool,
+    game: Option<Game>,
+    show_results: bool,
+    drone_running: bool,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -429,6 +434,10 @@ impl App {
             wind_name: String::new(),
             scale_filter: String::new(),
             style_done: false,
+            game_mode: false,
+            game: None,
+            show_results: false,
+            drone_running: false,
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -446,6 +455,127 @@ impl App {
 
     /// Reopen the sound card with a new buffer size. The watchdog keeps the engine
     /// alive during the switch.
+    fn game_key(&self) -> String {
+        let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+        if self.s.g_pattern == 6 {
+            format!("Rhythm · {} · {} bpm", game::RHYTHMS[self.s.g_rhythm], self.s.g_bpm as i32)
+        } else {
+            format!("{} {} · {} · {} · {} oct · {} bpm", ROOTS[self.s.scale_root].0, sc.name, game::PATTERNS[self.s.g_pattern], game::RHYTHMS[self.s.g_rhythm], self.s.g_octaves, self.s.g_bpm as i32)
+        }
+    }
+
+    fn start_game(&mut self, from_song: bool) {
+        self.show_results = false;
+        let (chart, mask, name) = if from_song {
+            let Some(song) = self.song.clone() else { return };
+            if self.song_user == 0 {
+                self.song_err = Some("Pick the part you play first (You play: …)".into());
+                return;
+            }
+            let name = format!("{} · song", song.name);
+            (song, self.song_user, name)
+        } else {
+            let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+            let cfg = game::DrillCfg {
+                root_pc: ROOTS[self.s.scale_root].1,
+                pattern: self.s.g_pattern,
+                rhythm: self.s.g_rhythm,
+                bpm: self.s.g_bpm,
+                octaves: self.s.g_octaves,
+                bars: self.s.g_bars,
+                bank: self.s.main.0,
+                program: self.s.main.1,
+            };
+            let name = self.game_key();
+            let chart = Arc::new(game::make_drill(&cfg, sc, &name));
+            // make the drill visible on small keyboards
+            if let (Some(lo), Some(hi)) = (chart.notes.iter().map(|n| n.key).min(), chart.notes.iter().map(|n| n.key).max()) {
+                if self.s.kb_size < 88 && (lo < self.range().0 || hi > self.range().1) {
+                    let span = hi - lo;
+                    if span < self.s.kb_size {
+                        self.s.kb_lo = (lo / 12) * 12;
+                    }
+                }
+            }
+            self.set_song(Some(chart.clone()), if self.s.g_hear { 0 } else { 1 });
+            (chart, 1u16, name)
+        };
+        self.p.song_wait.store(false, Relaxed);
+        self.song_wait = false;
+        if from_song {
+            let _ = self.tx.send(Cmd::SongSeek(0.0));
+        }
+        self.game = Some(Game::new(chart, mask, self.s.g_any_octave, name));
+        let _ = self.tx.send(Cmd::SongPlay(true));
+    }
+
+    fn game_tick(&mut self) {
+        let now = now_s(&self.t0);
+        let pos = self.p.song_pos.get();
+        let speed = self.p.song_speed.get() as f64;
+        let Some(g) = self.game.as_mut() else { return };
+        let was = g.finished;
+        g.tick(pos, speed, now);
+        if g.finished && !was {
+            let acc = g.accuracy();
+            let grade = g.grade().to_string();
+            let key = g.name.clone();
+            let better = self.s.g_best.get(&key).map(|b| acc > b.0).unwrap_or(true);
+            if better && g.judged() > 0 {
+                self.s.g_best.insert(key, (acc, grade));
+            }
+            self.show_results = true;
+        }
+    }
+
+    fn game_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("🎮 GAME").strong().color(YOURS));
+            let sidx = self.s.scale_idx.min(SCALES.len() - 1);
+            if self.s.g_pattern != 6 {
+                ui.label(RichText::new(format!("{} {}", ROOTS[self.s.scale_root].0, SCALES[sidx].name)).color(text_dim())).on_hover_text("Change root and scale with the Scale controls above");
+            }
+            egui::ComboBox::from_id_salt("g_pat").selected_text(game::PATTERNS[self.s.g_pattern]).width(140.0).show_ui(ui, |ui| {
+                for (i, n) in game::PATTERNS.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.g_pattern, i, *n);
+                }
+            });
+            egui::ComboBox::from_id_salt("g_rhy").selected_text(game::RHYTHMS[self.s.g_rhythm]).width(96.0).show_ui(ui, |ui| {
+                for (i, n) in game::RHYTHMS.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.g_rhythm, i, *n);
+                }
+            });
+            ui.add(egui::DragValue::new(&mut self.s.g_bpm).range(30.0..=240.0).speed(0.5).fixed_decimals(0).suffix(" bpm"));
+            if self.s.g_pattern >= 4 {
+                ui.add(egui::DragValue::new(&mut self.s.g_bars).range(1..=32).suffix(" bars"));
+            }
+            if self.s.g_pattern < 6 {
+                for o in 1..=2u8 {
+                    if ui.selectable_label(self.s.g_octaves == o, format!("{o} oct")).clicked() {
+                        self.s.g_octaves = o;
+                    }
+                }
+            }
+            ui.toggle_value(&mut self.s.g_any_octave, "Any octave").on_hover_text("Right note in any octave counts — handy on a 25-key keyboard");
+            ui.toggle_value(&mut self.s.g_hear, "Hear targets").on_hover_text("Play the target notes too (practice). Off = only you.");
+            if big_toggle(ui, false, "▶ START", GOOD, Vec2::new(86.0, 24.0)).on_hover_text("One bar of count-in clicks, then go").clicked() {
+                self.start_game(false);
+            }
+            if self.song.is_some() && self.song_user != 0 && self.song.as_ref().map(|s| s.name != "Scale" && !s.name.contains('·')).unwrap_or(false) {
+                if ui.button("▶ Play song as game").clicked() {
+                    self.start_game(true);
+                }
+            }
+            if self.game.is_some() && ui.button("■ Stop").clicked() {
+                let _ = self.tx.send(Cmd::SongPlay(false));
+                self.game = None;
+            }
+            if let Some(b) = self.s.g_best.get(&self.game_key()) {
+                ui.label(RichText::new(format!("best {} · {:.1}%", b.1, b.0 * 100.0)).color(YOURS));
+            }
+        });
+    }
+
     fn restart_audio(&mut self, frames: u32) {
         self.s.latency = frames;
         self.audio = None; // closes the old stream
@@ -668,7 +798,15 @@ impl App {
         let now = now_s(&self.t0);
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
-                UiEvt::Note { key, vel, src } => {
+                UiEvt::Note { key, vel, src, pos } => {
+                    if vel > 0 && src == src::LIVE {
+                        let speed = self.p.song_speed.get() as f64;
+                        if let Some(g) = self.game.as_mut() {
+                            if self.p.song_playing.load(Relaxed) && !g.finished {
+                                g.press(key, pos, speed, now);
+                            }
+                        }
+                    }
                     let si = (src as usize).min(2);
                     self.held[si][key as usize] = vel;
                     if vel > 0 {
@@ -1089,6 +1227,7 @@ impl App {
                 self.loop_card(ui);
                 self.drum_card(ui);
                 self.arp_card(ui);
+                self.drone_card(ui);
             });
         });
     }
@@ -1294,6 +1433,201 @@ impl App {
             let note = 36 + i;
             let _ = self.tx.send(Cmd::Midi(if on { [0x99, note, 110] } else { [0x89, note, 0] }));
         }
+    }
+
+    fn select_pipe(&mut self, i: usize) {
+        let pp = &crate::pipes::PIPES[i.min(crate::pipes::PIPES.len() - 1)];
+        self.s.pipe_idx = i;
+        self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
+        self.set_preset(false, (0, 109)); // GM Bagpipe for the chanter
+        self.scale_on = true;
+        self.s.scale_idx = theory::scale_index(pp.scale);
+        self.s.scale_root = ROOTS.iter().position(|r| r.1 == pp.tonic % 12).unwrap_or(9);
+        self.rebuild_walk();
+    }
+
+    fn set_drone_mode(&mut self, m: u8) {
+        self.s.drone_mode = m;
+        match m {
+            1 => {
+                let i = self.s.pipe_idx;
+                self.select_pipe(i);
+                self.drone_running = true;
+            }
+            2 => self.drone_running = true,
+            3 => {
+                self.set_preset(false, (0, 20)); // GM Reed Organ ≈ harmonium
+                self.scale_on = true;
+                self.rebuild_walk();
+                self.drone_running = self.s.harm_drone;
+            }
+            _ => self.drone_running = false,
+        }
+    }
+
+    /// Push the drone/pipe/harmonium state to the engine every frame (cheap atomics).
+    fn apply_drones(&mut self) {
+        let p = &self.p;
+        let mode = self.s.drone_mode;
+        let root_pc = ROOTS[self.s.scale_root].1 as i32;
+        let mut cents = [i32::MIN; 4];
+        let mut tone = 3u8;
+        match mode {
+            1 => {
+                let pp = &crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)];
+                // tonic follows the Scale key, staying in the pipe's register
+                let base = pp.tonic as i32;
+                let mut tonic = base - base.rem_euclid(12) + root_pc;
+                if tonic - base > 6 {
+                    tonic -= 12;
+                } else if base - tonic > 6 {
+                    tonic += 12;
+                }
+                p.pipe_tonic.store(tonic.clamp(0, 127) as u8, Relaxed);
+                for (i, d) in pp.drones.iter().enumerate().take(4) {
+                    if self.s.pipe_drones.get(i).copied().unwrap_or(d.2) {
+                        cents[i] = (tonic + d.0 as i32) * 100 + self.s.pipe_tune;
+                    }
+                }
+                tone = pp.tone;
+            }
+            2 | 3 => {
+                if mode == 2 || self.s.harm_drone {
+                    let sa = if self.s.shruti_low { 48 } else { 60 } + root_pc;
+                    let pat = crate::pipes::SHRUTI[self.s.shruti_pat.min(crate::pipes::SHRUTI.len() - 1)].1;
+                    for (i, r) in pat.iter().enumerate().take(4) {
+                        cents[i] = (sa + *r as i32) * 100;
+                    }
+                }
+            }
+            _ => {}
+        }
+        for i in 0..4 {
+            p.drone_cents[i].store(cents[i], Relaxed);
+        }
+        p.drone_tone.store(tone, Relaxed);
+        p.drone_level.set(self.s.drone_level);
+        p.drone_on.store(self.drone_running && mode != 0, Relaxed);
+        p.pipe_mode.store(mode == 1, Relaxed);
+        p.pipe_just.store(self.s.pipe_just, Relaxed);
+        p.pipe_tune.store(self.s.pipe_tune, Relaxed);
+        p.pipe_continuous.store(self.s.pipe_cont, Relaxed);
+        p.chord_on.store(mode == 3, Relaxed);
+        p.chord_kind.store(self.s.chord_kind, Relaxed);
+    }
+
+    fn drone_card(&mut self, ui: &mut egui::Ui) {
+        let title = match self.s.drone_mode {
+            1 => "DRONE · BAGPIPES",
+            2 => "DRONE · SHRUTI BOX",
+            3 => "DRONE · HARMONIUM",
+            _ => "DRONE",
+        };
+        card(ui, title, 300.0, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for (i, n) in ["Off", "Bagpipes", "Shruti", "Harmonium"].iter().enumerate() {
+                    if ui.selectable_label(self.s.drone_mode == i as u8, RichText::new(*n).size(12.5)).clicked() && self.s.drone_mode != i as u8 {
+                        self.set_drone_mode(i as u8);
+                    }
+                }
+            });
+            let key = ROOTS[self.s.scale_root].0;
+            match self.s.drone_mode {
+                0 => {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Bagpipes: drones + a just-tuned chanter that never drops out.\nShruti: Sa–Pa drones to sing with.\nHarmonium: one key = the right chord in your Scale key.").size(11.5).color(text_dim()));
+                }
+                1 => {
+                    let mut pick = None;
+                    egui::ComboBox::from_id_salt("pipe").selected_text(crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name).width(200.0).show_ui(ui, |ui| {
+                        for (i, pp) in crate::pipes::PIPES.iter().enumerate() {
+                            if ui.selectable_label(i == self.s.pipe_idx, pp.name).on_hover_text(pp.note).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+                    if let Some(i) = pick {
+                        self.select_pipe(i);
+                    }
+                    let pp = &crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)];
+                    let tonic = self.p.pipe_tonic.load(Relaxed);
+                    if self.s.pipe_drones.len() != pp.drones.len() {
+                        self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                        for (i, d) in pp.drones.iter().enumerate() {
+                            let on = self.s.pipe_drones[i];
+                            let nn = theory::note_name_oct((tonic as i32 + d.0 as i32).clamp(0, 127) as u8);
+                            let txt = RichText::new(format!("{} {}", d.1, nn)).size(11.5).color(if on { Color32::BLACK } else { fg() });
+                            if ui.add(egui::Button::new(txt).fill(if on { GOOD } else { card_hi() }).corner_radius(9.0)).on_hover_text("Drone on/off").clicked() {
+                                self.s.pipe_drones[i] = !on;
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
+                        ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes (a wind controller's breath still stops it)");
+                    });
+                }
+                2 => {
+                    egui::ComboBox::from_id_salt("shruti").selected_text(crate::pipes::SHRUTI[self.s.shruti_pat.min(crate::pipes::SHRUTI.len() - 1)].0).width(150.0).show_ui(ui, |ui| {
+                        for (i, (n, _)) in crate::pipes::SHRUTI.iter().enumerate() {
+                            ui.selectable_value(&mut self.s.shruti_pat, i, *n);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Sa = {key}")).strong().color(GOOD)).on_hover_text("Follows the Scale key");
+                        ui.selectable_value(&mut self.s.shruti_low, true, "Low");
+                        ui.selectable_value(&mut self.s.shruti_low, false, "Mid");
+                    });
+                }
+                _ => {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        for (i, n) in crate::pipes::CHORD_TYPES.iter().enumerate() {
+                            if ui.selectable_label(self.s.chord_kind == i as u8, RichText::new(*n).size(11.5)).clicked() {
+                                self.s.chord_kind = i as u8;
+                            }
+                        }
+                    });
+                    let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+                    ui.label(RichText::new(format!("Any note in {key} {} plays its chord.", sc.name)).size(11.5).color(text_dim()));
+                    if ui.checkbox(&mut self.s.harm_drone, "Shruti drone under it").changed() {
+                        self.drone_running = self.s.harm_drone;
+                    }
+                }
+            }
+            if self.s.drone_mode != 0 {
+                ui.horizontal(|ui| {
+                    let mut lv = self.s.drone_level;
+                    if knob(ui, "Drones", &mut lv, 0.6, GOOD, pct) {
+                        self.s.drone_level = lv;
+                    }
+                    if self.s.drone_mode == 1 {
+                        let mut t = (self.s.pipe_tune as f32 + 100.0) / 200.0;
+                        if knob(ui, "Tune", &mut t, 0.5, LIVE, |v| format!("{:+.0} ¢", v * 200.0 - 100.0)) {
+                            self.s.pipe_tune = (t * 200.0 - 100.0).round() as i32;
+                        }
+                    }
+                    if self.s.drone_mode != 3 || self.s.harm_drone {
+                        let on = self.drone_running;
+                        let lbl = match (on, self.s.drone_mode) {
+                            (false, 1) => "▶ STRIKE IN",
+                            (false, _) => "▶ START",
+                            (true, _) => "■ STOP",
+                        };
+                        if big_toggle(ui, on, lbl, GOOD, Vec2::new(110.0, 30.0)).on_hover_text("Drones on / off").clicked() {
+                            self.drone_running = !on;
+                            if on {
+                                let _ = self.tx.send(Cmd::Panic); // also silences a sustaining chanter
+                            }
+                        }
+                    }
+                });
+            }
+        });
     }
 
     fn wind_card(&mut self, ui: &mut egui::Ui) {
@@ -1568,6 +1902,18 @@ impl App {
                 }
             }).response.on_hover_text("Show the staff in written pitch for your instrument (sax, clarinet, whistle…)");
             ui.separator();
+            if ui.toggle_value(&mut self.game_mode, RichText::new("🎮 Game").strong()).on_hover_text("Rhythm-game training: notes fall, you hit them on time").changed() {
+                if self.game_mode {
+                    self.scale_on = true;
+                    self.rebuild_walk();
+                    if self.s.view == 1 {
+                        self.s.view = 2;
+                    }
+                } else {
+                    let _ = self.tx.send(Cmd::SongPlay(false));
+                    self.game = None;
+                }
+            }
             let was = self.scale_on;
             ui.toggle_value(&mut self.scale_on, RichText::new("🎼 Scale").strong());
             if was != self.scale_on {
@@ -1656,6 +2002,9 @@ impl App {
             if !line.is_empty() {
                 ui.label(RichText::new(line).size(11.5).color(text_dim()));
             }
+        }
+        if self.game_mode {
+            self.game_bar(ui);
         }
         // song bar
         ui.horizontal(|ui| {
@@ -1783,27 +2132,83 @@ impl App {
             let pos = self.p.song_pos.get();
             let speed = 160.0f64;
             let horizon = rect.height() as f64 / speed;
-            for n in song.notes.iter() {
+            let gstate = self.game.as_ref().filter(|g| Arc::ptr_eq(&g.chart, song));
+            let now = now_s(&self.t0);
+            for (i, n) in song.notes.iter().enumerate() {
                 if n.start > pos + horizon {
                     break;
                 }
-                if n.end < pos || n.key < lo || n.key > hi || n.ch == 9 {
+                if n.end < pos - 0.6 || n.key < lo || n.key > hi || n.ch == 9 {
+                    continue;
+                }
+                let (x, w, black) = key_x(rect, n.key, lo, hi);
+                let yours = self.song_user & (1 << n.ch) != 0 || gstate.map(|g| g.mask & (1 << n.ch) != 0).unwrap_or(false);
+                let judged = gstate.map(|g| g.state[i]).unwrap_or(game::J_PENDING);
+                if judged != game::J_PENDING && judged != game::J_MISS {
+                    // hit: burst at the hit line, then gone
+                    let age = (now - gstate.unwrap().hit_at[i]) as f32;
+                    if age < 0.35 {
+                        let c = match judged {
+                            game::J_PERFECT => YOURS,
+                            game::J_GREAT => GOOD,
+                            _ => ARP,
+                        };
+                        let grow = 1.0 + age * 3.0;
+                        let r = Rect::from_center_size(Pos2::new(x + w / 2.0, rect.bottom() - 6.0), Vec2::new(w * grow, 18.0 * grow));
+                        painter.rect_filled(r, 6.0, c.gamma_multiply(1.0 - age / 0.35));
+                    }
+                    continue;
+                }
+                if n.end < pos {
                     continue;
                 }
                 let yb = rect.bottom() - ((n.start - pos) * speed) as f32;
                 let yt = rect.bottom() - ((n.end - pos) * speed) as f32;
-                let (x, w, black) = key_x(rect, n.key, lo, hi);
-                let yours = self.song_user & (1 << n.ch) != 0;
-                let base = if yours { YOURS } else { SONG };
+                let base = if judged == game::J_MISS { BAD } else if yours { YOURS } else { SONG };
                 let col = if black { base.gamma_multiply(0.75) } else { base };
-                let r = Rect::from_min_max(Pos2::new(x + 1.0, yt.max(rect.top())), Pos2::new(x + w - 1.0, yb.min(rect.bottom())));
+                let r = Rect::from_min_max(Pos2::new(x + 1.0, yt.max(rect.top())), Pos2::new(x + w - 1.0, yb.min(rect.bottom() + 40.0)));
                 painter.rect_filled(r, 3.0, if yours { col } else { col.gamma_multiply(0.6) });
-                if yours {
+                if yours && judged == game::J_PENDING {
                     painter.rect_stroke(r, 3.0, Stroke::new(1.0, fg().gamma_multiply(0.5)), StrokeKind::Inside);
                 }
             }
             // hit line
             painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0, YOURS.gamma_multiply(0.5)));
+            if let Some(g) = self.game.as_ref() {
+                let now = now_s(&self.t0);
+                // judgement pop-ups float up from the hit line
+                for pp in &g.popups {
+                    if pp.key < lo || pp.key > hi {
+                        continue;
+                    }
+                    let (x, w, _) = key_x(rect, pp.key, lo, hi);
+                    let age = (now - pp.t) as f32;
+                    let c = match pp.kind {
+                        game::J_PERFECT => YOURS,
+                        game::J_GREAT => GOOD,
+                        game::J_GOOD => ARP,
+                        _ => BAD,
+                    };
+                    painter.text(Pos2::new(x + w / 2.0, rect.bottom() - 34.0 - age * 70.0), Align2::CENTER_CENTER, pp.text, FontId::proportional(17.0), c.gamma_multiply((1.0 - age / 0.8).max(0.0)));
+                }
+                // combo + score
+                if g.combo >= 3 {
+                    let pulse = if g.combo % 25 == 0 { 1.25 } else { 1.0 };
+                    painter.text(rect.center_top() + Vec2::new(0.0, 46.0), Align2::CENTER_CENTER, format!("{}", g.combo), FontId::proportional(54.0 * pulse), YOURS.gamma_multiply(0.9));
+                    painter.text(rect.center_top() + Vec2::new(0.0, 84.0), Align2::CENTER_CENTER, "COMBO", FontId::proportional(14.0), text_dim());
+                }
+                let mult = 1 + (g.combo / 25).min(3);
+                painter.text(rect.right_top() + Vec2::new(-14.0, 10.0), Align2::RIGHT_TOP, format!("{:07}", g.score), FontId::monospace(26.0), fg());
+                painter.text(rect.right_top() + Vec2::new(-14.0, 42.0), Align2::RIGHT_TOP, format!("{:.1}%  ·  ×{}", g.accuracy() * 100.0, mult), FontId::proportional(14.0), text_dim());
+                // progress
+                let prog = (self.p.song_pos.get() / g.chart.dur.max(0.1)).clamp(0.0, 1.0) as f32;
+                let bar = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width() * prog, 4.0));
+                painter.rect_filled(bar, 0.0, YOURS.gamma_multiply(0.8));
+                // streak glow
+                if g.combo >= 25 {
+                    painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(3.0, YOURS.gamma_multiply(0.35)), StrokeKind::Inside);
+                }
+            }
             // your notes still glow at the bottom
             for b in self.bars.iter().filter(|b| b.end.is_none() && b.key >= lo && b.key <= hi) {
                 let (x, w, _) = key_x(rect, b.key, lo, hi);
@@ -2137,6 +2542,75 @@ impl App {
         }
     }
 
+    fn results(&mut self, ctx: &egui::Context) {
+        if !self.show_results {
+            return;
+        }
+        let Some(g) = self.game.as_ref() else { return };
+        let (grade, acc, score, maxc, counts, wrong, total, name) = (g.grade(), g.accuracy(), g.score, g.max_combo, g.counts, g.wrong, g.total, g.name.clone());
+        let best = self.s.g_best.get(&name).cloned();
+        let mut again = false;
+        let mut faster = false;
+        let mut close = false;
+        egui::Window::new("Results").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            ui.set_min_width(320.0);
+            ui.vertical_centered(|ui| {
+                let gc = match grade {
+                    "S+" | "S" => YOURS,
+                    "A" => GOOD,
+                    "B" => ARP,
+                    _ => BAD,
+                };
+                ui.label(RichText::new(grade).size(72.0).strong().color(gc));
+                ui.label(RichText::new(format!("{:.1}%", acc * 100.0)).size(24.0));
+                ui.label(RichText::new(&name).size(12.0).color(text_dim()));
+            });
+            ui.add_space(8.0);
+            egui::Grid::new("res").num_columns(2).spacing([30.0, 4.0]).show(ui, |ui| {
+                for (lbl, v, c) in [
+                    ("Perfect", counts[1], YOURS),
+                    ("Great", counts[2], GOOD),
+                    ("Good", counts[3], ARP),
+                    ("Miss", counts[4], BAD),
+                    ("Wrong notes", wrong, BAD),
+                ] {
+                    ui.label(RichText::new(lbl).color(c));
+                    ui.label(RichText::new(v.to_string()).monospace());
+                    ui.end_row();
+                }
+                ui.label("Max combo");
+                ui.label(RichText::new(format!("{maxc} / {total}")).monospace());
+                ui.end_row();
+                ui.label("Score");
+                ui.label(RichText::new(score.to_string()).monospace());
+                ui.end_row();
+            });
+            if let Some((b, bg)) = best {
+                ui.label(RichText::new(format!("Personal best: {bg} · {:.1}%", b * 100.0)).color(YOURS));
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                again = ui.button("↻ Again").clicked();
+                faster = ui.button("⏩ Again, +5 bpm").clicked();
+                close = ui.button("Done").clicked();
+            });
+        });
+        let from_song = name.ends_with("· song");
+        if again || faster {
+            if faster {
+                if from_song {
+                    let sp = (self.p.song_speed.get() + 0.05).min(2.0);
+                    self.p.song_speed.set(sp);
+                } else {
+                    self.s.g_bpm = (self.s.g_bpm + 5.0).min(240.0);
+                }
+            }
+            self.start_game(from_song);
+        } else if close {
+            self.show_results = false;
+        }
+    }
+
     fn kb_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Keys").color(text_dim()));
@@ -2237,6 +2711,7 @@ impl eframe::App for App {
             self.style_done = true;
         }
         self.apply_controller();
+        self.apply_drones();
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop
@@ -2294,6 +2769,8 @@ impl eframe::App for App {
             }
         });
         self.help(ctx);
+        self.game_tick();
+        self.results(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();

@@ -10,8 +10,10 @@
 
 mod audio;
 mod drums;
+mod game;
 mod engine;
 mod midi;
+mod pipes;
 mod settings;
 mod song;
 mod sounds;
@@ -268,6 +270,33 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     }
     p.wind_on.store(false, Relaxed);
     render(0.3, "  (wind off)", &mut eng);
+
+    // drones + bagpipe chanter: GHB in A
+    p.wind_on.store(false, Relaxed);
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 109 }).unwrap(); // GM bagpipe
+    p.drone_tone.store(0, Relaxed);
+    p.drone_cents[0].store(5700, Relaxed); // A3 tenor
+    p.drone_cents[1].store(5700, Relaxed);
+    p.drone_cents[2].store(4500, Relaxed); // A2 bass
+    p.drone_on.store(true, Relaxed);
+    check!("drones", render(1.0, "bagpipe drones (A3 A3 A2)", &mut eng), true);
+    p.pipe_mode.store(true, Relaxed);
+    p.pipe_tonic.store(69, Relaxed);
+    tx.send(note(69, true)).unwrap();
+    render(0.3, "  chanter low A", &mut eng);
+    tx.send(note(71, true)).unwrap();
+    tx.send(note(71, false)).unwrap(); // a quick cut: falls back to the A still held
+    render(0.2, "  cut, back to A", &mut eng);
+    tx.send(note(69, false)).unwrap(); // all fingers up: chanter keeps sounding
+    let sustained = render(0.6, "chanter sustains (fingers up)", &mut eng);
+    p.drone_on.store(false, Relaxed);
+    p.pipe_mode.store(false, Relaxed);
+    tx.send(Cmd::Panic).unwrap();
+    let after = render(1.2, "drones off + panic (should fade)", &mut eng);
+    println!("  chanter+drones rms {:.4}, after stop {:.4}", sustained.1, after.1);
+    if sustained.1 < 0.01 {
+        fails.push("chanter/drones not sustaining".into());
+    }
 
     // UI events made it out
     let mut notes = 0;

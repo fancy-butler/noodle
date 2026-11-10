@@ -173,6 +173,20 @@ pub struct Params {
     pub audio_ok: AtomicBool,
     /// frames per sound-card callback (for the latency readout)
     pub audio_frames: AtomicU32,
+    // drones (bagpipes / shruti): absolute pitch in cents (MIDI note × 100), i32::MIN = off
+    pub drone_on: AtomicBool,
+    pub drone_cents: [AtomicI32; 4],
+    pub drone_level: AF32,
+    pub drone_tone: AtomicU8, // 0 bright pipe, 1 medium pipe, 2 sweet pipe, 3 reed (shruti/harmonium)
+    // bagpipe chanter
+    pub pipe_mode: AtomicBool,
+    pub pipe_tonic: AtomicU8,
+    pub pipe_just: AtomicBool,
+    pub pipe_tune: AtomicI32, // cents
+    pub pipe_continuous: AtomicBool,
+    // harmonium: one key → chord in the current scale
+    pub chord_on: AtomicBool,
+    pub chord_kind: AtomicU8,
 }
 
 impl Params {
@@ -232,6 +246,17 @@ impl Params {
             audio_beats: AtomicU64::new(0),
             audio_ok: AtomicBool::new(true),
             audio_frames: AtomicU32::new(0),
+            drone_on: AtomicBool::new(false),
+            drone_cents: std::array::from_fn(|_| AtomicI32::new(i32::MIN)),
+            drone_level: AF32::new(0.6),
+            drone_tone: AtomicU8::new(0),
+            pipe_mode: AtomicBool::new(false),
+            pipe_tonic: AtomicU8::new(69),
+            pipe_just: AtomicBool::new(true),
+            pipe_tune: AtomicI32::new(0),
+            pipe_continuous: AtomicBool::new(true),
+            chord_on: AtomicBool::new(false),
+            chord_kind: AtomicU8::new(0),
         }
     }
 }
@@ -257,7 +282,8 @@ pub enum Cmd {
 }
 
 pub enum UiEvt {
-    Note { key: u8, vel: u8, src: u8 },
+    /// `pos` = song position (s) when the engine handled it — used for game timing
+    Note { key: u8, vel: u8, src: u8, pos: f64 },
     AllOff { src: u8 },
     Program { bank: i32, prog: i32 },
     Trash(Box<SynthPair>),
@@ -270,6 +296,30 @@ pub enum UiEvt {
     /// relative encoder: browse sounds / categories
     Browse(i8),
     Category(i8),
+}
+
+#[derive(Clone, Copy, Default)]
+struct DroneVoice {
+    phase: f64,
+    phase2: f64,
+    gain: f32,
+    lp: [f32; 2],
+    bp: [f32; 2],
+    glide: f32, // strike-in pitch envelope (cents below target, decays to 0)
+    cents: i32,
+}
+
+#[inline]
+fn polyblep(t: f64, dt: f64) -> f64 {
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -348,6 +398,12 @@ pub struct Engine {
     enc_last: [u8; 128],
     breath_lock: u8,
     wind_was: bool,
+    drones: [DroneVoice; 4],
+    noise: u32,
+    chanter: i16,
+    pipe_held: [u8; 16],
+    pipe_n: usize,
+    chord_of: [[i16; 4]; 128],
 }
 
 #[inline]
@@ -424,6 +480,12 @@ impl Engine {
             enc_last: [64; 128],
             breath_lock: 0,
             wind_was: false,
+            drones: [DroneVoice::default(); 4],
+            noise: 0x9e37_79b9,
+            chanter: -1,
+            pipe_held: [0; 16],
+            pipe_n: 0,
+            chord_of: [[-1; 4]; 128],
         }
     }
 
@@ -441,7 +503,7 @@ impl Engine {
     }
 
     fn vis(&self, key: u8, vel: u8, src: u8) {
-        let _ = self.tx.try_send(UiEvt::Note { key, vel, src });
+        let _ = self.tx.try_send(UiEvt::Note { key, vel, src, pos: self.song_pos });
     }
 
     fn samples_per_beat(&self) -> f64 {
@@ -586,6 +648,25 @@ impl Engine {
         let s = self.snap(t) as u8;
         self.sounded_for[k as usize] = s as i16;
         self.vis(s, vel, src::LIVE);
+        if self.p.pipe_mode.load(Relaxed) {
+            self.to_arp[k as usize] = false;
+            self.pipe_on(s);
+            return;
+        }
+        if self.p.chord_on.load(Relaxed) && !self.p.arp_on.load(Relaxed) {
+            self.to_arp[k as usize] = false;
+            let notes = crate::pipes::chord_for(s, self.p.scale_mask.load(Relaxed), self.p.chord_kind.load(Relaxed));
+            let mut slot = [-1i16; 4];
+            for (i, n) in notes.iter().take(4).enumerate() {
+                slot[i] = *n as i16;
+                self.route(*n, vel, true);
+                if *n != s {
+                    self.vis(*n, vel, src::ARP);
+                }
+            }
+            self.chord_of[k as usize] = slot;
+            return;
+        }
         if self.p.arp_on.load(Relaxed) {
             self.to_arp[k as usize] = true;
             self.arp_add(s, vel);
@@ -604,6 +685,25 @@ impl Engine {
         self.sounded_for[k as usize] = -1;
         let s = s as u8;
         self.vis(s, 0, src::LIVE);
+        if self.chord_of[k as usize][0] >= 0 {
+            let slot = self.chord_of[k as usize];
+            self.chord_of[k as usize] = [-1; 4];
+            for n in slot {
+                if n >= 0 {
+                    self.route(n as u8, 0, false);
+                    if n as u8 != s {
+                        self.vis(n as u8, 0, src::ARP);
+                    }
+                }
+            }
+            return;
+        }
+        if self.chanter >= 0 || self.pipe_n > 0 {
+            if self.p.pipe_mode.load(Relaxed) || self.pipe_held[..self.pipe_n].contains(&s) {
+                self.pipe_off(s);
+                return;
+            }
+        }
         if self.to_arp[k as usize] {
             self.arp_remove(s);
         } else {
@@ -697,6 +797,155 @@ impl Engine {
         }
     }
 
+    // ---------- bagpipe chanter: mono, legato, just intonation, never drops out ----------
+    fn chanter_bend(&mut self, key: u8) {
+        let mut cents = self.p.pipe_tune.load(Relaxed) as f32;
+        if self.p.pipe_just.load(Relaxed) {
+            let rel = (key as i32 - self.p.pipe_tonic.load(Relaxed) as i32).rem_euclid(12) as usize;
+            cents += crate::pipes::JUST_CENTS[rel];
+        }
+        // GM default bend range: ±2 semitones
+        let v = (8192.0 + cents / 200.0 * 8192.0).clamp(0.0, 16383.0) as i32;
+        self.msg(MAIN_CH, 0xE0, v & 0x7F, v >> 7);
+        self.lp_record(MAIN_CH as u8, 0xE0, (v & 0x7F) as u8, (v >> 7) as u8);
+    }
+
+    fn pipe_on(&mut self, key: u8) {
+        if !self.pipe_held[..self.pipe_n].contains(&key) && self.pipe_n < self.pipe_held.len() {
+            self.pipe_held[self.pipe_n] = key;
+            self.pipe_n += 1;
+        }
+        self.chanter_bend(key);
+        // new note first, then release the old one: no gap between notes, like a real chanter
+        if let Some(s) = self.synths.as_mut() {
+            s.main.note_on(MAIN_CH, key as i32, 110);
+        }
+        self.lp_record(MAIN_CH as u8, 0x90, key, 110);
+        if self.chanter >= 0 && self.chanter as u8 != key {
+            let old = self.chanter as u8;
+            if let Some(s) = self.synths.as_mut() {
+                s.main.note_off(MAIN_CH, old as i32);
+            }
+            self.lp_record(MAIN_CH as u8, 0x80, old, 0);
+        }
+        self.chanter = key as i16;
+    }
+
+    fn pipe_off(&mut self, key: u8) {
+        if let Some(i) = self.pipe_held[..self.pipe_n].iter().position(|k| *k == key) {
+            for j in i..self.pipe_n - 1 {
+                self.pipe_held[j] = self.pipe_held[j + 1];
+            }
+            self.pipe_n -= 1;
+        }
+        if self.pipe_n > 0 {
+            // fall back to the finger still down (trills, cuts)
+            let back = self.pipe_held[self.pipe_n - 1];
+            if self.chanter != back as i16 {
+                self.pipe_on(back); // already in the held list, so it isn't added twice
+            }
+            return;
+        }
+        // all fingers up: pipes keep sounding unless you're blowing a wind controller (then breath decides)
+        let keep = self.p.pipe_continuous.load(Relaxed) && self.p.pipe_mode.load(Relaxed) && !self.p.wind_on.load(Relaxed);
+        if !keep {
+            self.chanter_stop();
+        }
+    }
+
+    fn chanter_stop(&mut self) {
+        if self.chanter >= 0 {
+            let old = self.chanter as u8;
+            if let Some(s) = self.synths.as_mut() {
+                s.main.note_off(MAIN_CH, old as i32);
+            }
+            self.lp_record(MAIN_CH as u8, 0x80, old, 0);
+            self.chanter = -1;
+        }
+        self.pipe_n = 0;
+        self.msg(MAIN_CH, 0xE0, 0, 64);
+    }
+
+    /// Synthesised drones: band-limited buzzy reed tone, per-pipe brightness, strike-in growl.
+    fn render_drones(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        let on = self.p.drone_on.load(Relaxed);
+        let level = self.p.drone_level.get().clamp(0.0, 1.0) * 0.16;
+        let tone = self.p.drone_tone.load(Relaxed);
+        let sr = self.sr as f64;
+        let (cut, form, buzz, beat) = match tone {
+            0 => (4200.0f32, 1250.0f32, 0.45f32, 0.0f64),
+            1 => (2800.0, 1000.0, 0.35, 0.0),
+            2 => (1700.0, 800.0, 0.2, 0.0),
+            _ => (1900.0, 900.0, 0.25, 1.2), // reed: two slightly detuned reeds beating
+        };
+        let g_lp = (std::f32::consts::PI * cut / self.sr).tan();
+        let a_lp = g_lp / (1.0 + g_lp);
+        let g_bp = (std::f32::consts::PI * form / self.sr).tan();
+        let k_bp = 1.0 / 3.0;
+        let a1 = 1.0 / (1.0 + g_bp * (g_bp + k_bp));
+        let attack = 1.0 - (-1.0 / (0.12 * self.sr)).exp();
+        let release = 1.0 - (-1.0 / (0.35 * self.sr)).exp();
+        for v in 0..4 {
+            let c = self.p.drone_cents[v].load(Relaxed);
+            let active = on && c != i32::MIN;
+            let dv = &mut self.drones[v];
+            if active && dv.cents != c {
+                if dv.gain < 0.01 {
+                    dv.glide = 60.0; // fresh strike-in: starts flat and growls up to pitch
+                }
+                dv.cents = c;
+            }
+            if !active && dv.gain < 1e-4 {
+                continue;
+            }
+            let target = if active { 1.0 } else { 0.0 };
+            let pan = [0.35f32, 0.65, 0.5, 0.45][v];
+            for i in 0..out_l.len() {
+                dv.gain += (target - dv.gain) * if target > dv.gain { attack } else { release };
+                dv.glide *= 0.99993;
+                let cents = dv.cents as f64 - dv.glide as f64 + (v as f64 - 1.5) * 0.8; // tiny detune between drones
+                let f = 440.0 * 2f64.powf((cents - 6900.0) / 1200.0);
+                let dt = f / sr;
+                dv.phase += dt;
+                if dv.phase >= 1.0 {
+                    dv.phase -= 1.0;
+                }
+                let saw = 2.0 * dv.phase - 1.0 - polyblep(dv.phase, dt);
+                // pulse for the reedy buzz
+                let mut p2 = dv.phase + 0.3;
+                if p2 >= 1.0 {
+                    p2 -= 1.0;
+                }
+                let saw2 = 2.0 * p2 - 1.0 - polyblep(p2, dt);
+                let mut x = (saw * (1.0 - buzz as f64) + (saw - saw2) * buzz as f64 * 0.5) as f32;
+                if beat > 0.0 {
+                    let dt2 = f * 2f64.powf(beat * 2.0 / 1200.0) / sr;
+                    dv.phase2 += dt2;
+                    if dv.phase2 >= 1.0 {
+                        dv.phase2 -= 1.0;
+                    }
+                    x = 0.5 * x + 0.5 * (2.0 * dv.phase2 - 1.0 - polyblep(dv.phase2, dt2)) as f32;
+                }
+                // breath noise
+                self.noise ^= self.noise << 13;
+                self.noise ^= self.noise >> 17;
+                self.noise ^= self.noise << 5;
+                x += ((self.noise as f32 / u32::MAX as f32) - 0.5) * 0.02;
+                // lowpass (bore) + formant (reed/body resonance)
+                dv.lp[0] += a_lp * (x - dv.lp[0]);
+                let lpv = dv.lp[0];
+                let v3 = lpv - dv.bp[1];
+                let v1 = a1 * dv.bp[0] + g_bp * a1 * v3;
+                let v2 = dv.bp[1] + g_bp * v1;
+                dv.bp[0] = 2.0 * v1 - dv.bp[0];
+                dv.bp[1] = 2.0 * v2 - dv.bp[1];
+                let y = (lpv * 0.7 + v1 * 0.9) * dv.gain * level;
+                out_l[i] += y * (1.0 - pan) * 1.4;
+                out_r[i] += y * pan * 1.4;
+            }
+        }
+    }
+
     /// Breath → expression (CC11) on the playing channels, with a response curve.
     fn breath(&mut self, val: u8) {
         let x = val as f32 / 127.0;
@@ -767,6 +1016,9 @@ impl Engine {
         }
         self.sounded_for = [-1; 128];
         self.raw_held = [false; 128];
+        self.chanter = -1;
+        self.pipe_n = 0;
+        self.chord_of = [[-1; 4]; 128];
         self.arp_n = 0;
         self.arp_phys = 0;
         self.arp_cur_n = 0;
@@ -1322,6 +1574,13 @@ impl Engine {
             let have_song = self.song.is_some();
             if have_song {
                 synths.song.render(&mut self.sl[..len], &mut self.srr[..len]);
+            }
+            {
+                let mut dl = std::mem::take(&mut self.bl);
+                let mut dr = std::mem::take(&mut self.br);
+                self.render_drones(&mut dl[..len], &mut dr[..len]);
+                self.bl = dl;
+                self.br = dr;
             }
 
             // ---- master FX chain ----

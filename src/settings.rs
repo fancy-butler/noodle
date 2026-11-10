@@ -61,6 +61,25 @@ pub struct Settings {
     pub theme: u8,   // 0 dark, 1 light, 2 follow system
     pub midi_off: Vec<String>,
     pub latency: u32, // frames per buffer
+    pub g_pattern: usize,
+    pub g_rhythm: usize,
+    pub g_bpm: f32,
+    pub g_octaves: u8,
+    pub g_bars: u8,
+    pub g_any_octave: bool,
+    pub g_hear: bool,
+    pub g_best: std::collections::HashMap<String, (f64, String)>,
+    pub drone_mode: u8, // 0 off, 1 bagpipes, 2 shruti box, 3 harmonium
+    pub pipe_idx: usize,
+    pub pipe_drones: Vec<bool>,
+    pub pipe_tune: i32,
+    pub pipe_just: bool,
+    pub pipe_cont: bool,
+    pub drone_level: f32,
+    pub shruti_pat: usize,
+    pub shruti_low: bool,
+    pub chord_kind: u8,
+    pub harm_drone: bool,
 }
 
 impl Default for Settings {
@@ -119,6 +138,25 @@ impl Default for Settings {
             theme: 0,
             midi_off: vec![],
             latency: 128,
+            g_pattern: 0,
+            g_rhythm: 1,
+            g_bpm: 80.0,
+            g_octaves: 1,
+            g_bars: 4,
+            g_any_octave: false,
+            g_hear: false,
+            g_best: Default::default(),
+            drone_mode: 0,
+            pipe_idx: 0,
+            pipe_drones: vec![],
+            pipe_tune: 0,
+            pipe_just: true,
+            pipe_cont: true,
+            drone_level: 0.6,
+            shruti_pat: 0,
+            shruti_low: true,
+            chord_kind: 0,
+            harm_drone: false,
         }
     }
 }
