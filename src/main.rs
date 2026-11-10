@@ -282,6 +282,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     p.drone_on.store(true, Relaxed);
     check!("drones", render(1.0, "bagpipe drones (A3 A3 A2)", &mut eng), true);
     p.pipe_mode.store(true, Relaxed);
+    p.pipe_continuous.store(true, Relaxed);
     p.pipe_tonic.store(69, Relaxed);
     tx.send(note(69, true)).unwrap();
     render(0.3, "  chanter low A", &mut eng);
@@ -294,10 +295,26 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     p.pipe_mode.store(false, Relaxed);
     tx.send(Cmd::Panic).unwrap();
     let after = render(1.2, "drones off + panic (should fade)", &mut eng);
-    println!("  chanter+drones rms {:.4}, after stop {:.4}", sustained.1, after.1);
+    let silent = render(1.0, "  then silence", &mut eng);
+    println!("  chanter+drones rms {:.4}, after stop {:.4}, then {:.5}", sustained.1, after.1, silent.1);
     if sustained.1 < 0.01 {
         fails.push("chanter/drones not sustaining".into());
     }
+    if silent.1 > 0.002 {
+        fails.push("chanter/drones still sounding after stop".into());
+    }
+    // leaving bagpipe mode must also stop a sustaining chanter
+    p.pipe_mode.store(true, Relaxed);
+    tx.send(note(69, true)).unwrap();
+    tx.send(note(69, false)).unwrap();
+    render(0.3, "  chanter held by never-stops", &mut eng);
+    p.pipe_mode.store(false, Relaxed);
+    render(0.5, "  leave bagpipe mode", &mut eng);
+    let gone = render(0.5, "  chanter gone", &mut eng);
+    if gone.1 > 0.002 {
+        fails.push("chanter kept sounding after leaving bagpipe mode".into());
+    }
+    p.pipe_continuous.store(false, Relaxed);
 
     // UI events made it out
     let mut notes = 0;

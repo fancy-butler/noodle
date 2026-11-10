@@ -381,7 +381,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, h: Handles) -> Self {
         let music_font = setup_fonts(&cc.egui_ctx);
         setup_style(&cc.egui_ctx);
-        let s = Settings::load();
+        let mut s = Settings::load();
+        s.drone_mode = 0; // performance modes never come back on by themselves
+        s.pipe_cont = false;
         s.push_to(&h.p);
         let (load_tx, load_rx) = crossbeam_channel::unbounded();
         let sf_paths = sounds::find_soundfonts();
@@ -1441,7 +1443,6 @@ impl App {
         let pp = &crate::pipes::PIPES[i.min(crate::pipes::PIPES.len() - 1)];
         self.s.pipe_idx = i;
         self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
-        self.s.pipe_cont = i != 4; // Northumbrian: closed fingering — silence between notes is part of the style
         self.scale_on = true;
         self.s.scale_idx = theory::scale_index(pp.scale);
         self.s.scale_root = ROOTS.iter().position(|r| r.1 == pp.tonic % 12).unwrap_or(9);
@@ -1449,6 +1450,9 @@ impl App {
     }
 
     fn set_drone_mode(&mut self, m: u8) {
+        if self.s.drone_mode == 1 && m != 1 {
+            let _ = self.tx.send(Cmd::Panic); // leaving bagpipes: make sure the chanter stops
+        }
         self.s.drone_mode = m;
         match m {
             1 => {
@@ -1577,7 +1581,7 @@ impl App {
                                 }
                             });
                             ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
-                            ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes (a wind controller's breath still stops it)");
+                            ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes. STOP or Esc silences it. (With a wind controller your breath decides.)");
                         });
                         let (r, resp) = ui.allocate_exact_size(Vec2::new(78.0, 92.0), Sense::click());
                         ui.painter().rect_filled(r, 8.0, deep());
@@ -1680,7 +1684,7 @@ impl App {
                         if big_toggle(ui, on, lbl, GOOD, Vec2::new(110.0, 30.0)).on_hover_text("Drones on / off").clicked() {
                             self.drone_running = !on;
                             if on {
-                                let _ = self.tx.send(Cmd::Panic); // also silences a sustaining chanter
+                                let _ = self.tx.send(Cmd::Panic); // also silences the chanter
                             }
                         }
                     }

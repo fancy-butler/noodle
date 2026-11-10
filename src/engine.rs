@@ -262,7 +262,7 @@ impl Params {
             pipe_tonic: AtomicU8::new(69),
             pipe_just: AtomicBool::new(true),
             pipe_tune: AtomicI32::new(0),
-            pipe_continuous: AtomicBool::new(true),
+            pipe_continuous: AtomicBool::new(false),
             chord_on: AtomicBool::new(false),
             chord_kind: AtomicU8::new(0),
         }
@@ -979,6 +979,9 @@ impl Engine {
         let a1 = 1.0 / (1.0 + g_bp * (g_bp + k_bp));
         let attack = 1.0 - (-1.0 / (0.12 * self.sr)).exp();
         let release = 1.0 - (-1.0 / (0.35 * self.sr)).exp();
+        if !self.p.pipe_mode.load(Relaxed) && self.ch.target > 0.0 {
+            self.chanter_stop();
+        }
         self.render_chanter(out_l, out_r);
         for v in 0..13 {
             let c = self.p.drone_cents[v].load(Relaxed);
@@ -1113,6 +1116,7 @@ impl Engine {
         self.raw_held = [false; 128];
         self.chanter = -1;
         self.pipe_n = 0;
+        self.ch.target = 0.0;
         self.chord_of = [[-1; 4]; 128];
         self.arp_n = 0;
         self.arp_phys = 0;

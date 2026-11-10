@@ -155,7 +155,7 @@ impl Default for Settings {
             pipe_drones: vec![],
             pipe_tune: 0,
             pipe_just: true,
-            pipe_cont: true,
+            pipe_cont: false,
             drone_level: 0.6,
             shruti_pat: 0,
             shruti_low: true,
