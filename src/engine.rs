@@ -121,6 +121,9 @@ pub struct Params {
     pub resonance: AF32,
     pub drive: AF32,
     pub bpm: AF32,
+    pub metro_on: AtomicBool,
+    pub metro_beats: AtomicU8,
+    pub metro_vol: AF32,
     // keyboard
     pub mode: AtomicU8, // 0 single, 1 layer, 2 split
     pub split: AtomicU8,
@@ -207,6 +210,9 @@ impl Params {
             resonance: AF32::new(0.1),
             drive: AF32::new(0.0),
             bpm: AF32::new(110.0),
+            metro_on: AtomicBool::new(false),
+            metro_beats: AtomicU8::new(4),
+            metro_vol: AF32::new(0.6),
             mode: AtomicU8::new(0),
             split: AtomicU8::new(60),
             layer_vol: AF32::new(0.8),
@@ -277,7 +283,7 @@ pub struct SynthPair {
 pub enum Cmd {
     /// Raw MIDI from a keyboard (or the computer keys / mouse).
     Midi([u8; 3]),
-    Program { layer: bool, bank: i32, prog: i32 },
+    Program { layer: bool, bank: i32, prog: i32, inst: Option<Arc<crate::native::InstDef>> },
     LoopButton,
     LoopStop,
     LoopClear,
@@ -376,6 +382,13 @@ pub struct Engine {
     // programs
     main_prog: (i32, i32),
     layer_prog: (i32, i32),
+    main_inst: Option<Arc<crate::native::InstDef>>,
+    layer_inst: Option<Arc<crate::native::InstDef>>,
+    native: [Option<crate::native::Native>; 16],
+    nl: Vec<f32>,
+    nr: Vec<f32>,
+    verb: crate::native::Reverb,
+    click: (f32, f32, f32), // phase, freq, remaining gain
     // clock
     beat: f64,
     // live input
@@ -465,6 +478,13 @@ impl Engine {
             applied_kit: -1,
             main_prog: (0, 0),
             layer_prog: (0, 48),
+            main_inst: None,
+            layer_inst: None,
+            native: std::array::from_fn(|_| None),
+            nl: vec![0.0; mb],
+            nr: vec![0.0; mb],
+            verb: crate::native::Reverb::new(sr),
+            click: (0.0, 0.0, 0.0),
             beat: 0.0,
             sounded_for: [-1; 128],
             to_arp: [false; 128],
@@ -521,7 +541,17 @@ impl Engine {
         self.dl = vec![0.0; dlen];
         self.dr = vec![0.0; dlen];
         self.dpos = 0;
+        self.verb = crate::native::Reverb::new(sr);
         self.p.sample_rate.store(sr as u32, Relaxed);
+        // native instruments run at the card's rate
+        let (mi, li) = (self.main_inst.clone(), self.layer_inst.clone());
+        self.native = std::array::from_fn(|_| None);
+        if let Some(i) = mi {
+            self.native[MAIN_CH as usize] = Some(crate::native::Native::new(&i, sr));
+        }
+        if let Some(i) = li {
+            self.native[LAYER_CH as usize] = Some(crate::native::Native::new(&i, sr));
+        }
     }
 
     fn vis(&self, key: u8, vel: u8, src: u8) {
@@ -534,20 +564,41 @@ impl Engine {
 
     // ---------- raw synth helpers ----------
     fn msg(&mut self, ch: i32, st: i32, d1: i32, d2: i32) {
+        if let Some(n) = self.native.get_mut(ch as usize).and_then(|n| n.as_mut()) {
+            n.midi(st, d1, d2);
+            return;
+        }
         if let Some(s) = self.synths.as_mut() {
             s.main.process_midi_message(ch, st, d1, d2);
         }
     }
     fn set_program(&mut self, ch: i32, bank: i32, prog: i32) {
+        if let Some(n) = self.native.get_mut(ch as usize).and_then(|n| n.take()) {
+            let mut n = n;
+            n.all_off(true);
+        }
         self.msg(ch, 0xB0, 0, bank.clamp(0, 127));
         self.msg(ch, 0xC0, prog, 0);
+    }
+
+    /// A SoundFont program, or a native instrument (sample library / chip) on this channel.
+    fn assign(&mut self, ch: i32, bank: i32, prog: i32, inst: Option<Arc<crate::native::InstDef>>) {
+        self.set_program(ch, bank.min(127), prog.min(127));
+        if let Some(i) = inst {
+            // silence the SoundFont voice on this channel and hand it over
+            if let Some(s) = self.synths.as_mut() {
+                s.main.process_midi_message(ch, 0xB0, 123, 0);
+            }
+            self.native[ch as usize] = Some(crate::native::Native::new(&i, self.sr));
+        }
     }
 
     fn apply_all_state(&mut self) {
         let (mb, mp) = self.main_prog;
         let (lb, lpg) = self.layer_prog;
-        self.set_program(MAIN_CH, mb, mp);
-        self.set_program(LAYER_CH, lb, lpg);
+        let (mi, li) = (self.main_inst.clone(), self.layer_inst.clone());
+        self.assign(MAIN_CH, mb, mp, mi);
+        self.assign(LAYER_CH, lb, lpg, li);
         self.applied = [-1.0; 4];
         self.applied_kit = -1;
         self.apply_params();
@@ -629,12 +680,10 @@ impl Engine {
             if ch < 0 {
                 continue;
             }
-            if let Some(s) = self.synths.as_mut() {
-                if on {
-                    s.main.note_on(ch, key as i32, vel as i32);
-                } else {
-                    s.main.note_off(ch, key as i32);
-                }
+            if on {
+                self.msg(ch, 0x90, key as i32, vel as i32);
+            } else {
+                self.msg(ch, 0x80, key as i32, 0);
             }
             self.lp_record(ch as u8, if on { 0x90 } else { 0x80 }, key, if on { vel } else { 0 });
         }
@@ -824,8 +873,9 @@ impl Engine {
                 }
             }
             0xC0 => {
-                let bank = self.main_prog.0;
+                let bank = self.main_prog.0.min(127);
                 self.main_prog = (bank, m[1] as i32);
+                self.main_inst = None;
                 self.set_program(MAIN_CH, bank, m[1] as i32);
                 let _ = self.tx.try_send(UiEvt::Program { bank, prog: m[1] as i32 });
             }
@@ -1105,6 +1155,9 @@ impl Engine {
     }
 
     fn panic(&mut self) {
+        for n in self.native.iter_mut().flatten() {
+            n.all_off(true);
+        }
         if let Some(s) = self.synths.as_mut() {
             s.main.note_off_all(true);
             s.song.note_off_all(true);
@@ -1297,8 +1350,9 @@ impl Engine {
         let (a, b) = PASS_CH[self.lp_pass];
         let (mb, mp) = self.main_prog;
         let (lb, lpg) = self.layer_prog;
-        self.set_program(a as i32, mb, mp);
-        self.set_program(b as i32, lb, lpg);
+        let (mi, li) = (self.main_inst.clone(), self.layer_inst.clone());
+        self.assign(a as i32, mb, mp, mi);
+        self.assign(b as i32, lb, lpg, li);
         let rv = (self.p.reverb.get() * 127.0) as i32;
         let lv = (self.p.layer_vol.get() * 127.0) as i32;
         for c in [a, b] {
@@ -1579,13 +1633,17 @@ impl Engine {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
                 Cmd::Midi(m) => self.handle_midi(m),
-                Cmd::Program { layer, bank, prog } => {
+                Cmd::Program { layer, bank, prog, inst } => {
                     if layer {
                         self.layer_prog = (bank, prog);
-                        self.set_program(LAYER_CH, bank, prog);
+                        self.layer_inst = inst.clone();
+                        self.assign(LAYER_CH, bank, prog, inst);
+                        let lv = (self.p.layer_vol.get() * 127.0) as i32;
+                        self.msg(LAYER_CH, 0xB0, 7, lv);
                     } else {
                         self.main_prog = (bank, prog);
-                        self.set_program(MAIN_CH, bank, prog);
+                        self.main_inst = inst.clone();
+                        self.assign(MAIN_CH, bank, prog, inst);
                     }
                 }
                 Cmd::LoopButton => self.lp_button(),
@@ -1668,11 +1726,42 @@ impl Engine {
             self.tick_song(len);
             self.beat = b1;
 
+            // metronome: a click on every beat, higher on the bar
+            if self.p.metro_on.load(Relaxed) && b1.floor() > b0.floor() {
+                let beats = self.p.metro_beats.load(Relaxed).max(1) as i64;
+                let accent = (b1.floor() as i64).rem_euclid(beats) == 0;
+                self.click = (0.0, if accent { 2400.0 } else { 1600.0 }, self.p.metro_vol.get() * if accent { 0.55 } else { 0.38 });
+            }
             let synths = self.synths.as_mut().unwrap();
             synths.main.render(&mut self.bl[..len], &mut self.br[..len]);
             let have_song = self.song.is_some();
             if have_song {
                 synths.song.render(&mut self.sl[..len], &mut self.srr[..len]);
+            }
+            if self.native.iter().any(|n| n.is_some()) {
+                self.nl[..len].fill(0.0);
+                self.nr[..len].fill(0.0);
+                let (mut nl, mut nr) = (std::mem::take(&mut self.nl), std::mem::take(&mut self.nr));
+                for n in self.native.iter_mut().flatten() {
+                    n.render(&mut nl[..len], &mut nr[..len]);
+                }
+                self.verb.process(&mut nl[..len], &mut nr[..len], self.p.reverb.get());
+                for i in 0..len {
+                    self.bl[i] += nl[i];
+                    self.br[i] += nr[i];
+                }
+                self.nl = nl;
+                self.nr = nr;
+            }
+            if self.click.2 > 0.0005 {
+                let dec = (-1.0 / (0.012 * sr)).exp();
+                for i in 0..len {
+                    let (ph, f, g) = self.click;
+                    let s = (ph * std::f32::consts::TAU).sin() * g;
+                    self.bl[i] += s;
+                    self.br[i] += s;
+                    self.click = ((ph + f / sr).fract(), f, g * dec);
+                }
             }
             {
                 let mut dl = std::mem::take(&mut self.bl);

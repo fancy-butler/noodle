@@ -87,6 +87,8 @@ pub struct Settings {
     pub fing_idx: usize,
     pub fing_any: bool,
     pub fing_tr: usize,
+    pub metro_beats: u8,
+    pub metro_vol: f32,
 }
 
 impl Default for Settings {
@@ -171,6 +173,8 @@ impl Default for Settings {
             fing_idx: 0,
             fing_any: true,
             fing_tr: 0,
+            metro_beats: 4,
+            metro_vol: 0.6,
         }
     }
 }

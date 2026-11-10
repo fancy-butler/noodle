@@ -18,6 +18,7 @@ dirs = "6"
 hound = "3"
 midly = "0.5"
 ureq = "3"
+claxon = "0.4"
 
 [profile.release]
 opt-level = 3

@@ -133,6 +133,15 @@ pub struct App {
     sf_paths: Vec<PathBuf>,
     sf_current: Option<PathBuf>,
     presets: Vec<PresetInfo>,
+    /// sample instrument id → file
+    inst_paths: std::collections::HashMap<i32, PathBuf>,
+    inst_extra: Vec<PathBuf>,
+    packs_open: bool,
+    dl: crate::packs::Downloads,
+    dl_seen: std::collections::HashSet<&'static str>,
+    inst_cache: std::collections::HashMap<i32, Arc<crate::native::InstDef>>,
+    inst_tx: crossbeam_channel::Sender<(bool, i32, Result<Arc<crate::native::InstDef>, String>)>,
+    inst_rx: crossbeam_channel::Receiver<(bool, i32, Result<Arc<crate::native::InstDef>, String>)>,
     category: Option<usize>, // None all, Some(0..16) family, Some(99) favourites
     // notes
     t0: Instant,
@@ -402,6 +411,7 @@ impl App {
         s.push_to(&h.p);
         let (load_tx, load_rx) = crossbeam_channel::unbounded();
         let sf_paths = sounds::find_soundfonts();
+        let (itx, irx) = crossbeam_channel::unbounded();
         let mut app = App {
             p: h.p,
             tx: h.tx,
@@ -421,6 +431,14 @@ impl App {
             sf_paths,
             sf_current: None,
             presets: vec![],
+            inst_paths: Default::default(),
+            inst_extra: Vec::new(),
+            packs_open: std::env::var("NOODLE_SHOW_PACKS").is_ok(),
+            dl: Default::default(),
+            dl_seen: Default::default(),
+            inst_cache: Default::default(),
+            inst_tx: itx,
+            inst_rx: irx,
             category: None,
             t0: Instant::now(),
             bars: Vec::with_capacity(4096),
@@ -480,6 +498,9 @@ impl App {
                 sounds::user_dir().join("soundfonts").display()
             )),
         }
+        app.add_native_presets();
+        app.p.metro_beats.store(app.s.metro_beats, Relaxed);
+        app.p.metro_vol.set(app.s.metro_vol);
         app.rebuild_walk();
         app
     }
@@ -650,7 +671,7 @@ impl App {
         self.presets
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.bank < 128)
+            .filter(|(_, p)| p.bank < 128 || p.bank >= sounds::SAMPLE_BANK)
             .filter(|(_, p)| match self.category {
                 None => true,
                 Some(99) => self.s.favorites.contains(&(p.bank, p.prog)),
@@ -666,7 +687,37 @@ impl App {
         } else {
             self.s.main = bp;
         }
-        let _ = self.tx.send(Cmd::Program { layer, bank: bp.0, prog: bp.1 });
+        match bp.0 {
+            sounds::CHIP_BANK => {
+                let pt = crate::chip::PATCHES[(bp.1 as usize).min(crate::chip::PATCHES.len() - 1)];
+                let inst = Some(Arc::new(crate::native::InstDef::Chip(pt)));
+                let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst });
+            }
+            sounds::SAMPLE_BANK => {
+                if let Some(i) = self.inst_cache.get(&bp.1) {
+                    let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst: Some(i.clone()) });
+                } else if let Some(path) = self.inst_paths.get(&bp.1).cloned() {
+                    self.loading = Some(path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                    let tx = self.inst_tx.clone();
+                    let id = bp.1;
+                    std::thread::spawn(move || {
+                        let r = crate::sampler::load(&path).map(|i| Arc::new(crate::native::InstDef::Sampler(Arc::new(i))));
+                        let _ = tx.send((layer, id, r));
+                    });
+                }
+            }
+            _ => {
+                let _ = self.tx.send(Cmd::Program { layer, bank: bp.0, prog: bp.1, inst: None });
+            }
+        }
+    }
+
+    /// (Re)scan sample instruments and add them and the chip voices to the sound list.
+    fn add_native_presets(&mut self) {
+        self.presets.retain(|p| p.bank < sounds::SAMPLE_BANK);
+        let (v, paths) = sounds::native_presets(&self.inst_extra);
+        self.presets.extend(v);
+        self.inst_paths = paths.into_iter().collect();
     }
 
     fn step_preset(&mut self, layer: bool, dir: i32) {
@@ -941,11 +992,26 @@ impl App {
                 }
             }
         }
+        while let Ok((layer, id, res)) = self.inst_rx.try_recv() {
+            self.loading = None;
+            match res {
+                Ok(inst) => {
+                    self.inst_cache.insert(id, inst.clone());
+                    // only apply if that's still the chosen sound
+                    let cur = if layer { self.s.layer } else { self.s.main };
+                    if cur == (sounds::SAMPLE_BANK, id) {
+                        let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst: Some(inst) });
+                    }
+                }
+                Err(e) => self.load_err = Some(e),
+            }
+        }
         while let Ok(res) = self.load_rx.try_recv() {
             self.loading = None;
             match res {
                 Ok(l) => {
                     self.presets = l.presets;
+                    self.add_native_presets();
                     self.sf_current = Some(l.path.clone());
                     self.s.soundfont = Some(l.path.clone());
                     if !self.sf_paths.contains(&l.path) {
@@ -955,6 +1021,10 @@ impl App {
                     for (layer, bp) in [(false, self.s.main), (true, self.s.layer)] {
                         let ok = self.presets.iter().any(|p| (p.bank, p.prog) == bp);
                         let bp = if ok { bp } else { self.presets.iter().find(|p| p.bank < 128).map(|p| (p.bank, p.prog)).unwrap_or((0, 0)) };
+                        if bp.0 >= sounds::SAMPLE_BANK {
+                            // the SoundFont channel underneath still needs a program
+                            let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst: None });
+                        }
                         self.set_preset(layer, bp);
                     }
                 }
@@ -1212,7 +1282,45 @@ impl App {
                     self.p.bpm.set((60.0 / d).clamp(40.0, 260.0) as f32);
                 }
             }
+            // metronome: light blinks on the beat (brighter on the bar)
+            let on = self.p.metro_on.load(Relaxed);
+            let beat = self.p.beat.get();
+            let beats = self.p.metro_beats.load(Relaxed).max(1) as i64;
+            let frac = beat.fract() as f32;
+            let first = (beat.floor() as i64).rem_euclid(beats) == 0;
+            let (r, resp) = ui.allocate_exact_size(Vec2::new(14.0, 14.0), Sense::click());
+            let glow = if on { (1.0 - frac * 3.0).max(0.0) } else { 0.0 };
+            ui.painter().circle_filled(r.center(), 5.5, gray(55));
+            if glow > 0.0 {
+                ui.painter().circle_filled(r.center(), 5.5, if first { LIVE } else { GOOD }.gamma_multiply(glow));
+            }
+            if resp.clicked() {
+                self.p.metro_on.store(!on, Relaxed);
+            }
+            if ui.selectable_label(on, RichText::new("Metronome").size(12.5)).on_hover_text("Click on every beat (higher on the first beat of the bar)").clicked() {
+                self.p.metro_on.store(!on, Relaxed);
+            }
+            if on {
+                let mut b = self.s.metro_beats;
+                egui::ComboBox::from_id_salt("metro_beats").selected_text(format!("{b}/4")).width(44.0).show_ui(ui, |ui| {
+                    for n in [2u8, 3, 4, 5, 6, 7, 9, 12] {
+                        ui.selectable_value(&mut b, n, format!("{n}/4"));
+                    }
+                });
+                if b != self.s.metro_beats {
+                    self.s.metro_beats = b;
+                    self.p.metro_beats.store(b, Relaxed);
+                }
+                let mut v = self.s.metro_vol * 100.0;
+                if ui.add(egui::DragValue::new(&mut v).range(0.0..=100.0).speed(1.0).suffix("%")).on_hover_text("Click volume").changed() {
+                    self.s.metro_vol = v / 100.0;
+                    self.p.metro_vol.set(self.s.metro_vol);
+                }
+            }
             ui.separator();
+            if ui.add(egui::Button::new(RichText::new("🎷 Get sounds").strong().color(Color32::BLACK)).fill(YOURS).corner_radius(8.0)).on_hover_text("Free, real-instrument sample libraries: flutes, recorders, whistles' cousins, bagpipe, brass, strings, harps…").clicked() {
+                self.packs_open = !self.packs_open;
+            }
             ui.label(RichText::new("Bank").color(text_dim()));
             let cur = self.sf_current.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
             let txt = self.loading.clone().map(|l| format!("Loading {l}…")).or(cur).unwrap_or_else(|| "none".into());
@@ -2981,6 +3089,103 @@ impl App {
         }
     }
 
+    fn packs_window(&mut self, ctx: &egui::Context) {
+        use crate::packs::{self, Status, PACKS};
+        // finished downloads: list them and switch to the new sound
+        for p in PACKS {
+            if let Some(Status::Done(path)) = self.dl.status(p.name) {
+                if self.dl_seen.insert(p.name) {
+                    if matches!(p.src, packs::Src::Sf2(..)) {
+                        self.s.soundfont = Some(path.clone());
+                        self.load_sf(path);
+                    } else {
+                        self.add_native_presets();
+                        self.category = Some(16);
+                        self.set_preset(false, (sounds::SAMPLE_BANK, sounds::inst_id(&path)));
+                    }
+                }
+            }
+        }
+        if !self.packs_open {
+            return;
+        }
+        let mut open = true;
+        let mut play: Option<(i32, i32)> = None;
+        let mut sf: Option<PathBuf> = None;
+        egui::Window::new("🎷 Get sounds").open(&mut open).collapsible(false).resizable(true).default_size([620.0, 600.0]).max_height(700.0).show(ctx, |ui| {
+            ui.label(RichText::new("Real recorded instruments, free to download and use. Each one downloads on its own (usually 5–40 MB), straight from its makers. They appear under Samples in the sound list.").size(12.5).color(text_dim()));
+            ui.label(RichText::new(format!("Saved in {}", packs::root().display())).size(11.0).color(text_dim()));
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut group = "";
+                for p in PACKS {
+                    if p.group != group {
+                        group = p.group;
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(group.to_uppercase()).size(12.0).strong().color(text_dim()));
+                    }
+                    ui.horizontal(|ui| {
+                        let installed = packs::installed(p);
+                        let st = self.dl.status(p.name);
+                        ui.vertical(|ui| {
+                            ui.set_width(390.0);
+                            ui.label(RichText::new(p.name).size(14.5).strong());
+                            ui.label(RichText::new(p.credit).size(11.0).color(text_dim()));
+                        });
+                        match st {
+                            Some(Status::Working(n, t)) => {
+                                ui.add(egui::ProgressBar::new(n as f32 / t.max(1) as f32).desired_width(150.0).text(format!("{n} / {t}")));
+                            }
+                            Some(Status::Failed(e)) if !installed => {
+                                if ui.button("↻ Retry").on_hover_text(e.clone()).clicked() {
+                                    self.dl.start(*p, ctx.clone());
+                                }
+                                ui.label(RichText::new("failed").color(BAD)).on_hover_text(e);
+                            }
+                            _ if installed => {
+                                let path = packs::installed_path(p);
+                                if ui.add(egui::Button::new(RichText::new("▶ Play").color(Color32::BLACK)).fill(GOOD)).clicked() {
+                                    if matches!(p.src, packs::Src::Sf2(..)) {
+                                        sf = Some(path.clone());
+                                    } else {
+                                        play = Some((sounds::SAMPLE_BANK, sounds::inst_id(&path)));
+                                    }
+                                }
+                                ui.label(RichText::new("✓").color(GOOD));
+                                if ui.small_button("🗑").on_hover_text("Remove").clicked() {
+                                    packs::remove(p);
+                                    self.dl_seen.remove(p.name);
+                                    self.add_native_presets();
+                                }
+                            }
+                            _ => {
+                                if ui.button("⬇ Get").clicked() {
+                                    self.dl.start(*p, ctx.clone());
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new("Got other instruments? Drop any .sfz or Decent Sampler .dspreset onto Noodle, or put them in the folder above. Pianobook's free Decent Sampler instruments (Irish Tin Whistle and friends) work too — download them from pianobook.co.uk.").size(12.0).color(text_dim()));
+            });
+        });
+        if let Some(bp) = play {
+            if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+                self.add_native_presets();
+            }
+            self.category = Some(16);
+            self.set_preset(false, bp);
+        }
+        if let Some(p) = sf {
+            self.s.soundfont = Some(p.clone());
+            self.load_sf(p);
+        }
+        if !open {
+            self.packs_open = false;
+        }
+    }
+
     fn pipe_picker(&mut self, ctx: &egui::Context) {
         if !self.pipe_picker {
             return;
@@ -3201,6 +3406,14 @@ impl eframe::App for App {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                 match ext.as_str() {
                     "sf2" => self.load_sf(p),
+                    "sfz" | "dspreset" => {
+                        if !self.inst_extra.contains(&p) {
+                            self.inst_extra.push(p.clone());
+                        }
+                        self.add_native_presets();
+                        let id = sounds::inst_id(&p);
+                        self.set_preset(false, (sounds::SAMPLE_BANK, id));
+                    }
                     "mid" | "midi" | "kar" | "abc" => {
                         self.load_song_path(&p);
                         if !self.song_files.contains(&p) {
@@ -3259,6 +3472,7 @@ impl eframe::App for App {
         self.pipe_picker(ctx);
         self.chart_window(ctx);
         self.tunes_window(ctx);
+        self.packs_window(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();

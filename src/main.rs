@@ -9,14 +9,18 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod abc;
+mod chip;
 mod audio;
 mod drums;
 mod game;
 mod engine;
 mod fingering;
 mod midi;
+mod native;
+mod packs;
 mod pipe_art;
 mod pipes;
+mod sampler;
 mod session;
 mod settings;
 mod song;
@@ -158,7 +162,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     }
     render(1.0, "release tail", &mut eng);
 
-    tx.send(Cmd::Program { layer: false, bank: 0, prog: 81 }).unwrap(); // saw lead
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 81, inst: None }).unwrap(); // saw lead
     p.arp_on.store(true, Relaxed);
     for k in [57, 60, 64] {
         tx.send(note(k, true)).unwrap();
@@ -181,7 +185,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     p.delay_mix.set(0.4);
     p.cutoff.set(0.45);
     p.resonance.set(0.6);
-    tx.send(Cmd::Program { layer: false, bank: 0, prog: 0 }).unwrap();
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: None }).unwrap();
     tx.send(Cmd::LoopButton).unwrap(); // start recording
     for k in [48u8, 55, 52, 55] {
         tx.send(note(k, true)).unwrap();
@@ -260,7 +264,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
 
     // wind controller: breath (CC2) must control loudness
     p.wind_on.store(true, Relaxed);
-    tx.send(Cmd::Program { layer: false, bank: 0, prog: 66 }).unwrap(); // tenor sax
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 66, inst: None }).unwrap(); // tenor sax
     tx.send(Cmd::Midi([0xB0, 2, 120])).unwrap();
     tx.send(note(62, true)).unwrap();
     render(0.1, "  (wind settle)", &mut eng);
@@ -276,9 +280,77 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     p.wind_on.store(false, Relaxed);
     render(0.3, "  (wind off)", &mut eng);
 
+    // chip voices: every patch makes sound through the engine, then hands the channel back
+    p.cutoff.set(1.0); // the controller test above closed the filter
+    for (i, pt) in chip::PATCHES.iter().enumerate() {
+        tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(std::sync::Arc::new(native::InstDef::Chip(*pt))) }).unwrap();
+        for k in [60, 64, 67] {
+            tx.send(note(k, true)).unwrap();
+        }
+        let r = render(0.25, if i == 0 { "chip voices (each patch, a C chord)" } else { "" }, &mut eng);
+        for k in [60, 64, 67] {
+            tx.send(note(k, false)).unwrap();
+        }
+        render(0.15, "", &mut eng);
+        if r.1 < 0.003 || !r.1.is_finite() {
+            fails.push(format!("chip patch {} is silent", pt.name));
+        }
+    }
+    // a sample instrument (generated SFZ) plays legato
+    {
+        let d = std::env::temp_dir().join("noodle_render_sfz");
+        let _ = std::fs::create_dir_all(&d);
+        let sr = 44100u32;
+        let mut data = Vec::new();
+        for i in 0..(sr as usize) {
+            let v = ((i as f32 / sr as f32 * 440.0 * std::f32::consts::TAU).sin() * 16000.0) as i16;
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&((36 + data.len()) as u32).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        for v in [16u32] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&sr.to_le_bytes());
+        b.extend_from_slice(&(sr * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(&data);
+        let _ = std::fs::write(d.join("a4.wav"), b);
+        let _ = std::fs::write(d.join("Test Flute.sfz"), "<region> sample=a4.wav pitch_keycenter=69 loop_mode=loop_continuous loop_start=4410 loop_end=44099 ampeg_release=0.1\n");
+        match sampler::load(&d.join("Test Flute.sfz")) {
+            Ok(inst) => {
+                tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(std::sync::Arc::new(native::InstDef::Sampler(std::sync::Arc::new(inst)))) }).unwrap();
+                tx.send(note(69, true)).unwrap();
+                check!("sample instrument", render(0.5, "sample instrument (SFZ)", &mut eng), true);
+                tx.send(note(71, true)).unwrap();
+                tx.send(note(69, false)).unwrap();
+                check!("sample legato", render(1.5, "  legato to B, held past the sample's end (loops)", &mut eng), true);
+                tx.send(note(71, false)).unwrap();
+                check!("sample release", render(0.5, "  released", &mut eng), false);
+            }
+            Err(e) => fails.push(format!("sfz load: {e}")),
+        }
+    }
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: None }).unwrap();
+    // metronome clicks
+    p.metro_on.store(true, Relaxed);
+    let mr = render(1.2, "metronome", &mut eng);
+    if mr.0 < 0.1 {
+        fails.push("metronome: no click".into());
+    }
+    p.metro_on.store(false, Relaxed);
+    render(0.3, "", &mut eng);
+
     // drones + bagpipe chanter: GHB in A
     p.wind_on.store(false, Relaxed);
-    tx.send(Cmd::Program { layer: false, bank: 0, prog: 109 }).unwrap(); // GM bagpipe
+    tx.send(Cmd::Program { layer: false, bank: 0, prog: 109, inst: None }).unwrap(); // GM bagpipe
     p.drone_tone.store(0, Relaxed);
     p.drone_cents[0].store(5700, Relaxed); // A3 tenor
     p.drone_cents[1].store(5700, Relaxed);

@@ -13,7 +13,10 @@ pub struct PresetInfo {
     pub name: String,
 }
 
-pub const GM_FAMILIES: [&str; 16] = [
+pub const SAMPLE_BANK: i32 = 1000;
+pub const CHIP_BANK: i32 = 2000;
+
+pub const GM_FAMILIES: [&str; 18] = [
     "Piano",
     "Chromatic perc.",
     "Organ",
@@ -30,10 +33,68 @@ pub const GM_FAMILIES: [&str; 16] = [
     "World",
     "Percussive",
     "Sound FX",
+    "Samples",
+    "Chiptune",
 ];
 
 pub fn family(p: &PresetInfo) -> usize {
-    (p.prog / 8).clamp(0, 15) as usize
+    match p.bank {
+        SAMPLE_BANK => 16,
+        CHIP_BANK => 17,
+        _ => (p.prog / 8).clamp(0, 15) as usize,
+    }
+}
+
+/// Folders searched for sample instruments (.sfz / .dspreset).
+pub fn instrument_dirs() -> Vec<PathBuf> {
+    let mut v = vec![user_dir().join("instruments")];
+    if let Some(e) = exe_dir() {
+        v.push(e.join("instruments"));
+    }
+    if let Some(d) = dirs::document_dir() {
+        v.push(d.join("Decent Sampler"));
+        v.push(d.join("Pianobook"));
+    }
+    if let Some(d) = dirs::audio_dir() {
+        v.push(d.join("Decent Sampler"));
+    }
+    v
+}
+
+/// A stable id for an instrument file, so a saved choice survives new files appearing.
+pub fn inst_id(p: &Path) -> i32 {
+    let mut h: u32 = 2166136261;
+    for b in p.to_string_lossy().bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    (h & 0x7fff_ffff) as i32
+}
+
+/// Sample instruments and chip voices, as presets in the sound picker.
+pub fn native_presets(extra: &[PathBuf]) -> (Vec<PresetInfo>, Vec<(i32, PathBuf)>) {
+    let mut files = scan(&instrument_dirs(), &["sfz", "dspreset"], 4);
+    for e in extra {
+        if !files.contains(e) {
+            files.push(e.clone());
+        }
+    }
+    let mut v = Vec::new();
+    let mut paths = Vec::new();
+    let pack_names: std::collections::HashMap<PathBuf, &str> = crate::packs::PACKS.iter().map(|p| (crate::packs::installed_path(p), p.name)).collect();
+    for f in files {
+        let id = inst_id(&f);
+        let name = pack_names
+            .get(&f)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| f.file_stem().map(|s| s.to_string_lossy().replace(['_'], " ")).unwrap_or_default());
+        v.push(PresetInfo { bank: SAMPLE_BANK, prog: id, name });
+        paths.push((id, f));
+    }
+    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    for (i, p) in crate::chip::PATCHES.iter().enumerate() {
+        v.push(PresetInfo { bank: CHIP_BANK, prog: i as i32, name: p.name.to_string() });
+    }
+    (v, paths)
 }
 
 pub fn user_dir() -> PathBuf {
