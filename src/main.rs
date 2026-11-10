@@ -9,6 +9,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod abc;
+mod analog;
 mod chip;
 mod audio;
 mod drums;
@@ -175,12 +176,59 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     render(0.5, "arp released", &mut eng);
 
     for (i, v) in drums::PATTERNS[1].1.iter().enumerate() {
-        p.drum_rows[i].store(*v, Relaxed);
+        p.drum_bank[0][i].store(*v, Relaxed);
     }
+    p.drum_cur.store(0, Relaxed);
     p.drums_on.store(true, Relaxed);
     check!("drums", render(2.2, "drums: synthpop pattern", &mut eng), true);
     let steps_hit = p.drum_step.load(Relaxed);
     println!("  drum step pointer now at {steps_hit}");
+    // live-PA drums: queue slot B, a fill, then a chain A×1 → B×1 (fill)
+    for (i, v) in drums::PATTERNS[2].1.iter().enumerate() {
+        p.drum_bank[1][i].store(*v, Relaxed);
+    }
+    p.drum_queue.store(1, Relaxed);
+    render(2.3, "  queue pattern B", &mut eng);
+    println!("  playing slot {}", p.drum_cur.load(Relaxed));
+    if p.drum_cur.load(Relaxed) != 1 {
+        fails.push("queued drum pattern didn't switch at the bar".into());
+    }
+    p.drum_fill.store(true, Relaxed);
+    let mut saw_fill = false;
+    for _ in 0..30 {
+        render(0.1, "", &mut eng);
+        saw_fill |= p.drum_fill_now.load(Relaxed);
+    }
+    println!("  fill played: {saw_fill}");
+    if !saw_fill {
+        fails.push("drum fill never played".into());
+    }
+    p.chain[0].store(0 | (1 << 4), Relaxed);
+    p.chain[1].store(1 | 8 | (1 << 4), Relaxed);
+    p.chain_len.store(2, Relaxed);
+    p.chain_on.store(true, Relaxed);
+    p.drums_on.store(false, Relaxed);
+    render(0.1, "", &mut eng);
+    p.drums_on.store(true, Relaxed);
+    let mut seen = [false; 2];
+    for _ in 0..50 {
+        render(0.1, "", &mut eng);
+        seen[(p.drum_cur.load(Relaxed) as usize).min(1)] = true;
+    }
+    println!("  chain visited A {} B {}", seen[0], seen[1]);
+    if !(seen[0] && seen[1]) {
+        fails.push("drum chain didn't move through its parts".into());
+    }
+    p.chain_on.store(false, Relaxed);
+    tx.send(Cmd::DrumInst(Some(std::sync::Arc::new(native::InstDef::ChipDrums(0))))).unwrap();
+    check!("chip drums", render(1.5, "drums: NES kit", &mut eng), true);
+    tx.send(Cmd::DrumInst(Some(std::sync::Arc::new(native::InstDef::ChipDrums(5))))).unwrap();
+    let d80 = render(1.5, "drums: 80s gated kit", &mut eng);
+    if d80.1 < 0.003 || d80.0 >= 0.999 {
+        fails.push(format!("80s kit level (peak {:.3})", d80.0));
+    }
+    tx.send(Cmd::DrumInst(None)).unwrap();
+    check!("sf drums again", render(1.0, "drums: back to the SoundFont kit", &mut eng), true);
 
     p.delay_mix.set(0.4);
     p.cutoff.set(0.45);
@@ -294,6 +342,21 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
         render(0.15, "", &mut eng);
         if r.1 < 0.003 || !r.1.is_finite() {
             fails.push(format!("chip patch {} is silent", pt.name));
+        }
+    }
+    for pt in analog::PATCHES.iter() {
+        tx.send(Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(std::sync::Arc::new(native::InstDef::Analog(*pt))) }).unwrap();
+        for k in [57, 60, 64] {
+            tx.send(note(k, true)).unwrap();
+        }
+        let r = render(0.6, "", &mut eng);
+        for k in [57, 60, 64] {
+            tx.send(note(k, false)).unwrap();
+        }
+        render(0.3, "", &mut eng);
+        println!("  synthwave {:<18} peak {:.3} rms {:.4}", pt.name, r.0, r.1);
+        if r.1 < 0.003 || r.0 >= 0.999 {
+            fails.push(format!("synthwave {} level (peak {:.3}, rms {:.4})", pt.name, r.0, r.1));
         }
     }
     // a sample instrument (generated SFZ) plays legato

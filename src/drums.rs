@@ -53,3 +53,21 @@ pub const KITS: &[(&str, u8)] = &[
     ("Brush", 40),
     ("Orchestra", 48),
 ];
+
+/// What the 8 pattern slots start as: a groove, its variation, a break, a build, a drop.
+pub fn default_slots() -> Vec<(&'static str, [u16; DRUM_ROWS], u8)> {
+    let get = |n: &str| PATTERNS.iter().find(|p| p.0 == n).map(|p| (p.1, p.2)).unwrap_or(([0; DRUM_ROWS], 16));
+    let (a, al) = get("Synthpop");
+    let (b, bl) = get("Four on the floor");
+    let (c, cl) = get("Disco");
+    let (d, dl) = get("Breakbeat");
+    // a breakdown: hats only; a build: snare on every beat then every 8th
+    let mut brk = [0u16; DRUM_ROWS];
+    brk[3] = a[3];
+    brk[7] = 1;
+    let mut build = [0u16; DRUM_ROWS];
+    build[0] = 0b0001_0001_0001_0001;
+    build[1] = 0b0101_0101_0101_0101;
+    build[3] = a[3];
+    vec![("Synthpop", a, al), ("Four on the floor", b, bl), ("Disco", c, cl), ("Breakbeat", d, dl), ("Breakdown", brk, 16), ("Build", build, 16), ("Empty", [0; DRUM_ROWS], 16), ("Empty", [0; DRUM_ROWS], 16)]
+}

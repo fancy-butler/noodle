@@ -137,6 +137,8 @@ pub struct App {
     inst_paths: std::collections::HashMap<i32, PathBuf>,
     inst_extra: Vec<PathBuf>,
     packs_open: bool,
+    chain_open: bool,
+    fing_auto_key: String,
     dl: crate::packs::Downloads,
     dl_seen: std::collections::HashSet<&'static str>,
     inst_cache: std::collections::HashMap<i32, Arc<crate::native::InstDef>>,
@@ -434,6 +436,8 @@ impl App {
             inst_paths: Default::default(),
             inst_extra: Vec::new(),
             packs_open: std::env::var("NOODLE_SHOW_PACKS").is_ok(),
+            chain_open: false,
+            fing_auto_key: String::new(),
             dl: Default::default(),
             dl_seen: Default::default(),
             inst_cache: Default::default(),
@@ -500,6 +504,9 @@ impl App {
         }
         app.add_native_presets();
         app.p.metro_beats.store(app.s.metro_beats, Relaxed);
+        if let Some(k) = app.s.drum_chip {
+            app.set_drum_kit_chip(Some(k));
+        }
         app.p.metro_vol.set(app.s.metro_vol);
         app.rebuild_walk();
         app
@@ -691,6 +698,11 @@ impl App {
             sounds::CHIP_BANK => {
                 let pt = crate::chip::PATCHES[(bp.1 as usize).min(crate::chip::PATCHES.len() - 1)];
                 let inst = Some(Arc::new(crate::native::InstDef::Chip(pt)));
+                let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst });
+            }
+            sounds::SYNTH_BANK => {
+                let pt = crate::analog::PATCHES[(bp.1 as usize).min(crate::analog::PATCHES.len() - 1)];
+                let inst = Some(Arc::new(crate::native::InstDef::Analog(pt)));
                 let _ = self.tx.send(Cmd::Program { layer, bank: 0, prog: 0, inst });
             }
             sounds::SAMPLE_BANK => {
@@ -1340,6 +1352,24 @@ impl App {
                 self.load_sf(p);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("▦ Panels", |ui| {
+                    ui.checkbox(&mut self.s.show_loop, "Looper");
+                    ui.checkbox(&mut self.s.show_drums, "Drums");
+                    ui.checkbox(&mut self.s.show_arp, "Arpeggiator");
+                    if ui.checkbox(&mut self.s.show_drone, "Drone · bagpipes · shruti · harmonium").changed() && !self.s.show_drone {
+                        // nothing keeps sounding from a hidden panel
+                        self.s.drone_mode = 0;
+                        self.p.drone_on.store(false, Relaxed);
+                        self.p.pipe_mode.store(false, Relaxed);
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Fingering").size(11.0).color(text_dim()));
+                    ui.radio_value(&mut self.s.fing_mode, 0, "Auto: when the sound has a fingering");
+                    ui.radio_value(&mut self.s.fing_mode, 1, "Always");
+                    ui.radio_value(&mut self.s.fing_mode, 2, "Off");
+                    ui.separator();
+                    ui.checkbox(&mut self.s.hide_modules, "Hide all panels (F2)");
+                });
                 if ui.button("?").on_hover_text("Keys & shortcuts (F1)").clicked() {
                     self.show_help = !self.show_help;
                 }
@@ -1432,11 +1462,21 @@ impl App {
                 if self.wind_active {
                     self.wind_card(ui);
                 }
-                self.loop_card(ui);
-                self.drum_card(ui);
-                self.arp_card(ui);
-                self.drone_card(ui);
-                self.fingering_card(ui);
+                if self.s.show_loop {
+                    self.loop_card(ui);
+                }
+                if self.s.show_drums {
+                    self.drum_card(ui);
+                }
+                if self.s.show_arp {
+                    self.arp_card(ui);
+                }
+                if self.s.show_drone {
+                    self.drone_card(ui);
+                }
+                if self.fingering_visible() {
+                    self.fingering_card(ui);
+                }
             });
         });
     }
@@ -1917,6 +1957,31 @@ impl App {
         song.notes.iter().find(|n| n.start >= pos - 0.03 && mask & (1 << n.ch) != 0).map(|n| n.key)
     }
 
+    /// Fingering panel: follows the sound (auto), always shown, or off.
+    fn fingering_visible(&mut self) -> bool {
+        match self.s.fing_mode {
+            1 => true,
+            2 => false,
+            _ => {
+                // what are we emulating? the bagpipe module wins, then the sound's name
+                let want = if self.s.drone_mode == 1 {
+                    crate::fingering::chart_for_pipe(self.s.pipe_idx).map(|c| (c, 0))
+                } else {
+                    crate::fingering::chart_for_sound(&self.preset_name(self.s.main))
+                };
+                let key = format!("{:?}{:?}", self.s.main, want);
+                if key != self.fing_auto_key {
+                    self.fing_auto_key = key;
+                    if let Some((c, t)) = want {
+                        self.s.fing_idx = c;
+                        self.s.fing_tr = t;
+                    }
+                }
+                want.is_some()
+            }
+        }
+    }
+
     fn fingering_card(&mut self, ui: &mut egui::Ui) {
         use crate::fingering::{lookup, parse, CHARTS};
         let idx = self.s.fing_idx.min(CHARTS.len() - 1);
@@ -2086,62 +2151,165 @@ impl App {
         });
     }
 
+    fn set_drum_kit_chip(&mut self, k: Option<usize>) {
+        self.s.drum_chip = k;
+        let inst = k.map(|k| Arc::new(crate::native::InstDef::ChipDrums(k)));
+        let _ = self.tx.send(Cmd::DrumInst(inst));
+    }
+
     fn drum_card(&mut self, ui: &mut egui::Ui) {
         let p = self.p.clone();
-        card(ui, "DRUMS", 500.0, |ui| {
+        let t = now_s(&self.t0);
+        let pulse = ((t * 6.0).sin() * 0.5 + 0.5) as f32;
+        card(ui, "DRUMS", 560.0, |ui| {
+            let sel = self.s.drum_sel.min(DRUM_SLOTS - 1);
+            let playing = p.drums_on.load(Relaxed);
             ui.horizontal(|ui| {
-                let on = p.drums_on.load(Relaxed);
-                if big_toggle(ui, on, if on { "■ STOP" } else { "▶ PLAY" }, GOOD, Vec2::new(78.0, 26.0)).on_hover_text("Space").clicked() {
-                    p.drums_on.store(!on, Relaxed);
+                if big_toggle(ui, playing, if playing { "■ STOP" } else { "▶ PLAY" }, GOOD, Vec2::new(78.0, 26.0)).on_hover_text("Space").clicked() {
+                    p.drums_on.store(!playing, Relaxed);
                 }
-                let pat_name = PATTERNS.get(self.s.drum_pattern).map(|p| p.0).unwrap_or("Custom");
                 let mut pick = None;
-                egui::ComboBox::from_id_salt("pattern").selected_text(pat_name).width(150.0).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("pattern").selected_text(format!("{} · {}", (b'A' + sel as u8) as char, self.s.drum_slot_names.get(sel).cloned().unwrap_or_default())).width(150.0).show_ui(ui, |ui| {
+                    ui.label(RichText::new(format!("Load a style into slot {}", (b'A' + sel as u8) as char)).size(11.0).color(text_dim()));
                     for (i, (n, _, _)) in PATTERNS.iter().enumerate() {
-                        if ui.selectable_label(i == self.s.drum_pattern, *n).clicked() {
+                        if ui.selectable_label(false, *n).clicked() {
                             pick = Some(i);
                         }
                     }
                 });
                 if let Some(i) = pick {
-                    self.s.drum_pattern = i;
-                    let (_, rows, len) = PATTERNS[i];
+                    let (n, rows, len) = PATTERNS[i];
                     for r in 0..DRUM_ROWS {
-                        p.drum_rows[r].store(rows[r], Relaxed);
+                        p.drum_bank[sel][r].store(rows[r], Relaxed);
                     }
-                    p.drum_len.store(len, Relaxed);
+                    p.drum_bank_len[sel].store(len, Relaxed);
+                    if let Some(name) = self.s.drum_slot_names.get_mut(sel) {
+                        *name = n.to_string();
+                    }
                 }
                 let kit = p.drum_kit.load(Relaxed);
-                let kname = KITS.iter().find(|k| k.1 == kit).map(|k| k.0).unwrap_or("Kit");
-                egui::ComboBox::from_id_salt("kit").selected_text(kname).width(100.0).show_ui(ui, |ui| {
+                let kname = match self.s.drum_chip {
+                    Some(k) => format!("👾 {}", crate::chip::DRUM_KITS[k.min(crate::chip::DRUM_KITS.len() - 1)]),
+                    None => KITS.iter().find(|k| k.1 == kit).map(|k| k.0).unwrap_or("Kit").to_string(),
+                };
+                let mut chip_pick: Option<Option<usize>> = None;
+                egui::ComboBox::from_id_salt("kit").selected_text(kname).width(120.0).show_ui(ui, |ui| {
                     for (n, prog) in KITS {
-                        if ui.selectable_label(kit == *prog, *n).clicked() {
+                        if ui.selectable_label(self.s.drum_chip.is_none() && kit == *prog, *n).clicked() {
                             p.drum_kit.store(*prog, Relaxed);
+                            chip_pick = Some(None);
+                        }
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("Chip & 80s kits").size(11.0).color(text_dim()));
+                    for (i, n) in crate::chip::DRUM_KITS.iter().enumerate() {
+                        if ui.selectable_label(self.s.drum_chip == Some(i), format!("👾 {n}")).clicked() {
+                            chip_pick = Some(Some(i));
                         }
                     }
                 });
-                let mut len = p.drum_len.load(Relaxed);
+                if let Some(c) = chip_pick {
+                    self.set_drum_kit_chip(c);
+                }
+                // playing a chip voice with a SoundFont kit? offer the matching chip kit
+                if self.s.drum_chip.is_none() && self.s.main.0 == sounds::SYNTH_BANK {
+                    if ui.small_button("🌆 80s drums").on_hover_text("Gated-reverb 80s kit to match the synth").clicked() {
+                        self.set_drum_kit_chip(Some(5));
+                    }
+                }
+                if self.s.drum_chip.is_none() && self.s.main.0 == sounds::CHIP_BANK {
+                    let chip = crate::chip::PATCHES[(self.s.main.1 as usize).min(crate::chip::PATCHES.len() - 1)].chip;
+                    let k = match chip {
+                        "NES" => 0,
+                        "Game Boy" => 1,
+                        "C64 SID" => 2,
+                        "Sega Genesis" | "Sega Master System" => 3,
+                        _ => 4,
+                    };
+                    if ui.small_button(format!("👾 {} drums", crate::chip::DRUM_KITS[k])).on_hover_text("Match the drums to your chip sound").clicked() {
+                        self.set_drum_kit_chip(Some(k));
+                    }
+                }
+                let mut len = p.drum_bank_len[sel].load(Relaxed);
                 for l in [12u8, 16] {
                     if ui.selectable_label(len == l, RichText::new(format!("{l}")).size(11.0)).on_hover_text(if l == 12 { "12 steps: 6/8, 3/4" } else { "16 steps: 4/4" }).clicked() {
                         len = l;
                     }
                 }
-                p.drum_len.store(len, Relaxed);
+                p.drum_bank_len[sel].store(len, Relaxed);
+            });
+            // pattern slots, fill, chain
+            let cur = p.drum_cur.load(Relaxed) as usize;
+            let queued = p.drum_queue.load(Relaxed) as usize;
+            let chain_on = p.chain_on.load(Relaxed);
+            ui.horizontal(|ui| {
+                for i in 0..DRUM_SLOTS {
+                    let letter = ((b'A' + i as u8) as char).to_string();
+                    let empty = (0..DRUM_ROWS).all(|r| p.drum_bank[i][r].load(Relaxed) == 0);
+                    let is_playing = playing && cur == i;
+                    let fill = if is_playing {
+                        LIVE
+                    } else if queued == i && playing {
+                        LIVE.gamma_multiply(0.35 + 0.5 * pulse)
+                    } else {
+                        card_hi()
+                    };
+                    let txt = RichText::new(letter).strong().size(14.0).color(if is_playing || (queued == i && playing) { Color32::BLACK } else if empty { text_dim() } else { fg() });
+                    let mut b = egui::Button::new(txt).fill(fill).corner_radius(6.0).min_size(Vec2::new(28.0, 26.0));
+                    if sel == i {
+                        b = b.stroke(Stroke::new(2.0, YOURS));
+                    }
+                    let name = self.s.drum_slot_names.get(i).cloned().unwrap_or_default();
+                    let r = ui.add(b).on_hover_text(format!("{name}\nClick: edit this pattern, and switch to it at the next bar while playing"));
+                    if r.clicked() {
+                        self.s.drum_sel = i;
+                        if playing && !chain_on {
+                            p.drum_queue.store(i as u8, Relaxed);
+                        } else if !playing {
+                            p.drum_cur.store(i as u8, Relaxed);
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+                let fill_now = p.drum_fill_now.load(Relaxed);
+                let fill_q = p.drum_fill.load(Relaxed);
+                let fcol = if fill_now { BAD } else if fill_q { BAD.gamma_multiply(0.4 + 0.5 * pulse) } else { card_hi() };
+                if ui.add(egui::Button::new(RichText::new("FILL").strong().color(if fill_now || fill_q { Color32::BLACK } else { fg() })).fill(fcol).corner_radius(6.0).min_size(Vec2::new(44.0, 26.0))).on_hover_text("A one-bar fill next bar, ending on a crash").clicked() {
+                    p.drum_fill.store(true, Relaxed);
+                }
+                let ccol = if chain_on { ARP } else { card_hi() };
+                if ui.add(egui::Button::new(RichText::new("⛓ CHAIN").strong().color(if chain_on { Color32::BLACK } else { fg() })).fill(ccol).corner_radius(6.0).min_size(Vec2::new(0.0, 26.0))).on_hover_text("Play the arrangement: patterns in order, for so many bars each").clicked() {
+                    p.chain_on.store(!chain_on, Relaxed);
+                }
+                if ui.small_button("✎").on_hover_text("Edit the arrangement").clicked() {
+                    self.chain_open = !self.chain_open;
+                }
+                if chain_on && playing {
+                    let ci = p.chain_pos.load(Relaxed) as usize;
+                    if let Some(e) = self.s.drum_chain.get(ci) {
+                        ui.label(RichText::new(format!("{} {}/{}", (b'A' + e.0) as char, p.chain_bar.load(Relaxed) + 1, e.2)).size(12.0).color(ARP));
+                    }
+                }
             });
             ui.horizontal(|ui| {
-                // step grid
+                // step grid for the selected slot
                 let cw = 19.0;
                 let chh = 15.0;
                 let lw = 56.0;
                 let size = Vec2::new(lw + cw * 16.0, chh * DRUM_ROWS as f32);
                 let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
                 let painter = ui.painter_at(rect);
-                let step = p.drum_step.load(Relaxed);
-                let len = p.drum_len.load(Relaxed) as usize;
+                let step = if playing && cur == sel { p.drum_step.load(Relaxed) } else { 255 };
+                let len = p.drum_bank_len[sel].load(Relaxed) as usize;
+                let mute = p.drum_mute.load(Relaxed);
                 for r in 0..DRUM_ROWS {
                     let y = rect.top() + r as f32 * chh;
-                    painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), text_dim());
-                    let bits = p.drum_rows[r].load(Relaxed);
+                    let muted = mute & (1 << r) != 0;
+                    painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), if muted { BAD } else { text_dim() });
+                    if muted {
+                        painter.line_segment([Pos2::new(rect.left(), y + chh / 2.0), Pos2::new(rect.left() + lw - 6.0, y + chh / 2.0)], Stroke::new(1.0, BAD));
+                    }
+                    let bits = p.drum_bank[sel][r].load(Relaxed);
                     for s in 0..16 {
                         let x = rect.left() + lw + s as f32 * cw;
                         let cell = Rect::from_min_size(Pos2::new(x + 1.0, y + 1.0), Vec2::new(cw - 2.0, chh - 2.0));
@@ -2150,7 +2318,7 @@ impl App {
                         let mut col = if s >= len {
                             gray(26)
                         } else if on {
-                            GOOD
+                            if muted { GOOD.gamma_multiply(0.3) } else { GOOD }
                         } else if beat {
                             gray(52)
                         } else {
@@ -2167,16 +2335,22 @@ impl App {
                 }
                 if resp.clicked() {
                     if let Some(pos) = resp.interact_pointer_pos() {
-                        let s = ((pos.x - rect.left() - lw) / cw).floor();
                         let r = ((pos.y - rect.top()) / chh).floor();
-                        if s >= 0.0 && s < 16.0 && r >= 0.0 && (r as usize) < DRUM_ROWS {
-                            let r = r as usize;
-                            let v = p.drum_rows[r].load(Relaxed) ^ (1 << s as u16);
-                            p.drum_rows[r].store(v, Relaxed);
-                            self.s.drum_pattern = usize::MAX;
+                        if pos.x < rect.left() + lw {
+                            if r >= 0.0 && (r as usize) < DRUM_ROWS {
+                                p.drum_mute.store(mute ^ (1 << r as u8), Relaxed);
+                            }
+                        } else {
+                            let s = ((pos.x - rect.left() - lw) / cw).floor();
+                            if s >= 0.0 && s < 16.0 && r >= 0.0 && (r as usize) < DRUM_ROWS {
+                                let r = r as usize;
+                                let v = p.drum_bank[sel][r].load(Relaxed) ^ (1 << s as u16);
+                                p.drum_bank[sel][r].store(v, Relaxed);
+                            }
                         }
                     }
                 }
+                resp.on_hover_text("Click a step to toggle it · click a row name to mute that row");
                 ui.vertical(|ui| {
                     let mut sw = p.swing.get();
                     if knob(ui, "Swing", &mut sw, 0.0, GOOD, pct) {
@@ -2189,6 +2363,75 @@ impl App {
                 });
             });
         });
+    }
+
+    fn chain_window(&mut self, ctx: &egui::Context) {
+        if !self.chain_open {
+            return;
+        }
+        let p = self.p.clone();
+        let mut open = true;
+        let mut changed = false;
+        egui::Window::new("⛓ Drum arrangement").open(&mut open).collapsible(false).resizable(false).default_width(360.0).show(ctx, |ui| {
+            ui.label(RichText::new("Patterns play in this order, each for its number of bars, then it loops. Tick Fill to end that part with a fill.").size(12.0).color(text_dim()));
+            ui.add_space(4.0);
+            let playing_i = if p.chain_on.load(Relaxed) && p.drums_on.load(Relaxed) { p.chain_pos.load(Relaxed) as usize } else { usize::MAX };
+            let mut remove = None;
+            let mut up = None;
+            egui::Grid::new("chain").num_columns(5).spacing([8.0, 4.0]).show(ui, |ui| {
+                for (i, e) in self.s.drum_chain.iter_mut().enumerate() {
+                    ui.label(RichText::new(if i == playing_i { "▶" } else { " " }).color(ARP));
+                    egui::ComboBox::from_id_salt(("chain_slot", i)).selected_text(((b'A' + e.0) as char).to_string()).width(44.0).show_ui(ui, |ui| {
+                        for s in 0..DRUM_SLOTS as u8 {
+                            if ui.selectable_value(&mut e.0, s, ((b'A' + s) as char).to_string()).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                    if ui.add(egui::DragValue::new(&mut e.2).range(1..=256).suffix(" bars")).changed() {
+                        changed = true;
+                    }
+                    if ui.checkbox(&mut e.1, "Fill").changed() {
+                        changed = true;
+                    }
+                    ui.horizontal(|ui| {
+                        if i > 0 && ui.small_button("▲").clicked() {
+                            up = Some(i);
+                        }
+                        if ui.small_button("✕").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+            if let Some(i) = up {
+                self.s.drum_chain.swap(i, i - 1);
+                changed = true;
+            }
+            if let Some(i) = remove {
+                self.s.drum_chain.remove(i);
+                changed = true;
+            }
+            ui.horizontal(|ui| {
+                if self.s.drum_chain.len() < CHAIN_MAX && ui.button("+ Add part").clicked() {
+                    let last = self.s.drum_chain.last().map(|e| e.0).unwrap_or(0);
+                    self.s.drum_chain.push(((last + 1) % DRUM_SLOTS as u8, false, 4));
+                    changed = true;
+                }
+                let total: u32 = self.s.drum_chain.iter().map(|e| e.2 as u32).sum();
+                ui.label(RichText::new(format!("{total} bars per loop")).color(text_dim()));
+            });
+        });
+        if changed {
+            for (i, c) in self.s.drum_chain.iter().enumerate() {
+                p.chain[i].store((c.0 as u16 & 7) | if c.1 { 8 } else { 0 } | (c.2.clamp(1, 4095) << 4), Relaxed);
+            }
+            p.chain_len.store(self.s.drum_chain.len() as u8, Relaxed);
+        }
+        if !open {
+            self.chain_open = false;
+        }
     }
 
     fn loop_card(&mut self, ui: &mut egui::Ui) {
@@ -3473,6 +3716,7 @@ impl eframe::App for App {
         self.chart_window(ctx);
         self.tunes_window(ctx);
         self.packs_window(ctx);
+        self.chain_window(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();

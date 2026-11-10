@@ -45,6 +45,8 @@ pub const PASS_CH: [(u8, u8); 6] = [(2, 3), (4, 5), (6, 7), (10, 11), (12, 13), 
 pub const MAX_PASSES: usize = PASS_CH.len();
 
 pub const DRUM_ROWS: usize = 8;
+pub const DRUM_SLOTS: usize = 8;
+pub const CHAIN_MAX: usize = 16;
 pub const DRUM_NOTES: [u8; DRUM_ROWS] = [36, 38, 39, 42, 46, 45, 50, 49];
 pub const DRUM_NAMES: [&str; DRUM_ROWS] = ["Kick", "Snare", "Clap", "Hat", "Open hat", "Low tom", "Hi tom", "Crash"];
 const DRUM_VEL: [i32; DRUM_ROWS] = [118, 108, 100, 82, 90, 100, 100, 96];
@@ -140,8 +142,24 @@ pub struct Params {
     pub arp_gate: AF32,
     // drums
     pub drums_on: AtomicBool,
-    pub drum_rows: [AtomicU16; DRUM_ROWS],
-    pub drum_len: AtomicU8,
+    /// 8 pattern slots (A–H): rows and length
+    pub drum_bank: [[AtomicU16; DRUM_ROWS]; DRUM_SLOTS],
+    pub drum_bank_len: [AtomicU8; DRUM_SLOTS],
+    /// slot playing now (engine writes while playing; UI sets it when stopped)
+    pub drum_cur: AtomicU8,
+    /// slot to switch to at the next bar (255 = none)
+    pub drum_queue: AtomicU8,
+    /// play a fill in the next bar
+    pub drum_fill: AtomicBool,
+    pub drum_fill_now: AtomicBool,
+    /// rows silenced (bit per row)
+    pub drum_mute: AtomicU8,
+    /// arrangement: slot (bits 0-2), fill on last bar (bit 3), bars (bits 4-15)
+    pub chain: [AtomicU16; CHAIN_MAX],
+    pub chain_len: AtomicU8,
+    pub chain_on: AtomicBool,
+    pub chain_pos: AtomicU8,
+    pub chain_bar: AtomicU16,
     pub drum_kit: AtomicU8,
     pub drum_vol: AF32,
     pub swing: AF32,
@@ -226,8 +244,18 @@ impl Params {
             arp_latch: AtomicBool::new(false),
             arp_gate: AF32::new(0.6),
             drums_on: AtomicBool::new(false),
-            drum_rows: Default::default(),
-            drum_len: AtomicU8::new(16),
+            drum_bank: Default::default(),
+            drum_bank_len: std::array::from_fn(|_| AtomicU8::new(16)),
+            drum_cur: AtomicU8::new(0),
+            drum_queue: AtomicU8::new(255),
+            drum_fill: AtomicBool::new(false),
+            drum_fill_now: AtomicBool::new(false),
+            drum_mute: AtomicU8::new(0),
+            chain: Default::default(),
+            chain_len: AtomicU8::new(0),
+            chain_on: AtomicBool::new(false),
+            chain_pos: AtomicU8::new(0),
+            chain_bar: AtomicU16::new(0),
             drum_kit: AtomicU8::new(0),
             drum_vol: AF32::new(0.8),
             swing: AF32::new(0.0),
@@ -291,6 +319,8 @@ pub enum Cmd {
     Panic,
     Synths(Box<SynthPair>),
     LoadSong(Option<Arc<Song>>),
+    /// a chip drum kit on the drum channel (None = back to the SoundFont kit)
+    DrumInst(Option<Arc<crate::native::InstDef>>),
     SongPlay(bool),
     SongSeek(f64),
 }
@@ -410,6 +440,13 @@ pub struct Engine {
     drums_were_on: bool,
     drum_origin: f64,
     drum_k: u64,
+    drum_bar_k: u64,
+    drum_slot: usize,
+    fill_active: bool,
+    crash_next: bool,
+    chain_i: usize,
+    chain_b: u32,
+    drum_inst: Option<Arc<crate::native::InstDef>>,
     // looper
     lp_evs: Vec<LoopEv>,
     lp_sorted: usize,
@@ -502,6 +539,13 @@ impl Engine {
             drums_were_on: false,
             drum_origin: 0.0,
             drum_k: 0,
+            drum_bar_k: 0,
+            drum_slot: 0,
+            fill_active: false,
+            crash_next: false,
+            chain_i: 0,
+            chain_b: 0,
+            drum_inst: None,
             lp_evs: Vec::with_capacity(LOOP_CAP),
             lp_sorted: 0,
             lp_state: lstate::EMPTY,
@@ -551,6 +595,9 @@ impl Engine {
         }
         if let Some(i) = li {
             self.native[LAYER_CH as usize] = Some(crate::native::Native::new(&i, sr));
+        }
+        if let Some(i) = self.drum_inst.clone() {
+            self.native[DRUM_CH as usize] = Some(crate::native::Native::new(&i, sr));
         }
     }
 
@@ -1310,21 +1357,111 @@ impl Engine {
     }
 
     // ---------- drum machine ----------
+    fn chain_entry(&self, i: usize) -> (usize, bool, u32) {
+        let v = self.p.chain[i.min(CHAIN_MAX - 1)].load(Relaxed);
+        ((v & 7) as usize, v & 8 != 0, ((v >> 4) as u32).max(1))
+    }
+
+    /// Called at the start of every bar: fills, queued switches and the arrangement.
+    fn drum_bar_start(&mut self, first: bool) {
+        if self.fill_active {
+            self.fill_active = false;
+            self.crash_next = true;
+        }
+        let chain_n = self.p.chain_len.load(Relaxed) as usize;
+        if self.p.chain_on.load(Relaxed) && chain_n > 0 {
+            if first {
+                self.chain_i = 0;
+                self.chain_b = 0;
+            } else {
+                self.chain_b += 1;
+                if self.chain_b >= self.chain_entry(self.chain_i).2 {
+                    self.chain_b = 0;
+                    self.chain_i = (self.chain_i + 1) % chain_n;
+                    if self.chain_i == 0 {
+                        self.crash_next = true;
+                    }
+                }
+            }
+            let (slot, fill, bars) = self.chain_entry(self.chain_i);
+            if self.drum_slot != slot && !first {
+                self.crash_next = true;
+            }
+            self.drum_slot = slot;
+            self.fill_active = fill && self.chain_b + 1 == bars;
+            self.p.chain_pos.store(self.chain_i as u8, Relaxed);
+            self.p.chain_bar.store(self.chain_b as u16, Relaxed);
+        } else if self.p.drum_fill.swap(false, Relaxed) {
+            // the fill takes this bar; a queued switch waits for the next one
+            self.fill_active = true;
+        } else {
+            let q = self.p.drum_queue.swap(255, Relaxed);
+            if (q as usize) < DRUM_SLOTS {
+                self.drum_slot = q as usize;
+            }
+        }
+        self.p.drum_cur.store(self.drum_slot as u8, Relaxed);
+        self.p.drum_fill_now.store(self.fill_active, Relaxed);
+    }
+
+    /// A one-bar fill built from the current groove: snare build in the second half, toms to finish.
+    fn fill_rows(rows: [u16; DRUM_ROWS], len: usize) -> [u16; DRUM_ROWS] {
+        let mut r = rows;
+        let h = len / 2;
+        let q = len * 3 / 4;
+        let mask_from = |from: usize| -> u16 { (((1u32 << len) - 1) as u16) & !((1u16 << from) - 1) };
+        // kick keeps the first half and the half-bar
+        r[0] = (rows[0] & !mask_from(h)) | (1 << h);
+        // hats and open hats stop for the last quarter
+        r[3] &= !mask_from(q);
+        r[4] &= !mask_from(q);
+        r[7] = 0;
+        // snare: every other step from the half, every step in the last quarter until the toms
+        let tom_start = q + (len - q) / 2;
+        let mut sn = rows[1] & !mask_from(h);
+        for s in h..q {
+            if (s - h) % 2 == 0 {
+                sn |= 1 << s;
+            }
+        }
+        for s in q..tom_start {
+            sn |= 1 << s;
+        }
+        r[1] = sn;
+        r[2] = rows[2] & !mask_from(h);
+        // toms: high then low to close the bar
+        r[6] = 0;
+        r[5] = 0;
+        for s in tom_start..len {
+            if s < tom_start + (len - tom_start) / 2 {
+                r[6] |= 1 << s;
+            } else {
+                r[5] |= 1 << s;
+            }
+        }
+        r
+    }
+
     fn tick_drums(&mut self, b0: f64, b1: f64) {
         let on = self.p.drums_on.load(Relaxed);
         if on && !self.drums_were_on {
             self.drum_origin = b0;
             self.drum_k = 0;
+            self.drum_bar_k = 0;
+            self.fill_active = false;
+            self.crash_next = false;
+            self.drum_slot = (self.p.drum_cur.load(Relaxed) as usize).min(DRUM_SLOTS - 1);
+            self.drum_bar_start(true);
         }
         if !on && self.drums_were_on {
             self.p.drum_step.store(255, Relaxed);
+            self.p.drum_fill_now.store(false, Relaxed);
         }
         self.drums_were_on = on;
         if !on {
             return;
         }
         let swing = self.p.swing.get().clamp(0.0, 1.0) as f64;
-        let len = (self.p.drum_len.load(Relaxed) as u64).clamp(1, 16);
         loop {
             let k = self.drum_k;
             let mut t = self.drum_origin + k as f64 * 0.25;
@@ -1334,10 +1471,25 @@ impl Engine {
             if t >= b1 {
                 break;
             }
-            let step = (k % len) as usize;
+            let mut len = (self.p.drum_bank_len[self.drum_slot].load(Relaxed) as u64).clamp(1, 16);
+            if k - self.drum_bar_k >= len {
+                self.drum_bar_k = k;
+                self.drum_bar_start(false);
+                len = (self.p.drum_bank_len[self.drum_slot].load(Relaxed) as u64).clamp(1, 16);
+            }
+            let step = (k - self.drum_bar_k) as usize;
             self.p.drum_step.store(step as u8, Relaxed);
+            let mut rows: [u16; DRUM_ROWS] = std::array::from_fn(|r| self.p.drum_bank[self.drum_slot][r].load(Relaxed));
+            if self.fill_active {
+                rows = Self::fill_rows(rows, len as usize);
+            }
+            if step == 0 && self.crash_next {
+                rows[7] |= 1;
+                self.crash_next = false;
+            }
+            let mute = self.p.drum_mute.load(Relaxed);
             for row in 0..DRUM_ROWS {
-                if bit(self.p.drum_rows[row].load(Relaxed), step) {
+                if mute & (1 << row) == 0 && bit(rows[row], step) {
                     self.msg(DRUM_CH, 0x90, DRUM_NOTES[row] as i32, DRUM_VEL[row]);
                 }
             }
@@ -1685,6 +1837,16 @@ impl Engine {
                     self.song_playing = on && self.song.is_some();
                 }
                 Cmd::SongSeek(t) => self.song_seek(t),
+                Cmd::DrumInst(i) => {
+                    self.drum_inst = i.clone();
+                    if let Some(n) = self.native[DRUM_CH as usize].as_mut() {
+                        n.all_off(true);
+                    }
+                    self.native[DRUM_CH as usize] = i.map(|i| crate::native::Native::new(&i, self.sr));
+                    // back on the SoundFont kit: resend program and level
+                    self.applied_kit = -1;
+                    self.applied[3] = -1.0;
+                }
             }
         }
     }

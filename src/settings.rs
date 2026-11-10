@@ -32,6 +32,13 @@ pub struct Settings {
     pub arp_gate: f32,
     pub arp_latch: bool,
     pub drum_rows: [u16; DRUM_ROWS],
+    /// pattern slots A–H: (rows, steps)
+    pub drum_slots: Vec<([u16; DRUM_ROWS], u8)>,
+    pub drum_slot_names: Vec<String>,
+    pub drum_sel: usize,
+    /// arrangement: (slot, fill on last bar, bars)
+    pub drum_chain: Vec<(u8, bool, u16)>,
+    pub drum_chip: Option<usize>,
     pub drum_len: u8,
     pub drum_kit: u8,
     pub drum_vol: f32,
@@ -51,6 +58,12 @@ pub struct Settings {
     pub controller: u8, // 0 auto-detect, 1 off, 2 MiniLab 3
     pub score_dark: bool,
     pub hide_modules: bool,
+    pub show_loop: bool,
+    pub show_drums: bool,
+    pub show_arp: bool,
+    pub show_drone: bool,
+    /// fingering panel: 0 auto (follows the sound), 1 always, 2 off
+    pub fing_mode: u8,
     pub ml3_setup_done: bool,
     pub wind: u8, // 0 auto-detect, 1 off, 2 on
     pub breath_src: u8,
@@ -118,6 +131,11 @@ impl Default for Settings {
             arp_gate: 0.6,
             arp_latch: false,
             drum_rows: crate::drums::PATTERNS[1].1,
+            drum_slots: Vec::new(),
+            drum_slot_names: Vec::new(),
+            drum_sel: 0,
+            drum_chain: vec![(0, false, 4), (1, true, 4)],
+            drum_chip: None,
             drum_len: 16,
             drum_kit: 0,
             drum_vol: 0.8,
@@ -137,6 +155,11 @@ impl Default for Settings {
             controller: 0,
             score_dark: false,
             hide_modules: false,
+            show_loop: true,
+            show_drums: true,
+            show_arp: true,
+            show_drone: true,
+            fing_mode: 0,
             ml3_setup_done: false,
             wind: 0,
             breath_src: 0,
@@ -185,7 +208,26 @@ fn path() -> PathBuf {
 
 impl Settings {
     pub fn load() -> Self {
-        std::fs::read_to_string(path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut s: Self = std::fs::read_to_string(path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        s.migrate();
+        s
+    }
+
+    fn migrate(&mut self) {
+        if self.drum_slots.len() != crate::engine::DRUM_SLOTS {
+            // first run with slots: your old pattern becomes A, styles fill the rest
+            let defaults = crate::drums::default_slots();
+            let mut v: Vec<([u16; DRUM_ROWS], u8)> = defaults.iter().map(|d| (d.1, d.2)).collect();
+            v[0] = (self.drum_rows, self.drum_len.max(1));
+            self.drum_slot_names = defaults.iter().map(|d| d.0.to_string()).collect();
+            if self.drum_rows != crate::drums::PATTERNS[1].1 {
+                self.drum_slot_names[0] = "Yours".into();
+            }
+            self.drum_slots = v;
+        }
+        while self.drum_slot_names.len() < crate::engine::DRUM_SLOTS {
+            self.drum_slot_names.push(String::new());
+        }
     }
 
     pub fn save(&self) {
@@ -221,10 +263,17 @@ impl Settings {
         p.arp_oct.store(self.arp_oct, Relaxed);
         p.arp_gate.set(self.arp_gate);
         p.arp_latch.store(self.arp_latch, Relaxed);
-        for i in 0..DRUM_ROWS {
-            p.drum_rows[i].store(self.drum_rows[i], Relaxed);
+        for (k, (rows, len)) in self.drum_slots.iter().enumerate() {
+            for i in 0..DRUM_ROWS {
+                p.drum_bank[k][i].store(rows[i], Relaxed);
+            }
+            p.drum_bank_len[k].store(*len, Relaxed);
         }
-        p.drum_len.store(self.drum_len, Relaxed);
+        p.drum_cur.store(self.drum_sel.min(7) as u8, Relaxed);
+        for (i, c) in self.drum_chain.iter().take(crate::engine::CHAIN_MAX).enumerate() {
+            p.chain[i].store((c.0 as u16 & 7) | if c.1 { 8 } else { 0 } | (c.2.clamp(1, 4095) << 4), Relaxed);
+        }
+        p.chain_len.store(self.drum_chain.len().min(crate::engine::CHAIN_MAX) as u8, Relaxed);
         p.drum_kit.store(self.drum_kit, Relaxed);
         p.drum_vol.set(self.drum_vol);
         p.swing.set(self.swing);
@@ -254,10 +303,12 @@ impl Settings {
         self.arp_oct = p.arp_oct.load(Relaxed);
         self.arp_gate = p.arp_gate.get();
         self.arp_latch = p.arp_latch.load(Relaxed);
-        for i in 0..DRUM_ROWS {
-            self.drum_rows[i] = p.drum_rows[i].load(Relaxed);
+        for (k, slot) in self.drum_slots.iter_mut().enumerate() {
+            for i in 0..DRUM_ROWS {
+                slot.0[i] = p.drum_bank[k][i].load(Relaxed);
+            }
+            slot.1 = p.drum_bank_len[k].load(Relaxed);
         }
-        self.drum_len = p.drum_len.load(Relaxed);
         self.drum_kit = p.drum_kit.load(Relaxed);
         self.drum_vol = p.drum_vol.get();
         self.swing = p.swing.get();

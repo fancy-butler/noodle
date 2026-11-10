@@ -8,11 +8,15 @@ use std::sync::Arc;
 pub enum InstDef {
     Sampler(Arc<crate::sampler::Instrument>),
     Chip(crate::chip::Patch),
+    ChipDrums(usize),
+    Analog(crate::analog::Patch),
 }
 
 pub enum Native {
     Sampler(crate::sampler::Player),
     Chip(Box<crate::chip::Player>),
+    Drums(crate::chip::DrumPlayer),
+    Analog(Box<crate::analog::Player>),
 }
 
 impl Native {
@@ -20,6 +24,8 @@ impl Native {
         match def {
             InstDef::Sampler(i) => Native::Sampler(crate::sampler::Player::new(i.clone(), sr)),
             InstDef::Chip(p) => Native::Chip(Box::new(crate::chip::Player::new(*p, sr))),
+            InstDef::ChipDrums(k) => Native::Drums(crate::chip::DrumPlayer::new(*k, sr)),
+            InstDef::Analog(p) => Native::Analog(Box::new(crate::analog::Player::new(*p, sr))),
         }
     }
 
@@ -31,12 +37,16 @@ impl Native {
             0xB0 => match self {
                 Native::Sampler(p) => p.cc(k, v),
                 Native::Chip(p) => p.cc(k, v),
+                Native::Drums(p) => p.cc(k, v),
+                Native::Analog(p) => p.cc(k, v),
             },
             0xE0 => {
                 let v14 = (d2 << 7) | d1;
                 match self {
                     Native::Sampler(p) => p.bend(v14),
                     Native::Chip(p) => p.bend(v14),
+                    Native::Drums(_) => {}
+                    Native::Analog(p) => p.bend(v14),
                 }
             }
             _ => {}
@@ -47,6 +57,8 @@ impl Native {
         match self {
             Native::Sampler(p) => p.note_on(k, v),
             Native::Chip(p) => p.note_on(k, v),
+            Native::Drums(p) => p.note_on(k, v),
+            Native::Analog(p) => p.note_on(k, v),
         }
     }
 
@@ -54,6 +66,8 @@ impl Native {
         match self {
             Native::Sampler(p) => p.note_off(k),
             Native::Chip(p) => p.note_off(k),
+            Native::Drums(_) => {}
+            Native::Analog(p) => p.note_off(k),
         }
     }
 
@@ -61,6 +75,8 @@ impl Native {
         match self {
             Native::Sampler(p) => p.all_off(hard),
             Native::Chip(p) => p.all_off(hard),
+            Native::Drums(p) => p.all_off(),
+            Native::Analog(p) => p.all_off(hard),
         }
     }
 
@@ -68,6 +84,8 @@ impl Native {
         match self {
             Native::Sampler(p) => p.render(l, r),
             Native::Chip(p) => p.render(l, r),
+            Native::Drums(p) => p.render(l, r),
+            Native::Analog(p) => p.render(l, r),
         }
     }
 }

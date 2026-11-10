@@ -459,6 +459,43 @@ pub fn lookup(chart: &Chart, key: u8, any_octave: bool, tr: i8) -> Option<(&Fing
 }
 
 /// Which chart goes with a bagpipe (pipes::PIPES index), if any.
+/// Which chart (and transposition) fits a sound, from its name. None = no fingering for it.
+pub fn chart_for_sound(name: &str) -> Option<(usize, usize)> {
+    let n = name.to_lowercase();
+    let find = |prefix: &str| CHARTS.iter().position(|c| c.name.starts_with(prefix));
+    let trans = |chart: usize, word: &str| CHARTS[chart].trans.iter().position(|t| t.0.to_lowercase().starts_with(word)).unwrap_or(0);
+    if n.contains("uilleann") {
+        return find("Uilleann").map(|c| (c, 0));
+    }
+    if n.contains("smallpipe") {
+        return find("Scottish smallpipes").map(|c| (c, 0));
+    }
+    if n.contains("bagpipe") || n.contains("highland") || n.contains("chanter") {
+        return find("Great Highland").map(|c| (c, 0));
+    }
+    if n.contains("sopilka") {
+        return find("Sopilka").map(|c| (c, 0));
+    }
+    if n.contains("whistle") && !n.contains("train") && !n.contains("ball") {
+        let c = find("Tin whistle")?;
+        let t = if n.contains("low") { trans(c, "low d") } else { 0 };
+        return Some((c, t));
+    }
+    if n.contains("recorder") && !n.contains("alto") && !n.contains("bass") {
+        // soprano and tenor recorders share the C fingering
+        return find("Recorder").map(|c| (c, 0));
+    }
+    if (n.contains("flute") || n.contains("piccolo")) && !n.contains("pan") && !n.contains("shakuhachi") {
+        return find("Flute").map(|c| (c, 0));
+    }
+    if n.contains("sax") {
+        let c = find("Saxophone")?;
+        let t = ["alto", "tenor", "soprano", "bari"].iter().find(|w| n.contains(*w)).map(|w| trans(c, w)).unwrap_or(0);
+        return Some((c, t));
+    }
+    None
+}
+
 pub fn chart_for_pipe(pipe: usize) -> Option<usize> {
     match pipe {
         0 => Some(0), // Great Highland
@@ -493,5 +530,12 @@ mod tests {
         // whistle: D whistle bottom note is D5
         let wh = CHARTS.iter().find(|c| c.name == "Tin whistle").unwrap();
         assert_eq!(parse(lookup(wh, 74, false, 0).unwrap().0.states), vec![1; 6]);
+        // the panel follows the sound
+        let sax = CHARTS.iter().position(|c| c.name == "Saxophone").unwrap();
+        assert_eq!(chart_for_sound("Tenor Sax"), Some((sax, 1)));
+        assert_eq!(chart_for_sound("Flute (vibrato)").map(|x| CHARTS[x.0].name), Some("Flute (Boehm, B foot)"));
+        assert_eq!(chart_for_sound("Pan Flute"), None);
+        assert_eq!(chart_for_sound("Yamaha Grand Piano"), None);
+        assert_eq!(chart_for_sound("Bagpipe in G (with drones)").map(|x| x.0), Some(0));
     }
 }

@@ -15,8 +15,9 @@ pub struct PresetInfo {
 
 pub const SAMPLE_BANK: i32 = 1000;
 pub const CHIP_BANK: i32 = 2000;
+pub const SYNTH_BANK: i32 = 3000;
 
-pub const GM_FAMILIES: [&str; 18] = [
+pub const GM_FAMILIES: [&str; 19] = [
     "Piano",
     "Chromatic perc.",
     "Organ",
@@ -35,12 +36,14 @@ pub const GM_FAMILIES: [&str; 18] = [
     "Sound FX",
     "Samples",
     "Chiptune",
+    "Synthwave",
 ];
 
 pub fn family(p: &PresetInfo) -> usize {
     match p.bank {
         SAMPLE_BANK => 16,
         CHIP_BANK => 17,
+        SYNTH_BANK => 18,
         _ => (p.prog / 8).clamp(0, 15) as usize,
     }
 }
@@ -93,6 +96,9 @@ pub fn native_presets(extra: &[PathBuf]) -> (Vec<PresetInfo>, Vec<(i32, PathBuf)
     v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     for (i, p) in crate::chip::PATCHES.iter().enumerate() {
         v.push(PresetInfo { bank: CHIP_BANK, prog: i as i32, name: p.name.to_string() });
+    }
+    for (i, p) in crate::analog::PATCHES.iter().enumerate() {
+        v.push(PresetInfo { bank: SYNTH_BANK, prog: i as i32, name: p.name.to_string() });
     }
     (v, paths)
 }

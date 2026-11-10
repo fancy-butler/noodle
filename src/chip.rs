@@ -641,3 +641,313 @@ mod noise_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- chip drum kits
+
+pub const DRUM_KITS: [&str; 6] = ["NES (2A03)", "Game Boy", "C64 SID", "Sega Genesis", "Amiga", "80s synthwave (gated)"];
+
+#[derive(Clone, Copy, PartialEq)]
+enum ToneW {
+    None,
+    Tri4,
+    Pulse,
+    Sine,
+    Fm,
+    /// six detuned squares (808/909-style metallic hats)
+    Metal,
+}
+
+#[derive(Clone, Copy)]
+struct Recipe {
+    tone: ToneW,
+    f0: f32,
+    f1: f32,
+    sweep: f32,
+    tone_dec: f32,
+    tone_lvl: f32,
+    /// noise clock (Hz) and LFSR short mode
+    noise_rate: f32,
+    short: bool,
+    noise_dec: f32,
+    noise_lvl: f32,
+    /// resonant band-pass on the noise (SID), 0 = off
+    bp: f32,
+    bursts: u8,
+    len: f32,
+    choke: bool,
+}
+
+const NONE: Recipe = Recipe { tone: ToneW::None, f0: 0.0, f1: 0.0, sweep: 0.05, tone_dec: 0.1, tone_lvl: 0.0, noise_rate: 0.0, short: false, noise_dec: 0.1, noise_lvl: 0.0, bp: 0.0, bursts: 0, len: 0.5, choke: false };
+
+fn recipe(kit: usize, note: u8) -> Option<Recipe> {
+    if kit == 5 {
+        // 80s drum machine: sine kick, fat snare, metallic hats; snare/clap/toms feed the gated reverb
+        let r = match note {
+            35 | 36 => Recipe { tone: ToneW::Sine, f0: 150.0, f1: 48.0, sweep: 0.05, tone_dec: 0.32, tone_lvl: 1.2, noise_rate: 30000.0, noise_dec: 0.006, noise_lvl: 0.3, len: 0.7, ..NONE },
+            38 | 40 => Recipe { tone: ToneW::Sine, f0: 230.0, f1: 180.0, sweep: 0.02, tone_dec: 0.08, tone_lvl: 0.7, noise_rate: 40000.0, noise_dec: 0.16, noise_lvl: 0.9, len: 0.6, ..NONE },
+            39 => Recipe { noise_rate: 40000.0, noise_dec: 0.12, noise_lvl: 0.9, bursts: 3, len: 0.5, ..NONE },
+            42 | 44 => Recipe { tone: ToneW::Metal, f0: 1.0, f1: 1.0, tone_dec: 0.035, tone_lvl: 0.35, noise_rate: 44000.0, noise_dec: 0.025, noise_lvl: 0.15, len: 0.15, ..NONE },
+            46 => Recipe { tone: ToneW::Metal, f0: 1.0, f1: 1.0, tone_dec: 0.25, tone_lvl: 0.32, noise_rate: 44000.0, noise_dec: 0.2, noise_lvl: 0.14, len: 0.8, choke: true, ..NONE },
+            41 | 43 => Recipe { tone: ToneW::Sine, f0: 160.0, f1: 90.0, sweep: 0.12, tone_dec: 0.35, tone_lvl: 1.0, len: 0.7, ..NONE },
+            45 | 47 => Recipe { tone: ToneW::Sine, f0: 220.0, f1: 130.0, sweep: 0.12, tone_dec: 0.3, tone_lvl: 1.0, len: 0.6, ..NONE },
+            48 | 50 => Recipe { tone: ToneW::Sine, f0: 300.0, f1: 180.0, sweep: 0.1, tone_dec: 0.28, tone_lvl: 1.0, len: 0.6, ..NONE },
+            49 | 52 | 55 | 57 => Recipe { tone: ToneW::Metal, f0: 1.3, f1: 1.3, tone_dec: 1.0, tone_lvl: 0.2, noise_rate: 44000.0, noise_dec: 1.1, noise_lvl: 0.45, len: 2.5, ..NONE },
+            51 | 53 | 59 => Recipe { tone: ToneW::Metal, f0: 1.8, f1: 1.8, tone_dec: 0.6, tone_lvl: 0.2, len: 1.2, ..NONE },
+            _ => return recipe(3, note),
+        };
+        return Some(r);
+    }
+    let nes_noise = |i: usize| 1_789_773.0 / [4.0, 8.0, 16.0, 32.0, 64.0, 96.0, 128.0, 160.0, 202.0, 254.0, 380.0, 508.0, 762.0, 1016.0, 2034.0, 4068.0][i];
+    let tone = match kit {
+        0 => ToneW::Tri4,
+        1 => ToneW::Pulse,
+        3 => ToneW::Fm,
+        _ => ToneW::Sine,
+    };
+    let bp = if kit == 2 { 1.0 } else { 0.0 };
+    let r = match note {
+        35 | 36 => Recipe { tone, f0: if kit == 3 { 220.0 } else { 160.0 }, f1: 45.0, sweep: 0.035, tone_dec: 0.16, tone_lvl: 1.0, noise_rate: nes_noise(3), noise_dec: 0.012, noise_lvl: if kit == 0 { 0.0 } else { 0.25 }, len: 0.45, ..NONE },
+        37 => Recipe { tone, f0: 900.0, f1: 600.0, sweep: 0.01, tone_dec: 0.02, tone_lvl: 0.6, noise_rate: nes_noise(4), noise_dec: 0.02, noise_lvl: 0.5, len: 0.12, ..NONE },
+        38 | 40 => Recipe { tone, f0: 240.0, f1: 170.0, sweep: 0.03, tone_dec: 0.05, tone_lvl: 0.55, noise_rate: nes_noise(5), noise_dec: 0.14, noise_lvl: 0.85, bp: bp * 2500.0, len: 0.4, ..NONE },
+        39 => Recipe { noise_rate: nes_noise(4), noise_dec: 0.11, noise_lvl: 0.9, bursts: 3, bp: bp * 1600.0, len: 0.35, ..NONE },
+        42 | 44 => Recipe { noise_rate: nes_noise(0), short: kit == 0 || kit == 1, noise_dec: 0.03, noise_lvl: 0.55, bp: bp * 8000.0, len: 0.12, ..NONE },
+        46 => Recipe { noise_rate: nes_noise(0), short: kit == 0 || kit == 1, noise_dec: 0.22, noise_lvl: 0.5, bp: bp * 8000.0, len: 0.7, choke: true, ..NONE },
+        41 | 43 => Recipe { tone, f0: 150.0, f1: 85.0, sweep: 0.08, tone_dec: 0.22, tone_lvl: 0.9, len: 0.5, ..NONE },
+        45 | 47 => Recipe { tone, f0: 210.0, f1: 125.0, sweep: 0.08, tone_dec: 0.2, tone_lvl: 0.9, len: 0.5, ..NONE },
+        48 | 50 => Recipe { tone, f0: 300.0, f1: 180.0, sweep: 0.07, tone_dec: 0.18, tone_lvl: 0.9, len: 0.45, ..NONE },
+        49 | 52 | 55 | 57 => Recipe { noise_rate: nes_noise(1), noise_dec: 0.9, noise_lvl: 0.55, bp: bp * 6000.0, len: 2.5, ..NONE },
+        51 | 53 | 59 => Recipe { tone: ToneW::Pulse, f0: 3200.0, f1: 3200.0, tone_dec: 0.4, tone_lvl: 0.12, noise_rate: nes_noise(0), short: true, noise_dec: 0.4, noise_lvl: 0.25, len: 1.2, ..NONE },
+        _ if (27..=87).contains(&note) => Recipe { noise_rate: nes_noise(((note as usize) % 8) + 2), noise_dec: 0.06, noise_lvl: 0.5, len: 0.2, ..NONE },
+        _ => return None,
+    };
+    Some(r)
+}
+
+#[derive(Clone, Copy)]
+struct Hit {
+    note: u8,
+    r: Recipe,
+    t: f32,
+    vel: f32,
+    phase: f64,
+    mphase: f64,
+    acc: f64,
+    lfsr: u16,
+    nout: f32,
+    bp: [f32; 2],
+    kill: f32,
+}
+
+pub struct DrumPlayer {
+    kit: usize,
+    sr: f32,
+    hits: Vec<Hit>,
+    vol: f32,
+    seed: u16,
+    hold: (u32, f32, f32),
+    // gated reverb (80s kit)
+    gv: Vec<(Vec<f32>, usize, f32)>,
+    gate: f32,
+    gate_open: f32,
+}
+
+impl DrumPlayer {
+    pub fn new(kit: usize, sr: f32) -> Self {
+        let gv = [1557usize, 1617, 1491, 1422, 1277, 1356].iter().map(|&n| (vec![0.0; (n as f32 * sr / 44100.0) as usize], 0usize, 0.0f32)).collect();
+        DrumPlayer { kit: kit.min(DRUM_KITS.len() - 1), sr, hits: Vec::with_capacity(32), vol: 0.79, seed: 0x4a3b, hold: (0, 0.0, 0.0), gv, gate: 0.0, gate_open: 0.0 }
+    }
+
+    pub fn note_on(&mut self, note: u8, vel: u8) {
+        if vel == 0 {
+            return;
+        }
+        let Some(r) = recipe(self.kit, note) else { return };
+        if self.kit == 5 && matches!(note, 38 | 39 | 40 | 41 | 43 | 45 | 47 | 48 | 50) {
+            // the gate opens on snare, clap and toms
+            self.gate_open = 0.32;
+        }
+        if note == 42 || note == 44 {
+            // closed hat chokes the open one
+            for h in self.hits.iter_mut().filter(|h| h.r.choke) {
+                h.kill = 1.0;
+            }
+        }
+        if self.hits.len() >= 32 {
+            self.hits.remove(0);
+        }
+        self.seed = self.seed.wrapping_mul(25173).wrapping_add(13849) | 1;
+        self.hits.push(Hit { note, r, t: 0.0, vel: vel as f32 / 127.0, phase: 0.0, mphase: 0.0, acc: 0.0, lfsr: self.seed & 0x7fff | 1, nout: 1.0, bp: [0.0; 2], kill: 0.0 });
+    }
+
+    pub fn cc(&mut self, n: u8, v: u8) {
+        match n {
+            7 => self.vol = (v as f32 / 127.0).powi(2),
+            120 | 123 => self.hits.clear(),
+            _ => {}
+        }
+    }
+
+    pub fn all_off(&mut self) {
+        self.hits.clear();
+    }
+
+    pub fn render(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let sr = self.sr;
+        let dt = 1.0 / sr;
+        let kit = self.kit;
+        let steps = match kit {
+            0 | 1 => 15.0,
+            _ => 0.0,
+        };
+        let gain = self.vol * 0.14;
+        for i in 0..out_l.len() {
+            let mut sum = 0.0f32;
+            let mut send = 0.0f32;
+            for h in self.hits.iter_mut() {
+                let r = h.r;
+                let t = h.t;
+                let mut s = 0.0;
+                if r.tone_lvl > 0.0 {
+                    let f = r.f1 + (r.f0 - r.f1) * (-t / r.sweep.max(0.001)).exp();
+                    h.phase = (h.phase + (f / sr) as f64).fract();
+                    let ph = h.phase as f32;
+                    let w = match r.tone {
+                        ToneW::Tri4 => {
+                            let st = (ph * 32.0) as i32;
+                            (if st < 16 { 15 - st } else { st - 16 }) as f32 / 7.5 - 1.0
+                        }
+                        ToneW::Pulse => if ph < 0.5 { 1.0 } else { -1.0 },
+                        ToneW::Metal => {
+                            // six squares at the 808's hat frequencies (× f0), summed
+                            const HZ: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0];
+                            let mut m = 0.0;
+                            for (k, hz) in HZ.iter().enumerate() {
+                                let p = ((t * hz * r.f0 * 4.0) + k as f32 * 0.17).fract();
+                                m += if p < 0.5 { 1.0 } else { -1.0 };
+                            }
+                            // crude high-pass: difference from the previous value
+                            let d = m - h.mphase as f32;
+                            h.mphase = m as f64;
+                            d * 0.5
+                        }
+                        ToneW::Fm => {
+                            h.mphase = (h.mphase + (f * 1.5 / sr) as f64).fract();
+                            let m = (h.mphase as f32 * std::f32::consts::TAU).sin() * 1.6 * (-t / 0.03).exp();
+                            (ph * std::f32::consts::TAU + m).sin()
+                        }
+                        _ => (ph * std::f32::consts::TAU).sin(),
+                    };
+                    let mut e = (-t / r.tone_dec).exp();
+                    if steps > 0.0 {
+                        e = (e * steps).round() / steps;
+                    }
+                    s += w * e * r.tone_lvl;
+                }
+                if r.noise_lvl > 0.0 {
+                    h.acc += (r.noise_rate / sr) as f64;
+                    let n = h.acc.floor() as i32;
+                    h.acc -= n as f64;
+                    for _ in 0..n.min(4096) {
+                        let tap = if r.short { 6 } else { 1 };
+                        let b = (h.lfsr ^ (h.lfsr >> tap)) & 1;
+                        h.lfsr = (h.lfsr >> 1) | (b << 14);
+                    }
+                    h.nout = if h.lfsr & 1 == 0 { 1.0 } else { -1.0 };
+                    let mut x = h.nout;
+                    if r.bp > 0.0 {
+                        // SID-style resonant filter on the noise
+                        let g = (std::f32::consts::PI * (r.bp / sr).min(0.45)).tan();
+                        let k = 0.6;
+                        let a1 = 1.0 / (1.0 + g * (g + k));
+                        let v1 = a1 * (h.bp[0] + g * (x - h.bp[1]));
+                        let v2 = h.bp[1] + g * v1;
+                        h.bp[0] = 2.0 * v1 - h.bp[0];
+                        h.bp[1] = 2.0 * v2 - h.bp[1];
+                        x = v1 * 1.6;
+                    }
+                    let mut e = if r.bursts > 0 && t < 0.03 {
+                        // clap: three quick slaps, then the tail
+                        let ph = (t / 0.01).fract();
+                        (-ph * 8.0).exp()
+                    } else {
+                        (-(t - if r.bursts > 0 { 0.03 } else { 0.0 }).max(0.0) / r.noise_dec).exp()
+                    };
+                    if steps > 0.0 {
+                        e = (e * steps).round() / steps;
+                    }
+                    s += x * e * r.noise_lvl;
+                }
+                if h.kill > 0.0 {
+                    h.kill *= 0.995;
+                    s *= h.kill;
+                }
+                let s = s * (0.35 + 0.65 * h.vel);
+                sum += s;
+                if kit == 5 && matches!(h.note, 38 | 39 | 40) {
+                    send += s;
+                } else if kit == 5 && matches!(h.note, 41 | 43 | 45 | 47 | 48 | 50) {
+                    send += s * 0.5;
+                }
+                h.t += dt;
+            }
+            if kit == 5 {
+                // big room, then the gate slams shut
+                let mut wet = 0.0;
+                for (buf, pos, st) in self.gv.iter_mut() {
+                    let y = buf[*pos];
+                    *st = y * 0.75 + *st * 0.25;
+                    buf[*pos] = send + *st * 0.88;
+                    *pos = (*pos + 1) % buf.len();
+                    wet += y;
+                }
+                self.gate_open = (self.gate_open - dt).max(0.0);
+                let target = if self.gate_open > 0.0 { 1.0 } else { 0.0 };
+                self.gate += (target - self.gate) * if target > self.gate { 0.05 } else { 0.004 };
+                sum += wet * 0.22 * self.gate;
+            }
+            let mut x = sum * gain;
+            match kit {
+                3 => x = (x * 256.0).round() / 256.0, // 9-bit DAC
+                4 => {
+                    // Amiga: 8-bit at ~16.7 kHz, held between samples
+                    let period = (sr / 16_726.0).max(1.0) as u32;
+                    if self.hold.0 == 0 {
+                        self.hold.1 = (x * 127.0).round() / 127.0;
+                    }
+                    self.hold.0 = (self.hold.0 + 1) % period;
+                    x = self.hold.1;
+                }
+                _ => {}
+            }
+            out_l[i] += x;
+            out_r[i] += x;
+        }
+        self.hits.retain(|h| h.t < h.r.len && (h.kill == 0.0 || h.kill > 0.001));
+        if self.kit == 5 && self.hits.is_empty() && self.gate > 0.001 {
+            // keep the reverb tail running until the gate is closed
+            self.hits.push(Hit { note: 0, r: Recipe { len: 0.05, ..NONE }, t: 0.0, vel: 0.0, phase: 0.0, mphase: 0.0, acc: 0.0, lfsr: 1, nout: 0.0, bp: [0.0; 2], kill: 0.0 });
+        }
+        let _ = self.hold.2;
+    }
+}
+
+#[cfg(test)]
+mod drum_tests {
+    use super::*;
+    #[test]
+    fn every_kit_plays_every_row() {
+        for kit in 0..DRUM_KITS.len() {
+            for note in [36u8, 38, 39, 42, 46, 45, 50, 49] {
+                let mut d = DrumPlayer::new(kit, 48000.0);
+                d.note_on(note, 110);
+                let (mut l, mut r) = (vec![0.0; 4800], vec![0.0; 4800]);
+                d.render(&mut l, &mut r);
+                let peak = l.iter().fold(0f32, |a, b| a.max(b.abs()));
+                assert!(peak > 0.02 && peak.is_finite(), "{} note {note}: {peak}", DRUM_KITS[kit]);
+            }
+        }
+    }
+}
