@@ -23,7 +23,8 @@ pub fn pretty(name: &str) -> String {
     }
 }
 
-pub fn spawn(tx: Sender<Cmd>, devices: Arc<Mutex<Vec<String>>>) {
+/// `blocked`: pretty names of inputs the user switched off.
+pub fn spawn(tx: Sender<Cmd>, devices: Arc<Mutex<Vec<String>>>, blocked: Arc<Mutex<Vec<String>>>) {
     std::thread::Builder::new()
         .name("noodle-midi".into())
         .spawn(move || {
@@ -39,6 +40,11 @@ pub fn spawn(tx: Sender<Cmd>, devices: Arc<Mutex<Vec<String>>>) {
                         }
                     }
                     drop(scan);
+                    let off = blocked.lock().map(|b| b.clone()).unwrap_or_default();
+                    let mut all: Vec<String> = found.iter().map(|(n, _)| pretty(n)).collect();
+                    all.sort();
+                    all.dedup();
+                    found.retain(|(n, _)| !off.contains(&pretty(n)));
                     conns.retain(|n, _| found.iter().any(|(m, _)| m == n));
                     for (name, port) in found {
                         if conns.contains_key(&name) {
@@ -62,13 +68,16 @@ pub fn spawn(tx: Sender<Cmd>, devices: Arc<Mutex<Vec<String>>>) {
                             },
                             (),
                         );
-                        if let Ok(c) = res {
-                            conns.insert(name, c);
+                        match res {
+                            Ok(c) => {
+                                eprintln!("noodle: MIDI in ← {}", pretty(&name));
+                                conns.insert(name, c);
+                            }
+                            Err(e) => eprintln!("noodle: couldn't open MIDI input {}: {e}", pretty(&name)),
                         }
                     }
-                    let mut names: Vec<String> = conns.keys().map(|n| pretty(n)).collect();
-                    names.sort();
-                    names.dedup();
+                    // report every input; switched-off ones carry a leading '-'
+                    let names: Vec<String> = all.into_iter().map(|n| if off.contains(&n) { format!("-{n}") } else { n }).collect();
                     if let Ok(mut d) = devices.lock() {
                         *d = names;
                     }

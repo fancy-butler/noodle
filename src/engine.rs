@@ -168,6 +168,9 @@ pub struct Params {
     pub breath_filter: AF32,  // how much breath opens the filter
     pub breath_val: AF32,     // engine → UI
     pub breath_locked: AtomicU8,
+    /// incremented by the sound card callback; the watchdog checks it
+    pub audio_beats: AtomicU64,
+    pub audio_ok: AtomicBool,
 }
 
 impl Params {
@@ -224,6 +227,8 @@ impl Params {
             breath_filter: AF32::new(0.0),
             breath_val: AF32::new(1.0),
             breath_locked: AtomicU8::new(0),
+            audio_beats: AtomicU64::new(0),
+            audio_ok: AtomicBool::new(true),
         }
     }
 }

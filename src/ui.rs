@@ -101,6 +101,7 @@ pub struct Handles {
     pub tx: Sender<Cmd>,
     pub rx: Receiver<UiEvt>,
     pub devices: Arc<Mutex<Vec<String>>>,
+    pub blocked: Arc<Mutex<Vec<String>>>,
     pub sample_rate: u32,
     pub audio_info: Result<String, String>,
 }
@@ -110,6 +111,7 @@ pub struct App {
     tx: Sender<Cmd>,
     rx: Receiver<UiEvt>,
     devices: Arc<Mutex<Vec<String>>>,
+    blocked: Arc<Mutex<Vec<String>>>,
     sample_rate: u32,
     audio_info: Result<String, String>,
     s: Settings,
@@ -378,6 +380,7 @@ impl App {
             tx: h.tx,
             rx: h.rx,
             devices: h.devices,
+            blocked: h.blocked,
             sample_rate: h.sample_rate,
             audio_info: h.audio_info,
             saved_json: String::new(),
@@ -524,7 +527,7 @@ impl App {
     }
 
     fn apply_controller(&mut self) {
-        let devs = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
+        let devs: Vec<String> = self.devices.lock().map(|d| d.iter().filter(|n| !n.starts_with('-')).cloned().collect()).unwrap_or_default();
         let ml3 = devs.iter().any(|d| {
             let l = d.to_lowercase().replace(' ', "");
             l.contains("minilab3") || l.contains("minilabmk3")
@@ -976,15 +979,41 @@ impl App {
                 }
                 let cpu = self.p.cpu.get();
                 ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { text_dim() }));
-                match &self.audio_info {
-                    Ok(a) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(text_dim())),
-                    Err(e) => ui.label(RichText::new("🔇 No audio output").size(11.0).color(BAD)).on_hover_text(e),
+                let ok = self.p.audio_ok.load(Relaxed);
+                match (&self.audio_info, ok) {
+                    (Ok(a), true) => ui.label(RichText::new(format!("🔊 {a}")).size(11.0).color(text_dim())),
+                    (Ok(a), false) => ui.label(RichText::new("🔇 Audio stalled — screen still works").size(11.0).color(BAD)).on_hover_text(format!("{a}: the sound card stopped asking for audio. Is another app holding it exclusively? Try restarting Noodle.")),
+                    (Err(e), _) => ui.label(RichText::new("🔇 No audio output").size(11.0).color(BAD)).on_hover_text(e),
                 };
-                let devs = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
-                if devs.is_empty() {
-                    ui.label(RichText::new("○ No MIDI keyboard yet").size(12.0).color(text_dim())).on_hover_text("Plug one in any time — it's picked up automatically.\nMeanwhile your computer keys A W S E D F T G… play notes.");
+                let all = self.devices.lock().map(|d| d.clone()).unwrap_or_default();
+                let on: Vec<String> = all.iter().filter(|n| !n.starts_with('-')).cloned().collect();
+                let label = if on.is_empty() {
+                    RichText::new("○ No MIDI keyboard yet ▾").size(12.0).color(text_dim())
                 } else {
-                    ui.label(RichText::new(format!("● {}", devs.join(", "))).size(12.0).color(GOOD));
+                    RichText::new(format!("● {} ▾", on.join(", "))).size(12.0).color(GOOD)
+                };
+                let mut toggled = None;
+                ui.menu_button(label, |ui| {
+                    ui.label(RichText::new("MIDI inputs (untick to ignore)").size(11.0).color(text_dim()));
+                    if all.is_empty() {
+                        ui.label("Nothing plugged in yet.");
+                    }
+                    for n in &all {
+                        let name = n.trim_start_matches('-').to_string();
+                        let mut enabled = !n.starts_with('-');
+                        if ui.checkbox(&mut enabled, &name).changed() {
+                            toggled = Some((name, enabled));
+                        }
+                    }
+                });
+                if let Some((name, enabled)) = toggled {
+                    self.s.midi_off.retain(|x| *x != name);
+                    if !enabled {
+                        self.s.midi_off.push(name);
+                    }
+                    if let Ok(mut b) = self.blocked.lock() {
+                        *b = self.s.midi_off.clone();
+                    }
                 }
             });
         });

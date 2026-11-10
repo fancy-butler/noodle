@@ -59,6 +59,7 @@ pub struct Settings {
     pub wind_setup_done: bool,
     pub written: u8, // staff transposition preset
     pub theme: u8,   // 0 dark, 1 light, 2 follow system
+    pub midi_off: Vec<String>,
 }
 
 impl Default for Settings {
@@ -115,6 +116,7 @@ impl Default for Settings {
             wind_setup_done: false,
             written: 0,
             theme: 0,
+            midi_off: vec![],
         }
     }
 }

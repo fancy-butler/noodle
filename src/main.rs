@@ -44,25 +44,24 @@ fn main() {
     let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
     let (utx, urx) = crossbeam_channel::bounded::<UiEvt>(16384);
     let devices = Arc::new(Mutex::new(Vec::new()));
-    midi::spawn(tx.clone(), devices.clone());
+    let blocked = Arc::new(Mutex::new(settings::Settings::load().midi_off));
+    midi::spawn(tx.clone(), devices.clone(), blocked.clone());
 
     let rate = audio::default_rate();
     p.sample_rate.store(rate, Relaxed);
-    let engine = Engine::new(p.clone(), rx, utx, rate as f32, 8192);
-    let (audio, sample_rate, audio_info) = match audio::start(engine) {
+    let engine = Arc::new(Mutex::new(Engine::new(p.clone(), rx, utx, rate as f32, 8192)));
+    let (audio, audio_info) = match audio::start(engine.clone(), p.clone()) {
         Ok(a) => {
             let info = Ok(format!("{} · {} kHz", a.device, a.sample_rate / 1000));
-            let sr = a.sample_rate;
-            (Some(a), sr, info)
+            (Some(a), info)
         }
-        Err((e, engine)) => {
+        Err(e) => {
             eprintln!("noodle: no audio output ({e}); running silently");
-            if let Some(engine) = engine {
-                audio::run_silent(engine, rate);
-            }
-            (None, rate, Err(format!("No audio: {e}")))
+            (None, Err(format!("No audio: {e}")))
         }
     };
+    let sample_rate = audio.as_ref().map(|a| a.sample_rate).unwrap_or(rate);
+    audio::spawn_watchdog(engine.clone(), p.clone(), sample_rate);
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -72,7 +71,7 @@ fn main() {
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
     };
-    let handles = ui::Handles { p, tx, rx: urx, devices, sample_rate, audio_info };
+    let handles = ui::Handles { p, tx, rx: urx, devices, blocked, sample_rate, audio_info };
     let res = eframe::run_native("Noodle", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, handles)))));
     drop(audio);
     if let Err(e) = res {
