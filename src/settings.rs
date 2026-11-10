@@ -86,6 +86,7 @@ pub struct Settings {
     pub chanter_level: f32,
     pub fing_idx: usize,
     pub fing_any: bool,
+    pub fing_tr: usize,
 }
 
 impl Default for Settings {
@@ -169,6 +170,7 @@ impl Default for Settings {
             chanter_level: 0.7,
             fing_idx: 0,
             fing_any: true,
+            fing_tr: 0,
         }
     }
 }

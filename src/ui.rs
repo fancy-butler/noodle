@@ -1725,20 +1725,33 @@ impl App {
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("fing").selected_text(CHARTS[idx].name).width(190.0).show_ui(ui, |ui| {
                     for (i, c) in CHARTS.iter().enumerate() {
-                        ui.selectable_value(&mut self.s.fing_idx, i, c.name).on_hover_text(format!("From: {}", c.source));
+                        if ui.selectable_value(&mut self.s.fing_idx, i, c.name).on_hover_text(format!("From: {}", c.source)).clicked() {
+                            self.s.fing_tr = 0;
+                        }
                     }
                 });
+                if !CHARTS[idx].trans.is_empty() {
+                    let tr = CHARTS[idx].trans;
+                    let ti = self.s.fing_tr.min(tr.len() - 1);
+                    egui::ComboBox::from_id_salt("fing_tr").selected_text(tr[ti].0).width(110.0).show_ui(ui, |ui| {
+                        for (i, t) in tr.iter().enumerate() {
+                            ui.selectable_value(&mut self.s.fing_tr, i, t.0);
+                        }
+                    });
+                }
                 ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the instrument's range show the same note in its range");
                 if ui.button("⊞").on_hover_text("Whole chart").clicked() {
                     self.show_chart = !self.show_chart;
                 }
             });
             let chart = &CHARTS[idx];
+            let tr: i8 = chart.trans.get(self.s.fing_tr.min(chart.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0);
             // what you're playing now (held), else the last thing you played
             let held = (0..128u8).rev().find(|k| self.held[0][*k as usize] > 0);
             let now_key = held.or(self.last_live);
             let next_key = self.next_target();
-            let (r, _) = ui.allocate_exact_size(Vec2::new(270.0, 132.0), Sense::hover());
+            let tall = chart.holes.iter().any(|h| h.0 == crate::fingering::Hole::Key);
+            let (r, _) = ui.allocate_exact_size(Vec2::new(270.0, if tall { 175.0 } else { 132.0 }), Sense::hover());
             let left = Rect::from_min_max(r.min, Pos2::new(r.center().x, r.bottom()));
             let right = Rect::from_min_max(Pos2::new(r.center().x, r.top()), r.max);
             let speller = self.speller();
@@ -1746,8 +1759,8 @@ impl App {
             let mut draw = |rect: Rect, key: Option<u8>, ghost: bool, prefix: &str| {
                 match key {
                     Some(k) => {
-                        let found = lookup(chart, k, self.s.fing_any);
-                        let name = theory::note_name_oct(k);
+                        let found = lookup(chart, k, self.s.fing_any, tr);
+                        let name = if tr != 0 && chart.name.starts_with("Sax") { format!("{} wr.", theory::note_name_oct((k as i32 - tr as i32).clamp(0, 127) as u8)) } else { theory::note_name_oct(k) };
                         let label = match found {
                             Some((e, exact)) => {
                                 if e.check {
@@ -2700,15 +2713,18 @@ impl App {
         egui::Window::new(format!("{} — every note", chart.name)).open(&mut open).collapsible(false).resizable(true).default_width(980.0).show(ctx, |ui| {
             ui.label(RichText::new(format!("Transcribed from: {}.  ? = hard to read on that chart, please confirm.", chart.source)).size(11.0).color(text_dim()));
             let per_row = 12usize;
+            egui::ScrollArea::vertical().max_height(ui.ctx().screen_rect().height() - 160.0).show(ui, |ui| {
             for row in chart.fings.chunks(per_row) {
                 let (r, _) = ui.allocate_exact_size(Vec2::new(78.0 * per_row as f32, 230.0), Sense::hover());
                 for (i, e) in row.iter().enumerate() {
                     let cell = Rect::from_min_size(r.min + Vec2::new(i as f32 * 78.0, 0.0), Vec2::new(76.0, 230.0));
                     let st = parse(e.states);
                     let label = format!("{}{}", theory::note_name_oct(e.midi), if e.check { " ?" } else { "" });
+                    let label = if chart.name.starts_with("Sax") { format!("{label} wr.") } else { label };
                     crate::pipe_art::draw_fingering(ui.painter(), cell, chart, Some(&st), &label, false, if e.check { YOURS } else { fg() });
                 }
             }
+            });
         });
         if !open {
             self.show_chart = false;

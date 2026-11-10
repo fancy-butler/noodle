@@ -72,7 +72,7 @@ fn main() {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(format!("Noodle {VERSION}"))
             .with_app_id("noodle")
-            .with_inner_size([1420.0, 900.0])
+            .with_inner_size(if std::env::var("NOODLE_WIDE").is_ok() { [2500.0, 1250.0] } else { [1420.0, 900.0] })
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
     };
