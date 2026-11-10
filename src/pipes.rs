@@ -108,6 +108,40 @@ pub const PIPES: &[Pipe] = &[
     },
 ];
 
+/// Synthesised chanter voice per pipe type (same order as PIPES).
+#[derive(Clone, Copy)]
+pub struct Chanter {
+    /// cylindrical bore = odd harmonics (hollow/buzzy); conical = all harmonics (bright/brassy)
+    pub cylindrical: bool,
+    /// overall brightness (lowpass, Hz)
+    pub bright: f32,
+    /// two resonances (Hz) and their strength
+    pub f1: f32,
+    pub g1: f32,
+    pub f2: f32,
+    pub g2: f32,
+    pub noise: f32,
+    pub level: f32,
+}
+
+const fn ch(cylindrical: bool, bright: f32, f1: f32, g1: f32, f2: f32, g2: f32, noise: f32, level: f32) -> Chanter {
+    Chanter { cylindrical, bright, f1, g1, f2, g2, noise, level }
+}
+
+pub const CHANTERS: [Chanter; 11] = [
+    ch(false, 6000.0, 1350.0, 1.1, 3000.0, 0.8, 0.020, 1.00), // Great Highland: loud, brassy
+    ch(true, 3200.0, 950.0, 0.8, 2200.0, 0.4, 0.010, 0.60),   // Scottish smallpipes: soft, hollow
+    ch(false, 4200.0, 1150.0, 0.9, 2500.0, 0.6, 0.014, 0.80), // Border: between the two
+    ch(false, 3800.0, 1000.0, 0.8, 2300.0, 0.5, 0.012, 0.65), // Uilleann: sweet, rounded
+    ch(true, 2700.0, 820.0, 0.6, 1900.0, 0.3, 0.006, 0.50),   // Northumbrian: quiet, pure
+    ch(false, 5200.0, 1450.0, 1.0, 3100.0, 0.7, 0.016, 0.95), // Galician gaita: bright, strong
+    ch(false, 5000.0, 1400.0, 1.0, 2900.0, 0.7, 0.016, 0.95), // Asturian gaita
+    ch(false, 7000.0, 1900.0, 1.1, 3800.0, 0.9, 0.022, 0.90), // Breton biniou: piercing
+    ch(true, 4200.0, 1250.0, 0.9, 2800.0, 0.6, 0.024, 0.85),  // Bulgarian gaida: buzzy single reed
+    ch(true, 4600.0, 1150.0, 0.9, 2600.0, 0.7, 0.020, 0.90),  // Medieval market pipes: raw, buzzy
+    ch(true, 2600.0, 820.0, 0.6, 1800.0, 0.3, 0.008, 0.45),   // Hümmelchen: small and soft
+];
+
 /// Shruti box drone patterns: semitones relative to Sa.
 pub const SHRUTI: &[(&str, &[i8])] = &[
     ("Sa – Pa – Sa'", &[0, 7, 12]),
@@ -178,6 +212,7 @@ mod tests {
         let dhm = crate::theory::scale_mask(2, &crate::theory::SCALES[crate::theory::scale_index("Harmonic minor")]);
         assert_eq!(chord_for(69, dhm, 0), vec![69, 73, 76]);
         assert_eq!(chord_for(62, 0, 0), vec![62, 66, 69]); // no scale: D major
+        assert_eq!(CHANTERS.len(), PIPES.len());
         for p in PIPES {
             assert!(crate::theory::SCALES.iter().any(|s| s.name == p.scale), "{}", p.name);
         }

@@ -80,6 +80,10 @@ pub struct Settings {
     pub shruti_low: bool,
     pub chord_kind: u8,
     pub harm_drone: bool,
+    pub shruti_switches: u16,
+    pub harm_stops: u8,
+    pub sargam: bool,
+    pub chanter_level: f32,
 }
 
 impl Default for Settings {
@@ -157,6 +161,10 @@ impl Default for Settings {
             shruti_low: true,
             chord_kind: 0,
             harm_drone: false,
+            shruti_switches: (1 << 0) | (1 << 7) | (1 << 12),
+            harm_stops: 0b0000_0010,
+            sargam: true,
+            chanter_level: 0.7,
         }
     }
 }

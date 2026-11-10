@@ -1441,7 +1441,7 @@ impl App {
         let pp = &crate::pipes::PIPES[i.min(crate::pipes::PIPES.len() - 1)];
         self.s.pipe_idx = i;
         self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
-        self.set_preset(false, (0, 109)); // GM Bagpipe for the chanter
+        self.s.pipe_cont = i != 4; // Northumbrian: closed fingering — silence between notes is part of the style
         self.scale_on = true;
         self.s.scale_idx = theory::scale_index(pp.scale);
         self.s.scale_root = ROOTS.iter().position(|r| r.1 == pp.tonic % 12).unwrap_or(9);
@@ -1461,7 +1461,6 @@ impl App {
                 self.set_preset(false, (0, 20)); // GM Reed Organ ≈ harmonium
                 self.scale_on = true;
                 self.rebuild_walk();
-                self.drone_running = self.s.harm_drone;
             }
             _ => self.drone_running = false,
         }
@@ -1472,7 +1471,7 @@ impl App {
         let p = &self.p;
         let mode = self.s.drone_mode;
         let root_pc = ROOTS[self.s.scale_root].1 as i32;
-        let mut cents = [i32::MIN; 4];
+        let mut cents = [i32::MIN; 13];
         let mut tone = 3u8;
         match mode {
             1 => {
@@ -1487,25 +1486,39 @@ impl App {
                 }
                 p.pipe_tonic.store(tonic.clamp(0, 127) as u8, Relaxed);
                 for (i, d) in pp.drones.iter().enumerate().take(4) {
-                    if self.s.pipe_drones.get(i).copied().unwrap_or(d.2) {
+                    if i < 4 && self.s.pipe_drones.get(i).copied().unwrap_or(d.2) {
                         cents[i] = (tonic + d.0 as i32) * 100 + self.s.pipe_tune;
                     }
                 }
                 tone = pp.tone;
             }
-            2 | 3 => {
-                if mode == 2 || self.s.harm_drone {
-                    let sa = if self.s.shruti_low { 48 } else { 60 } + root_pc;
-                    let pat = crate::pipes::SHRUTI[self.s.shruti_pat.min(crate::pipes::SHRUTI.len() - 1)].1;
-                    for (i, r) in pat.iter().enumerate().take(4) {
-                        cents[i] = (sa + *r as i32) * 100;
+            2 => {
+                let sa = if self.s.shruti_low { 48 } else { 60 } + root_pc;
+                for semi in 0..=12 {
+                    if self.s.shruti_switches & (1 << semi) != 0 {
+                        cents[semi] = (sa + semi as i32) * 100;
+                    }
+                }
+            }
+            3 => {
+                // harmonium drone stops: Sa, Pa, Ma, Sa'
+                let sa = 48 + root_pc;
+                for (bit, semi) in [(3u8, 0i32), (4, 7), (5, 5), (6, 12)] {
+                    if self.s.harm_stops & (1 << bit) != 0 {
+                        cents[semi as usize] = (sa + semi) * 100;
                     }
                 }
             }
             _ => {}
         }
-        for i in 0..4 {
+        for i in 0..13 {
             p.drone_cents[i].store(cents[i], Relaxed);
+        }
+        p.chanter_voice.store(self.s.pipe_idx.min(crate::pipes::CHANTERS.len() - 1) as u8, Relaxed);
+        p.chanter_level.set(self.s.chanter_level);
+        p.harm_octaves.store(self.s.harm_stops & 0b111, Relaxed);
+        if mode == 3 {
+            self.drone_running = self.s.harm_stops & 0b111_1000 != 0;
         }
         p.drone_tone.store(tone, Relaxed);
         p.drone_level.set(self.s.drone_level);
@@ -1575,16 +1588,42 @@ impl App {
                     });
                 }
                 2 => {
-                    egui::ComboBox::from_id_salt("shruti").selected_text(crate::pipes::SHRUTI[self.s.shruti_pat.min(crate::pipes::SHRUTI.len() - 1)].0).width(150.0).show_ui(ui, |ui| {
-                        for (i, (n, _)) in crate::pipes::SHRUTI.iter().enumerate() {
-                            ui.selectable_value(&mut self.s.shruti_pat, i, *n);
-                        }
-                    });
                     ui.horizontal(|ui| {
+                        let mut preset = None;
+                        egui::ComboBox::from_id_salt("shruti").selected_text("Presets").width(96.0).show_ui(ui, |ui| {
+                            for (i, (n, _)) in crate::pipes::SHRUTI.iter().enumerate() {
+                                if ui.selectable_label(false, *n).clicked() {
+                                    preset = Some(i);
+                                }
+                            }
+                        });
+                        if let Some(i) = preset {
+                            self.s.shruti_switches = crate::pipes::SHRUTI[i].1.iter().fold(0u16, |m, r| m | (1 << *r));
+                        }
                         ui.label(RichText::new(format!("Sa = {key}")).strong().color(GOOD)).on_hover_text("Follows the Scale key");
                         ui.selectable_value(&mut self.s.shruti_low, true, "Low");
                         ui.selectable_value(&mut self.s.shruti_low, false, "Mid");
+                        let lab = if self.s.sargam { "Sa Re" } else { "C D" };
+                        ui.toggle_value(&mut self.s.sargam, lab).on_hover_text("Lever labels: sargam or note names");
                     });
+                    let labels: [String; 13] = std::array::from_fn(|semi| {
+                        if self.s.sargam {
+                            ["Sa", "re", "Re", "ga", "Ga", "Ma", "Ma'", "Pa", "dha", "Dha", "ni", "Ni", "Sa'"][semi].to_string()
+                        } else {
+                            self.speller().name(((ROOTS[self.s.scale_root].1 as usize + semi) % 12) as u8)
+                        }
+                    });
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(280.0, 104.0), Sense::click());
+                    let rects = crate::pipe_art::shruti_lever_rects(r);
+                    let hover = resp.hover_pos().and_then(|pos| rects.iter().position(|lr| lr.expand(3.0).contains(pos)));
+                    crate::pipe_art::draw_shruti(ui.painter(), r, self.s.shruti_switches, &labels, hover, fg());
+                    if resp.clicked() {
+                        if let Some(i) = hover {
+                            self.s.shruti_switches ^= 1 << crate::pipe_art::SHRUTI_LEVERS[i];
+                            self.drone_running = true;
+                        }
+                    }
+                    resp.on_hover_text("Flip a lever to open that reed");
                 }
                 _ => {
                     ui.horizontal(|ui| {
@@ -1595,11 +1634,24 @@ impl App {
                             }
                         }
                     });
-                    let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
-                    ui.label(RichText::new(format!("Any note in {key} {} plays its chord.", sc.name)).size(11.5).color(text_dim()));
-                    if ui.checkbox(&mut self.s.harm_drone, "Shruti drone under it").changed() {
-                        self.drone_running = self.s.harm_drone;
+                    let mut lit = [false; 128];
+                    for src_h in &self.held {
+                        for (k, v) in src_h.iter().enumerate() {
+                            if *v > 0 {
+                                lit[k] = true;
+                            }
+                        }
                     }
+                    let (r, resp) = ui.allocate_exact_size(Vec2::new(280.0, 104.0), Sense::click());
+                    let rects = crate::pipe_art::harmonium_stop_rects(r);
+                    let hover = resp.hover_pos().and_then(|pos| rects.iter().position(|sr| sr.contains(pos)));
+                    crate::pipe_art::draw_harmonium(ui.painter(), r, self.s.harm_stops, &lit, hover, fg());
+                    if resp.clicked() {
+                        if let Some(i) = hover {
+                            self.s.harm_stops ^= 1 << i;
+                        }
+                    }
+                    resp.on_hover_text("Pull a stop: Bass / Male / Female reeds, or Sa / Pa / Ma / Sa' drones");
                 }
             }
             if self.s.drone_mode != 0 {
@@ -1609,12 +1661,16 @@ impl App {
                         self.s.drone_level = lv;
                     }
                     if self.s.drone_mode == 1 {
+                        let mut cl = self.s.chanter_level;
+                        if knob(ui, "Chanter", &mut cl, 0.7, LIVE, pct) {
+                            self.s.chanter_level = cl;
+                        }
                         let mut t = (self.s.pipe_tune as f32 + 100.0) / 200.0;
                         if knob(ui, "Tune", &mut t, 0.5, LIVE, |v| format!("{:+.0} ¢", v * 200.0 - 100.0)) {
                             self.s.pipe_tune = (t * 200.0 - 100.0).round() as i32;
                         }
                     }
-                    if self.s.drone_mode != 3 || self.s.harm_drone {
+                    if self.s.drone_mode != 3 {
                         let on = self.drone_running;
                         let lbl = match (on, self.s.drone_mode) {
                             (false, 1) => "▶ STRIKE IN",
