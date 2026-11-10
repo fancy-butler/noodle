@@ -12,6 +12,7 @@ mod audio;
 mod drums;
 mod game;
 mod engine;
+mod fingering;
 mod midi;
 mod pipe_art;
 mod pipes;

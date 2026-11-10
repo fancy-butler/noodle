@@ -84,6 +84,8 @@ pub struct Settings {
     pub harm_stops: u8,
     pub sargam: bool,
     pub chanter_level: f32,
+    pub fing_idx: usize,
+    pub fing_any: bool,
 }
 
 impl Default for Settings {
@@ -165,6 +167,8 @@ impl Default for Settings {
             harm_stops: 0b0000_0010,
             sargam: true,
             chanter_level: 0.7,
+            fing_idx: 0,
+            fing_any: true,
         }
     }
 }

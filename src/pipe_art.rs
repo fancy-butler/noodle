@@ -395,3 +395,117 @@ pub fn draw_harmonium(p: &Painter, r: Rect, stops: u8, lit: &[bool; 128], hover:
         p.text(Pos2::new(c.x, f.bottom() - f.height() * 0.02), Align2::CENTER_BOTTOM, HARM_STOPS[i], FontId::proportional((r.height() * 0.06).clamp(8.5, 12.0)), if on { Color32::from_rgb(0x2a, 0x14, 0x00) } else { ink });
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fingering view: one instrument body, holes filled where a finger goes down.
+
+/// Draw `chart` with `states` (None = note not on this instrument). `ghost` = faded (the "next" note).
+pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, states: Option<&[u8]>, label: &str, ghost: bool, ink: Color32) {
+    use crate::fingering::Hole;
+    let a = if ghost { 0.45 } else { 1.0 };
+    let body_w = (r.width() * 0.30).min(34.0);
+    let top = r.top() + 22.0;
+    let bot = r.bottom() - 10.0;
+    let cx = r.center().x + body_w * 0.25;
+    // body
+    let body = Rect::from_min_max(Pos2::new(cx - body_w / 2.0, top), Pos2::new(cx + body_w / 2.0, bot));
+    p.rect_filled(body, body_w * 0.35, WOOD.gamma_multiply(a));
+    p.rect_filled(Rect::from_min_size(body.min - Vec2::new(2.0, 4.0), Vec2::new(body_w + 4.0, 8.0)), 3.0, IVORY.gamma_multiply(a));
+    p.text(Pos2::new(r.center().x, r.top() + 2.0), Align2::CENTER_TOP, label, FontId::proportional(15.0), ink.gamma_multiply(a));
+    // hole positions
+    let n = chart.holes.len();
+    let ends = chart.holes.iter().filter(|h| matches!(h.0, Hole::End | Hole::Key)).count();
+    let rows = n - ends;
+    let gap_extra = chart.breaks.len() as f32 * 0.6;
+    let step = (bot - top - 26.0) / (rows as f32 + gap_extra);
+    let rad = (step * 0.36).min(body_w * 0.36).max(3.0);
+    let closed = Color32::from_rgb(0x15, 0x10, 0x0c).gamma_multiply(a);
+    let open_fill = Color32::from_rgb(0xf6, 0xef, 0xdc).gamma_multiply(a);
+    let finger = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
+    let mut y = top + 16.0;
+    let mut row = 0usize;
+    for (i, (kind, _name)) in chart.holes.iter().enumerate() {
+        let st = states.and_then(|s| s.get(i)).copied();
+        if matches!(kind, Hole::End | Hole::Key) {
+            continue;
+        }
+        if chart.breaks.contains(&i) {
+            y += step * 0.6;
+        }
+        let c = match kind {
+            Hole::Thumb => Pos2::new(cx - body_w * 0.5 - rad * 1.6, y),
+            _ => Pos2::new(cx, y),
+        };
+        let draw_hole = |c: Pos2, rr: f32, s: Option<u8>| {
+            match s {
+                Some(1) => {
+                    p.circle_filled(c, rr * 1.15, finger);
+                    p.circle_filled(c, rr * 0.8, closed);
+                }
+                Some(2) => {
+                    p.circle_filled(c, rr, open_fill);
+                    // half: left half covered
+                    let pts: Vec<Pos2> = (0..=16).map(|k| {
+                        let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI;
+                        c + Vec2::new(t.cos(), t.sin()) * rr * 1.1
+                    }).collect();
+                    p.add(Shape::convex_polygon(pts, finger, Stroke::NONE));
+                }
+                Some(_) => {
+                    p.circle_filled(c, rr, open_fill);
+                    p.circle_stroke(c, rr, Stroke::new(1.0, closed));
+                }
+                None => {
+                    p.circle_filled(c, rr, Color32::from_gray(90).gamma_multiply(a));
+                }
+            }
+        };
+        match kind {
+            Hole::Double => {
+                draw_hole(c - Vec2::new(rad * 0.55, 0.0), rad * 0.55, st.map(|s| if s == 2 { 1 } else { s }));
+                draw_hole(c + Vec2::new(rad * 0.55, 0.0), rad * 0.55, st.map(|s| if s == 2 { 0 } else { s }));
+            }
+            Hole::Thumb => {
+                draw_hole(c, rad, st);
+                p.text(c - Vec2::new(rad + 2.0, 0.0), Align2::RIGHT_CENTER, "T", FontId::proportional(9.5), ink.gamma_multiply(0.6 * a));
+            }
+            _ => draw_hole(c, rad, st),
+        }
+        y += step;
+        row += 1;
+    }
+    let _ = row;
+    // bottom end / key
+    for (i, (kind, name)) in chart.holes.iter().enumerate() {
+        let st = states.and_then(|s| s.get(i)).copied();
+        match kind {
+            Hole::End => {
+                let c = Pos2::new(cx, bot + 2.0);
+                let on = st == Some(1);
+                p.add(Shape::convex_polygon(
+                    (0..20).map(|k| {
+                        let t = k as f32 / 20.0 * std::f32::consts::TAU;
+                        c + Vec2::new(t.cos() * body_w * 0.55, t.sin() * 4.0)
+                    }).collect(),
+                    if on { finger } else { open_fill },
+                    Stroke::new(1.0, closed),
+                ));
+                if on {
+                    p.text(c + Vec2::new(body_w * 0.6 + 3.0, 0.0), Align2::LEFT_CENTER, if name.contains('×') { "×" } else { "knee" }, FontId::proportional(10.0), finger);
+                }
+            }
+            Hole::Key => {
+                let kc = Pos2::new(cx + body_w * 0.5 + 7.0, top + 16.0 + step * 1.6);
+                let on = st == Some(1);
+                p.rect_filled(Rect::from_center_size(kc, Vec2::new(8.0, 5.0)), 2.0, if on { finger } else { IVORY.gamma_multiply(a) });
+                if on {
+                    p.text(kc + Vec2::new(6.0, 0.0), Align2::LEFT_CENTER, *name, FontId::proportional(9.5), finger);
+                }
+            }
+            _ => {}
+        }
+    }
+    if states.is_none() {
+        p.text(Pos2::new(cx, (top + bot) / 2.0), Align2::CENTER_CENTER, "—", FontId::proportional(20.0), ink.gamma_multiply(0.5));
+    }
+}

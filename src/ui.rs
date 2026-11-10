@@ -171,6 +171,8 @@ pub struct App {
     show_results: bool,
     drone_running: bool,
     pipe_picker: bool,
+    last_live: Option<u8>,
+    show_chart: bool,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -442,6 +444,8 @@ impl App {
             show_results: false,
             drone_running: false,
             pipe_picker: false,
+            last_live: None,
+            show_chart: std::env::var("NOODLE_SHOW_CHART").is_ok(),
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -818,6 +822,7 @@ impl App {
                         if src == src::LIVE {
                             self.judge(key, now);
                             self.follow(key);
+                            self.last_live = Some(key);
                         }
                     } else if let Some(b) = self.bars.iter_mut().rev().find(|b| b.key == key && b.src == src && b.end.is_none()) {
                         b.end = Some(now);
@@ -1232,6 +1237,7 @@ impl App {
                 self.drum_card(ui);
                 self.arp_card(ui);
                 self.drone_card(ui);
+                self.fingering_card(ui);
             });
         });
     }
@@ -1442,7 +1448,11 @@ impl App {
     fn select_pipe(&mut self, i: usize) {
         let pp = &crate::pipes::PIPES[i.min(crate::pipes::PIPES.len() - 1)];
         self.s.pipe_idx = i;
+        if let Some(c) = crate::fingering::chart_for_pipe(i) {
+            self.s.fing_idx = c;
+        }
         self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
+
         self.scale_on = true;
         self.s.scale_idx = theory::scale_index(pp.scale);
         self.s.scale_root = ROOTS.iter().position(|r| r.1 == pp.tonic % 12).unwrap_or(9);
@@ -1562,6 +1572,7 @@ impl App {
                     let tonic = self.p.pipe_tonic.load(Relaxed);
                     if self.s.pipe_drones.len() != pp.drones.len() {
                         self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
+
                     }
                     ui.horizontal_top(|ui| {
                         ui.vertical(|ui| {
@@ -1689,6 +1700,79 @@ impl App {
                         }
                     }
                 });
+            }
+        });
+    }
+
+    /// What note comes next: walk target, next game note, or next note of your part in a song.
+    fn next_target(&self) -> Option<u8> {
+        if self.scale_on && self.walk {
+            return self.walk_seq.get(self.walk_pos).copied();
+        }
+        let song = self.song.as_ref()?;
+        let pos = self.p.song_pos.get();
+        let mask = self.game.as_ref().map(|g| g.mask).unwrap_or(self.song_user);
+        if mask == 0 {
+            return None;
+        }
+        song.notes.iter().find(|n| n.start >= pos - 0.03 && mask & (1 << n.ch) != 0).map(|n| n.key)
+    }
+
+    fn fingering_card(&mut self, ui: &mut egui::Ui) {
+        use crate::fingering::{lookup, parse, CHARTS};
+        let idx = self.s.fing_idx.min(CHARTS.len() - 1);
+        card(ui, "FINGERING", 280.0, |ui| {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("fing").selected_text(CHARTS[idx].name).width(190.0).show_ui(ui, |ui| {
+                    for (i, c) in CHARTS.iter().enumerate() {
+                        ui.selectable_value(&mut self.s.fing_idx, i, c.name).on_hover_text(format!("From: {}", c.source));
+                    }
+                });
+                ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the instrument's range show the same note in its range");
+                if ui.button("⊞").on_hover_text("Whole chart").clicked() {
+                    self.show_chart = !self.show_chart;
+                }
+            });
+            let chart = &CHARTS[idx];
+            // what you're playing now (held), else the last thing you played
+            let held = (0..128u8).rev().find(|k| self.held[0][*k as usize] > 0);
+            let now_key = held.or(self.last_live);
+            let next_key = self.next_target();
+            let (r, _) = ui.allocate_exact_size(Vec2::new(270.0, 132.0), Sense::hover());
+            let left = Rect::from_min_max(r.min, Pos2::new(r.center().x, r.bottom()));
+            let right = Rect::from_min_max(Pos2::new(r.center().x, r.top()), r.max);
+            let speller = self.speller();
+            let mut flagged = false;
+            let mut draw = |rect: Rect, key: Option<u8>, ghost: bool, prefix: &str| {
+                match key {
+                    Some(k) => {
+                        let found = lookup(chart, k, self.s.fing_any);
+                        let name = theory::note_name_oct(k);
+                        let label = match found {
+                            Some((e, exact)) => {
+                                if e.check {
+                                    flagged = true;
+                                }
+                                format!("{prefix}{}{}{}", if speller.name(k % 12).len() > 0 { name } else { String::new() }, if exact { "" } else { " (8va)" }, if e.check { " ?" } else { "" })
+                            }
+                            None => format!("{prefix}{name}"),
+                        };
+                        let st = found.map(|(e, _)| parse(e.states));
+                        crate::pipe_art::draw_fingering(ui.painter(), rect, chart, st.as_deref(), &label, ghost, fg());
+                    }
+                    None => crate::pipe_art::draw_fingering(ui.painter(), rect, chart, None, if ghost { "next —" } else { "play a note" }, ghost, fg()),
+                }
+            };
+            draw(left, now_key, false, "");
+            if next_key.is_some() {
+                draw(right, next_key, true, "next ");
+            } else {
+                ui.painter().text(right.center(), Align2::CENTER_CENTER, "Walk it / Game /\na song part\nshows the next\nfingering here", FontId::proportional(11.0), text_dim());
+            }
+            if flagged {
+                ui.label(RichText::new("? = hard to read on the source chart — please confirm").size(10.5).color(YOURS));
+            } else if !chart.note.is_empty() {
+                ui.label(RichText::new(chart.note).size(10.5).color(text_dim()));
             }
         });
     }
@@ -2605,6 +2689,32 @@ impl App {
         }
     }
 
+    fn chart_window(&mut self, ctx: &egui::Context) {
+        use crate::fingering::{parse, CHARTS};
+        if !self.show_chart {
+            return;
+        }
+        let idx = self.s.fing_idx.min(CHARTS.len() - 1);
+        let chart = &CHARTS[idx];
+        let mut open = true;
+        egui::Window::new(format!("{} — every note", chart.name)).open(&mut open).collapsible(false).resizable(true).default_width(980.0).show(ctx, |ui| {
+            ui.label(RichText::new(format!("Transcribed from: {}.  ? = hard to read on that chart, please confirm.", chart.source)).size(11.0).color(text_dim()));
+            let per_row = 12usize;
+            for row in chart.fings.chunks(per_row) {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(78.0 * per_row as f32, 230.0), Sense::hover());
+                for (i, e) in row.iter().enumerate() {
+                    let cell = Rect::from_min_size(r.min + Vec2::new(i as f32 * 78.0, 0.0), Vec2::new(76.0, 230.0));
+                    let st = parse(e.states);
+                    let label = format!("{}{}", theory::note_name_oct(e.midi), if e.check { " ?" } else { "" });
+                    crate::pipe_art::draw_fingering(ui.painter(), cell, chart, Some(&st), &label, false, if e.check { YOURS } else { fg() });
+                }
+            }
+        });
+        if !open {
+            self.show_chart = false;
+        }
+    }
+
     fn pipe_picker(&mut self, ctx: &egui::Context) {
         if !self.pipe_picker {
             return;
@@ -2875,6 +2985,7 @@ impl eframe::App for App {
         self.game_tick();
         self.results(ctx);
         self.pipe_picker(ctx);
+        self.chart_window(ctx);
         let now = now_s(&self.t0);
         self.autosave(now);
         ctx.request_repaint();
