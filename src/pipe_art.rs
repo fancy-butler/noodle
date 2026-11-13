@@ -263,7 +263,7 @@ pub fn draw_shruti(p: &Painter, r: Rect, on: u16, labels: &[String; 13], hover: 
         [hc - Vec2::new(r.width() * 0.09, -r.height() * 0.04), hc - Vec2::new(0.0, r.height() * 0.06), hc + Vec2::new(r.width() * 0.09, r.height() * 0.04)],
         false,
         Color32::TRANSPARENT,
-        Stroke::new(3.0, BRASS),
+        Stroke::new(3.0_f32, BRASS),
     ));
     let body = r.shrink2(Vec2::new(r.width() * 0.04, r.height() * 0.08));
     p.rect_filled(body, 6.0, case_col);
@@ -272,11 +272,11 @@ pub fn draw_shruti(p: &Painter, r: Rect, on: u16, labels: &[String; 13], hover: 
     // wood grain
     for i in 0..7 {
         let y = inner.top() + inner.height() * (0.1 + i as f32 * 0.13);
-        p.line_segment([Pos2::new(inner.left() + 4.0, y), Pos2::new(inner.right() - 4.0, y + (i % 3) as f32)], Stroke::new(0.8, Color32::from_black_alpha(28)));
+        p.line_segment([Pos2::new(inner.left() + 4.0, y), Pos2::new(inner.right() - 4.0, y + (i % 3) as f32)], Stroke::new(0.8_f32, Color32::from_black_alpha(28)));
     }
     let panel = shruti_panel(r);
     p.rect_filled(panel, 3.0, Color32::from_rgb(0x5e, 0x36, 0x1c));
-    p.rect_stroke(panel, 3.0, Stroke::new(1.0, Color32::from_black_alpha(80)), StrokeKind::Inside);
+    p.rect_stroke(panel, 3.0, Stroke::new(1.0_f32, Color32::from_black_alpha(80)), StrokeKind::Inside);
     for (x, y) in [(0.03f32, 0.08f32), (0.97, 0.08), (0.03, 0.92), (0.97, 0.92), (0.5, 0.06), (0.5, 0.94)] {
         p.circle_filled(Pos2::new(panel.left() + panel.width() * x, panel.top() + panel.height() * y), 2.2, BRASS);
     }
@@ -300,14 +300,14 @@ pub fn draw_shruti(p: &Painter, r: Rect, on: u16, labels: &[String; 13], hover: 
         let n = Vec2::new(-d.y, d.x);
         let tip = pivot + d * len;
         let col = if is_on { Color32::from_rgb(0xff, 0xf3, 0xd6) } else { IVORY.gamma_multiply(0.85) };
-        p.add(Shape::convex_polygon(vec![pivot + n * w * 0.45, tip + n * w * 0.5, tip - n * w * 0.5, pivot - n * w * 0.45], col, Stroke::new(1.0, Color32::from_black_alpha(90))));
+        p.add(Shape::convex_polygon(vec![pivot + n * w * 0.45, tip + n * w * 0.5, tip - n * w * 0.5, pivot - n * w * 0.45], col, Stroke::new(1.0_f32, Color32::from_black_alpha(90))));
         p.circle_filled(tip, w * 0.5, col);
         p.circle_filled(pivot, w * 0.28, BRASS);
         if is_on {
             p.circle_filled(tip, w * 0.75, Color32::from_rgba_unmultiplied(0xff, 0xc8, 0x50, 40));
         }
         if hover == Some(i) {
-            p.rect_stroke(lr.expand(2.0), 4.0, Stroke::new(1.5, Color32::from_rgb(0xff, 0xd2, 0x3d)), StrokeKind::Outside);
+            p.rect_stroke(lr.expand(2.0), 4.0, Stroke::new(1.5_f32, Color32::from_rgb(0xff, 0xd2, 0x3d)), StrokeKind::Outside);
         }
         let ly = if i < 8 { r.bottom() - r.height() * 0.035 } else { panel.top() - r.height() * 0.04 };
         p.text(Pos2::new(lr.center().x, ly), Align2::CENTER_CENTER, &labels[semi], FontId::proportional((r.height() * 0.075).clamp(9.0, 13.0)), if is_on { Color32::from_rgb(0xff, 0xd2, 0x3d) } else { ink });
@@ -347,7 +347,7 @@ pub fn draw_harmonium(p: &Painter, r: Rect, stops: u8, lit: &[bool; 128], hover:
     p.rect_filled(body, 4.0, wood);
     for i in 0..6 {
         let y = body.top() + body.height() * (0.12 + i as f32 * 0.16);
-        p.line_segment([Pos2::new(body.left() + 3.0, y), Pos2::new(body.right() - 3.0, y)], Stroke::new(0.7, Color32::from_black_alpha(22)));
+        p.line_segment([Pos2::new(body.left() + 3.0, y), Pos2::new(body.right() - 3.0, y)], Stroke::new(0.7_f32, Color32::from_black_alpha(22)));
     }
     // bellows lid (back), with the dark bellows fold under it
     let lid = Rect::from_min_max(Pos2::new(r.left() + r.width() * 0.07, r.top()), Pos2::new(r.right() - r.width() * 0.07, r.top() + r.height() * 0.16));
@@ -384,13 +384,13 @@ pub fn draw_harmonium(p: &Painter, r: Rect, stops: u8, lit: &[bool; 128], hover:
             p.circle_filled(c + Vec2::new(1.5, 2.5), rad * 1.1, Color32::from_black_alpha(70));
             p.circle_filled(c, rad * 1.1, Color32::from_rgb(0xe8, 0xec, 0xf2));
             p.circle_filled(c - Vec2::new(rad * 0.3, rad * 0.3), rad * 0.35, Color32::WHITE);
-            p.circle_stroke(c, rad * 1.1, Stroke::new(2.0, Color32::from_rgb(0xff, 0xd2, 0x3d)));
+            p.circle_stroke(c, rad * 1.1, Stroke::new(2.0_f32, Color32::from_rgb(0xff, 0xd2, 0x3d)));
         } else {
             p.circle_filled(c, rad * 0.8, Color32::from_rgb(0xa8, 0xae, 0xb8));
             p.circle_filled(c - Vec2::new(rad * 0.2, rad * 0.2), rad * 0.25, Color32::from_rgb(0xe0, 0xe4, 0xea));
         }
         if hover == Some(i) {
-            p.circle_stroke(c, rad * 1.45, Stroke::new(1.5, Color32::from_rgb(0xff, 0xd2, 0x3d)));
+            p.circle_stroke(c, rad * 1.45, Stroke::new(1.5_f32, Color32::from_rgb(0xff, 0xd2, 0x3d)));
         }
         p.text(Pos2::new(c.x, f.bottom() - f.height() * 0.02), Align2::CENTER_BOTTOM, HARM_STOPS[i], FontId::proportional((r.height() * 0.06).clamp(8.5, 12.0)), if on { Color32::from_rgb(0x2a, 0x14, 0x00) } else { ink });
     }
@@ -443,7 +443,7 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
         }
         Some(_) => {
             p.circle_filled(c, rr, open_fill);
-            p.circle_stroke(c, rr, Stroke::new(1.0, closed));
+            p.circle_stroke(c, rr, Stroke::new(1.0_f32, closed));
         }
         None => {
             p.circle_filled(c, rr, Color32::from_gray(90).gamma_multiply(a));
@@ -496,7 +496,7 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                 let on = st == Some(1);
                 let kr = Rect::from_center_size(kc, Vec2::new(8.0, 6.0));
                 p.rect_filled(kr, 2.0, if on { finger } else { IVORY.gamma_multiply(a) });
-                p.rect_stroke(kr, 2.0, Stroke::new(0.8, closed), eframe::egui::StrokeKind::Inside);
+                p.rect_stroke(kr, 2.0, Stroke::new(0.8_f32, closed), eframe::egui::StrokeKind::Inside);
                 if on {
                     pressed.push(name);
                 }
@@ -512,7 +512,7 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                         })
                         .collect(),
                     if on { finger } else { open_fill },
-                    Stroke::new(1.0, closed),
+                    Stroke::new(1.0_f32, closed),
                 ));
                 if on {
                     p.text(c + Vec2::new(body_w * 0.6 + 3.0, 0.0), Align2::LEFT_CENTER, if name.contains('×') { "×" } else { "knee" }, FontId::proportional(10.0), finger);

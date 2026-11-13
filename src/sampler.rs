@@ -189,6 +189,8 @@ pub struct Instrument {
     pub mono_from: u8,
     /// loudness match: every instrument lands near the same level
     pub norm: f32,
+    /// starting controller values from <control> set_ccN
+    pub init_cc: Vec<(u8, u8)>,
     pub source: PathBuf,
 }
 
@@ -426,6 +428,7 @@ pub fn load_sfz(path: &Path) -> Result<Instrument, String> {
     let mut header = String::new();
     let mut ld = Loader { cache: HashMap::new(), err: None, missing: 0 };
     let mut regions = Vec::new();
+    let mut init_cc: Vec<(u8, u8)> = Vec::new();
     let flush = |header: &str, level: &[Ops; 4], default_path: &str, regions: &mut Vec<Region>, ld: &mut Loader| {
         if header != "region" {
             return;
@@ -458,6 +461,10 @@ pub fn load_sfz(path: &Path) -> Result<Instrument, String> {
                 if header == "control" {
                     if k == "default_path" {
                         default_path = v.replace('\\', "/");
+                    } else if let Some(n) = k.strip_prefix("set_cc").and_then(|n| n.parse::<u8>().ok()) {
+                        init_cc.push((n.min(127), v.trim().parse::<f32>().unwrap_or(0.0).clamp(0.0, 127.0) as u8));
+                    } else if let Some(n) = k.strip_prefix("set_hdcc").and_then(|n| n.parse::<u8>().ok()) {
+                        init_cc.push((n.min(127), (v.trim().parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0) * 127.0) as u8));
                     }
                     continue;
                 }
@@ -498,7 +505,7 @@ pub fn load_sfz(path: &Path) -> Result<Instrument, String> {
     if regions.is_empty() {
         return Err(ld.err.unwrap_or_else(|| "no playable regions in that SFZ".into()));
     }
-    Ok(Instrument { name: nice_name(path), regions, mono: false, mono_from: 0, norm: 1.0, source: path.to_path_buf() })
+    Ok(Instrument { name: nice_name(path), regions, mono: false, mono_from: 0, norm: 1.0, init_cc, source: path.to_path_buf() })
 }
 
 // ---------------------------------------------------------------- Decent Sampler
@@ -626,7 +633,7 @@ pub fn load_dspreset(path: &Path) -> Result<Instrument, String> {
     if regions.is_empty() {
         return Err(ld.err.unwrap_or_else(|| "no samples in that Decent Sampler preset".into()));
     }
-    Ok(Instrument { name: nice_name(path), regions, mono: false, mono_from: 0, norm: 1.0, source: path.to_path_buf() })
+    Ok(Instrument { name: nice_name(path), regions, mono: false, mono_from: 0, norm: 1.0, init_cc: Vec::new(), source: path.to_path_buf() })
 }
 
 fn nice_name(p: &Path) -> String {
@@ -751,6 +758,9 @@ impl Player {
         cc[7] = 100;
         cc[11] = 127;
         cc[10] = 64;
+        for &(n, v) in &inst.init_cc {
+            cc[n as usize] = v;
+        }
         Player { inst, sr, voices: Vec::with_capacity(MAX_VOICES), held: Vec::with_capacity(16), cc, sustain: false, bend: 0.0, seq: 0, rng: 0x2545_f491, vib_phase: 0.0, vib_amt: 0.0, expr: 1.0 }
     }
 

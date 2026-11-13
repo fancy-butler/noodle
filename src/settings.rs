@@ -73,7 +73,9 @@ pub struct Settings {
     pub written: u8, // staff transposition preset
     pub theme: u8,   // 0 dark, 1 light, 2 follow system
     pub midi_off: Vec<String>,
-    pub latency: u32, // frames per buffer
+    pub latency: u32, // frames per buffer, 0 = system
+    /// one-time settings fixes already applied
+    pub fixes: u32,
     pub g_pattern: usize,
     pub g_rhythm: usize,
     pub g_bpm: f32,
@@ -169,7 +171,8 @@ impl Default for Settings {
             written: 0,
             theme: 0,
             midi_off: vec![],
-            latency: 128,
+            latency: 0,
+            fixes: 0,
             g_pattern: 0,
             g_rhythm: 1,
             g_bpm: 80.0,
@@ -214,6 +217,11 @@ impl Settings {
     }
 
     fn migrate(&mut self) {
+        if self.fixes < 1 {
+            // 0.9: stop changing PipeWire's buffer for every app by default
+            self.latency = 0;
+            self.fixes = 1;
+        }
         if self.drum_slots.len() != crate::engine::DRUM_SLOTS {
             // first run with slots: your old pattern becomes A, styles fill the rest
             let defaults = crate::drums::default_slots();

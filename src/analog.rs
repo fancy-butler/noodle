@@ -225,6 +225,7 @@ pub struct Player {
     last_hz: f32,
     echo: [Vec<f32>; 2],
     epos: usize,
+    mono_buf: Vec<f32>,
 }
 
 impl Player {
@@ -247,6 +248,7 @@ impl Player {
             last_hz: 0.0,
             echo: [vec![0.0; (sr * 1.1) as usize], vec![0.0; (sr * 1.1) as usize]],
             epos: 0,
+            mono_buf: vec![0.0; 4096],
         }
     }
 
@@ -381,7 +383,12 @@ impl Player {
             return;
         }
         let gain = pt.level * self.vol * self.expr;
-        let mut mono = vec![0f32; n];
+        // reuse one buffer: no allocation on the audio thread
+        let mut mono = std::mem::take(&mut self.mono_buf);
+        if mono.len() < n {
+            mono.resize(n, 0.0);
+        }
+        mono[..n].fill(0.0);
         if any {
             let lfo_inc = pt.lfo.0 * dt;
             let glide_k = if pt.glide > 0.0 { (-dt / pt.glide).exp() } else { 0.0 };
@@ -497,6 +504,7 @@ impl Player {
             };
             self.cpos = (self.cpos + 1) % len;
             let (mut l, mut r) = (l, r);
+            let _ = &mono;
             if pt.echo.2 > 0.0 {
                 // ping-pong: left feeds right and back
                 let el = self.echo[0].len();
@@ -512,6 +520,7 @@ impl Player {
             out_l[i] += l;
             out_r[i] += r;
         }
+        self.mono_buf = mono;
     }
 }
 

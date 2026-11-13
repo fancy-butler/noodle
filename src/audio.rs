@@ -36,9 +36,46 @@ pub fn default_rate() -> u32 {
 /// Open an output and prove it keeps running (the callback keeps firing).
 /// On Linux we try PipeWire / Pulse directly before ALSA's "default", and for
 /// each device a small low-latency buffer first, then the device's default.
+/// The rate PipeWire's graph is running at right now (forced rate first), so
+/// Noodle can match it and never make PipeWire reclock the sound card.
+pub fn pipewire_rate() -> Option<u32> {
+    let out = std::process::Command::new("pw-metadata").args(["-n", "settings", "0"]).output().ok()?;
+    parse_pw_rate(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_pw_rate(text: &str) -> Option<u32> {
+    let get = |key: &str| -> Option<u32> {
+        text.lines().find(|l| l.contains(&format!("key:'{key}'"))).and_then(|l| l.split("value:'").nth(1)).and_then(|v| v.split('\'').next()).and_then(|v| v.parse().ok())
+    };
+    get("clock.force-rate").filter(|r| *r > 0).or_else(|| get("clock.rate")).filter(|r| (8000..=384_000).contains(r))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_pipewire_rate() {
+        let t = "Found \"settings\" metadata 31\nupdate: id:0 key:'log.level' value:'2' type:''\nupdate: id:0 key:'clock.rate' value:'48000' type:''\nupdate: id:0 key:'clock.force-rate' value:'0' type:''\n";
+        assert_eq!(super::parse_pw_rate(t), Some(48000));
+        let forced = t.replace("force-rate' value:'0'", "force-rate' value:'44100'");
+        assert_eq!(super::parse_pw_rate(&forced), Some(44100));
+        assert_eq!(super::parse_pw_rate(""), None);
+    }
+}
+
+/// `frames` = 0: use the buffer the system is already running (never change it).
 pub fn start(engine: SharedEngine, p: Arc<Params>, frames: u32) -> Result<Audio, String> {
-    // Ask PipeWire (via its ALSA plugin) for a small quantum up front; it reads this when a stream opens.
-    std::env::set_var("PIPEWIRE_LATENCY", format!("{frames}/48000"));
+    // Leave PipeWire's quantum alone unless the user asked for a specific buffer:
+    // a quantum change applies to every app and can make PipeWire reopen the card.
+    if frames > 0 {
+        std::env::set_var("PIPEWIRE_LATENCY", format!("{frames}/48000"));
+    } else {
+        std::env::remove_var("PIPEWIRE_LATENCY");
+    }
+    std::env::set_var("PIPEWIRE_PROPS", "{ media.role = Music application.name = Noodle node.description = Noodle }");
+    let graph_rate = if cfg!(target_os = "linux") { pipewire_rate() } else { None };
+    if let Some(r) = graph_rate {
+        eprintln!("noodle: PipeWire runs at {r} Hz; matching it");
+    }
     let host = cpal::default_host();
     eprintln!("noodle: audio host = {:?}", host.id());
     let mut candidates: Vec<cpal::Device> = Vec::new();
@@ -69,13 +106,20 @@ pub fn start(engine: SharedEngine, p: Arc<Params>, frames: u32) -> Result<Audio,
                 continue;
             }
         };
-        let rate = sup.sample_rate().0;
+        // on PipeWire, open at the graph's rate so nothing gets reclocked
+        let is_pw = name == "pipewire" || name == "pulse";
+        let rate = match graph_rate {
+            Some(r) if is_pw => r,
+            _ => sup.sample_rate().0,
+        };
         let fmt = sup.sample_format();
         eprintln!("noodle: trying audio device {name}: {rate} Hz, {} ch, {fmt:?}", sup.channels());
         engine.lock().unwrap_or_else(|x| x.into_inner()).set_sample_rate(rate as f32);
         let small = format!("{frames} frames");
-        for (label, size) in [(small.as_str(), cpal::BufferSize::Fixed(frames)), ("device default", cpal::BufferSize::Default)] {
+        let sizes: Vec<(&str, cpal::BufferSize)> = if frames > 0 { vec![(small.as_str(), cpal::BufferSize::Fixed(frames)), ("device default", cpal::BufferSize::Default)] } else { vec![("system buffer", cpal::BufferSize::Default)] };
+        for (label, size) in sizes {
             let mut cfg: cpal::StreamConfig = sup.config();
+            cfg.sample_rate = cpal::SampleRate(rate);
             cfg.buffer_size = size;
             let built = match fmt {
                 cpal::SampleFormat::F32 => build::<f32>(&device, &cfg, engine.clone(), p.clone()),

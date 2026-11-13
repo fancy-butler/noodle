@@ -293,13 +293,13 @@ fn knob(ui: &mut egui::Ui, label: &str, v: &mut f32, default: f32, col: Color32,
     let a0 = std::f32::consts::PI * 0.75;
     let a1 = std::f32::consts::PI * 2.25;
     p.circle_filled(c, r - 4.0, card_hi());
-    p.add(egui::Shape::line(arc_points(c, r, a0, a1), Stroke::new(3.5, gray(55))));
+    p.add(egui::Shape::line(arc_points(c, r, a0, a1), Stroke::new(3.5_f32, gray(55))));
     let av = a0 + (a1 - a0) * *v;
     if *v > 0.003 {
-        p.add(egui::Shape::line(arc_points(c, r, a0, av), Stroke::new(3.5, col)));
+        p.add(egui::Shape::line(arc_points(c, r, a0, av), Stroke::new(3.5_f32, col)));
     }
     let tip = c + Vec2::new(av.cos(), av.sin()) * (r - 6.0);
-    p.line_segment([c, tip], Stroke::new(2.5, fg()));
+    p.line_segment([c, tip], Stroke::new(2.5_f32, fg()));
     let txt = if resp.hovered() || resp.dragged() { fmt(*v) } else { label.to_string() };
     p.text(Pos2::new(c.x, rect.bottom() - 7.0), Align2::CENTER_CENTER, txt, FontId::proportional(11.5), if resp.hovered() { fg() } else { text_dim() });
     resp.on_hover_text(format!("{label}: {}\nDrag up/down · Shift = fine · double-click resets", fmt(*v)));
@@ -361,7 +361,7 @@ fn fader(ui: &mut egui::Ui, label: &str, v: &mut f32, col: Color32, hot: bool) -
     p.rect_filled(Rect::from_min_max(Pos2::new(track.left(), y), track.right_bottom()), 2.0, col.gamma_multiply(0.7));
     let cap = Rect::from_center_size(Pos2::new(rect.center().x, y), Vec2::new(26.0, 10.0));
     p.rect_filled(cap, 3.0, if hot { fg() } else { gray(200) });
-    p.line_segment([Pos2::new(cap.left() + 3.0, y), Pos2::new(cap.right() - 3.0, y)], Stroke::new(1.5, gray(60)));
+    p.line_segment([Pos2::new(cap.left() + 3.0, y), Pos2::new(cap.right() - 3.0, y)], Stroke::new(1.5_f32, gray(60)));
     p.text(Pos2::new(rect.center().x, rect.bottom() - 8.0), Align2::CENTER_CENTER, label, FontId::proportional(11.0), if hot { fg() } else { text_dim() });
     resp.on_hover_text(format!("{label}: {}", pct(*v)));
     changed
@@ -1190,7 +1190,7 @@ impl App {
         let dim = if resp.hovered() || selected { 1.0 } else { 0.78 };
         Self::gradient(&p, r.shrink2(Vec2::new(0.0, 1.0)), a.gamma_multiply(dim), b.gamma_multiply(dim));
         if selected {
-            p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
+            p.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
         }
         p.text(r.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(14.0), txt);
         resp.clicked()
@@ -1472,7 +1472,11 @@ impl App {
                 let mut pick = None;
                 ui.menu_button(label, |ui| {
                     ui.label(RichText::new("Latency (buffer size)").strong());
-                    ui.label(RichText::new("Smaller = tighter feel, more CPU. If you hear crackles, go one step bigger.").size(11.0).color(text_dim()));
+                    ui.label(RichText::new("System = use the buffer your sound system already runs; never changes your sound card's setup (best with Mbox Control & other apps). Smaller numbers feel tighter but change the buffer for every app and can crackle.").size(11.0).color(text_dim()));
+                    if ui.selectable_label(self.s.latency == 0, "System (recommended)").clicked() {
+                        pick = Some(0);
+                        ui.close();
+                    }
                     for f in [32u32, 64, 128, 256, 512, 1024] {
                         let txt = format!("{f} samples  ≈ {:.1} ms", f as f32 * 1000.0 / sr as f32);
                         if ui.selectable_label(self.s.latency == f, txt).clicked() {
@@ -1680,7 +1684,7 @@ impl App {
             let enc_r = Rect::from_center_size(enc_c, Vec2::splat(44.0));
             let enc = ui.interact(enc_r, ui.id().with("ml3enc"), Sense::click_and_drag());
             painter.circle_filled(enc_c, 18.0, if hot(114) || hot(112) || enc.hovered() { gray(70) } else { gray(40) });
-            painter.circle_stroke(enc_c, 18.0, Stroke::new(1.0, gray(90)));
+            painter.circle_stroke(enc_c, 18.0, Stroke::new(1.0_f32, gray(90)));
             if enc.dragged() {
                 let d = enc.drag_delta();
                 let acc = ui.data_mut(|m| {
@@ -2334,7 +2338,7 @@ impl App {
                     let txt = RichText::new(letter).strong().size(14.0).color(if is_playing || (queued == i && playing) { Color32::BLACK } else if empty { text_dim() } else { fg() });
                     let mut b = egui::Button::new(txt).fill(fill).corner_radius(6.0).min_size(Vec2::new(28.0, 26.0));
                     if sel == i {
-                        b = b.stroke(Stroke::new(2.0, YOURS));
+                        b = b.stroke(Stroke::new(2.0_f32, YOURS));
                     }
                     let name = self.s.drum_slot_names.get(i).cloned().unwrap_or_default();
                     let r = ui.add(b).on_hover_text(format!("{name}\nClick: edit this pattern, and switch to it at the next bar while playing"));
@@ -2384,7 +2388,7 @@ impl App {
                     let muted = mute & (1 << r) != 0;
                     painter.text(Pos2::new(rect.left(), y + chh / 2.0), Align2::LEFT_CENTER, DRUM_NAMES[r], FontId::proportional(11.0), if muted { BAD } else { text_dim() });
                     if muted {
-                        painter.line_segment([Pos2::new(rect.left(), y + chh / 2.0), Pos2::new(rect.left() + lw - 6.0, y + chh / 2.0)], Stroke::new(1.0, BAD));
+                        painter.line_segment([Pos2::new(rect.left(), y + chh / 2.0), Pos2::new(rect.left() + lw - 6.0, y + chh / 2.0)], Stroke::new(1.0_f32, BAD));
                     }
                     let bits = p.drum_bank[sel][r].load(Relaxed);
                     for s in 0..16 {
@@ -2406,7 +2410,7 @@ impl App {
                         }
                         painter.rect_filled(cell, 3.0, col);
                         if s as u8 == step {
-                            painter.rect_stroke(cell, 3.0, Stroke::new(1.5, fg()), StrokeKind::Inside);
+                            painter.rect_stroke(cell, 3.0, Stroke::new(1.5_f32, fg()), StrokeKind::Inside);
                         }
                     }
                 }
@@ -2799,7 +2803,7 @@ impl App {
         for k in lo..=hi {
             let (x, w, black) = key_x(rect, k, lo, hi);
             if k % 12 == 0 {
-                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, gray(34)));
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, gray(34)));
             }
             if mask != 0 && mask & (1 << (k % 12)) != 0 {
                 let lane = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(x + w, rect.bottom()));
@@ -2849,7 +2853,7 @@ impl App {
                 let r = Rect::from_min_max(Pos2::new(x + 1.0, yt.max(rect.top())), Pos2::new(x + w - 1.0, yb.min(rect.bottom() + 40.0)));
                 painter.rect_filled(r, 3.0, if yours { col } else { col.gamma_multiply(0.6) });
                 if yours && judged == game::J_PENDING {
-                    painter.rect_stroke(r, 3.0, Stroke::new(1.0, fg().gamma_multiply(0.5)), StrokeKind::Inside);
+                    painter.rect_stroke(r, 3.0, Stroke::new(1.0_f32, fg().gamma_multiply(0.5)), StrokeKind::Inside);
                 }
             }
             // hit line (glows in Game mode)
@@ -2860,7 +2864,7 @@ impl App {
                     painter.rect_filled(band, 0.0, YOURS.gamma_multiply(0.10 * (1.0 - i as f32 / 12.0)));
                 }
             }
-            painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0, YOURS.gamma_multiply(0.5)));
+            painter.line_segment([Pos2::new(rect.left(), rect.bottom() - 1.0), Pos2::new(rect.right(), rect.bottom() - 1.0)], Stroke::new(2.0_f32, YOURS.gamma_multiply(0.5)));
             if let Some(g) = self.game.as_ref() {
                 let now = now_s(&self.t0);
                 // judgement pop-ups float up from the hit line
@@ -2886,7 +2890,7 @@ impl App {
                 }
                 // streak glow
                 if g.combo >= 25 {
-                    painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(3.0, YOURS.gamma_multiply(0.35)), StrokeKind::Inside);
+                    painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(3.0_f32, YOURS.gamma_multiply(0.35)), StrokeKind::Inside);
                 }
             }
             // your notes still glow at the bottom
@@ -2951,10 +2955,10 @@ impl App {
         let left = rect.left() + 14.0;
         let right = rect.right() - 10.0;
         for s in [2, 4, 6, 8, 10, -2, -4, -6, -8, -10] {
-            painter.line_segment([Pos2::new(left, y_of(s)), Pos2::new(right, y_of(s))], Stroke::new(1.0, ink.gamma_multiply(0.7)));
+            painter.line_segment([Pos2::new(left, y_of(s)), Pos2::new(right, y_of(s))], Stroke::new(1.0_f32, ink.gamma_multiply(0.7)));
         }
         // brace-ish system line
-        painter.line_segment([Pos2::new(left, y_of(10)), Pos2::new(left, y_of(-10))], Stroke::new(2.0, ink));
+        painter.line_segment([Pos2::new(left, y_of(10)), Pos2::new(left, y_of(-10))], Stroke::new(2.0_f32, ink));
         let clef_x = left + 6.0;
         if self.music_font {
             self.glyph(&painter, '\u{E050}', clef_x, y_of(4), sp, ink); // G clef on G4 line
@@ -2976,7 +2980,7 @@ impl App {
         let now_x = if has_song { left + (right - left) * 0.3 } else { right - 60.0 };
         let px_per_s = 110.0f64;
         let clip_left = left + sp * 4.0;
-        painter.line_segment([Pos2::new(now_x, y_of(14)), Pos2::new(now_x, y_of(-14))], Stroke::new(1.5, LIVE.gamma_multiply(0.5)));
+        painter.line_segment([Pos2::new(now_x, y_of(14)), Pos2::new(now_x, y_of(-14))], Stroke::new(1.5_f32, LIVE.gamma_multiply(0.5)));
 
         let draw_note = |key: u8, x: f32, x_end: f32, col: Color32, tail: bool| {
             if x < clip_left - 4.0 || x > right {
@@ -3012,7 +3016,7 @@ impl App {
                 }
             }
             for l in ledgers {
-                painter.line_segment([Pos2::new(x - sp * 0.95, y_of(l)), Pos2::new(x + sp * 0.95, y_of(l))], Stroke::new(1.2, ink));
+                painter.line_segment([Pos2::new(x - sp * 0.95, y_of(l)), Pos2::new(x + sp * 0.95, y_of(l))], Stroke::new(1.2_f32, ink));
             }
             if tail && x_end > x + sp {
                 painter.line_segment([Pos2::new(x, y), Pos2::new(x_end.min(right), y)], Stroke::new(sp * 0.45, col.gamma_multiply(0.35)));
@@ -3117,7 +3121,7 @@ impl App {
             }
             let (x0, _, _) = key_x(strip, lo, 21, 108);
             let (x1, w1, _) = key_x(strip, hi, 21, 108);
-            p.rect_stroke(Rect::from_min_max(Pos2::new(x0 - 1.0, strip.top() - 1.0), Pos2::new(x1 + w1 + 1.0, strip.bottom() + 1.0)), 2.0, Stroke::new(1.5, LIVE), StrokeKind::Outside);
+            p.rect_stroke(Rect::from_min_max(Pos2::new(x0 - 1.0, strip.top() - 1.0), Pos2::new(x1 + w1 + 1.0, strip.bottom() + 1.0)), 2.0, Stroke::new(1.5_f32, LIVE), StrokeKind::Outside);
         }
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter_at(rect);
@@ -3165,7 +3169,7 @@ impl App {
                 let shrink = if b { 1.0 } else { 0.7 };
                 painter.rect_filled(r.shrink2(Vec2::new(shrink, 0.0)), if b { 3.0 } else { 4.0 }, fill);
                 if !b {
-                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0, gray(90)), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0_f32, gray(90)), StrokeKind::Inside);
                 }
                 // scale dots + names
                 if mask != 0 && mask & (1 << (k % 12)) != 0 {
@@ -3183,11 +3187,11 @@ impl App {
                 }
                 if Some(k) == walk_target {
                     let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
-                    painter.rect_stroke(r.shrink(1.5), 4.0, Stroke::new(3.0, YOURS.gamma_multiply(0.5 + 0.5 * pulse)), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink(1.5), 4.0, Stroke::new(3.0_f32, YOURS.gamma_multiply(0.5 + 0.5 * pulse)), StrokeKind::Inside);
                 }
                 let rt = (now - self.right[k as usize]) as f32;
                 if rt < 0.35 && self.walk {
-                    painter.rect_stroke(r.shrink(1.0), 4.0, Stroke::new(3.0, GOOD.gamma_multiply(1.0 - rt / 0.35)), StrokeKind::Inside);
+                    painter.rect_stroke(r.shrink(1.0), 4.0, Stroke::new(3.0_f32, GOOD.gamma_multiply(1.0 - rt / 0.35)), StrokeKind::Inside);
                 }
             }
         }
@@ -3433,7 +3437,7 @@ impl App {
         let mut play: Option<(i32, i32)> = None;
         let mut sf: Option<PathBuf> = None;
         egui::Window::new("🎷 Get sounds").open(&mut open).collapsible(false).resizable(true).default_size([620.0, 600.0]).max_height(700.0).show(ctx, |ui| {
-            ui.label(RichText::new("Real recorded instruments, free to download and use. Each one downloads on its own (usually 5–40 MB), straight from its makers. They appear under Samples in the sound list.").size(12.5).color(text_dim()));
+            ui.label(RichText::new("Real recorded instruments, free to download and use. Each one downloads on its own (5–150 MB each; pianos and basses are the big ones), straight from its makers. They appear under Samples in the sound list.").size(12.5).color(text_dim()));
             ui.label(RichText::new(format!("Saved in {}", packs::root().display())).size(11.0).color(text_dim()));
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3520,7 +3524,7 @@ impl App {
                     let bgc = if resp.hovered() { card_hi() } else { card_bg() };
                     ui.painter().rect_filled(r, 10.0, bgc);
                     if sel {
-                        ui.painter().rect_stroke(r, 10.0, Stroke::new(2.5, LIVE), StrokeKind::Inside);
+                        ui.painter().rect_stroke(r, 10.0, Stroke::new(2.5_f32, LIVE), StrokeKind::Inside);
                     }
                     let art = Rect::from_min_size(r.min + Vec2::new(15.0, 8.0), Vec2::new(120.0, 120.0));
                     ui.painter().rect_filled(art, 8.0, deep());
@@ -3815,7 +3819,7 @@ fn setup_style(ctx: &egui::Context) {
     v.widgets.inactive.bg_fill = card_hi();
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x38, 0x3e, 0x48);
     v.selection.bg_fill = LIVE.gamma_multiply(0.85);
-    v.selection.stroke = Stroke::new(1.0, Color32::BLACK);
+    v.selection.stroke = Stroke::new(1.0_f32, Color32::BLACK);
     if light() {
         v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0xd4, 0xd8, 0xdf);
     }
