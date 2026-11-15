@@ -118,31 +118,22 @@ pub fn key_label(k: Key) -> &'static str {
     }
 }
 
-/// Computer key for treble row `r`, button `i`.
-pub fn treble_key(inst: &Instrument, r: usize, i: usize) -> Option<Key> {
-    match inst.kind {
-        Kind::Diatonic => match r {
-            0 => AROW.get(i).copied(),
-            1 => QROW.get(i + 1).copied(),
-            2 => NUM.get(i + 1).copied(),
-            _ => None,
-        },
-        Kind::Chromatic => match r {
-            0 => ZROW.get(i).copied(),
-            1 => AROW.get(i).copied(),
-            2 => QROW.get(i).copied(),
-            _ => None,
-        },
+/// Computer key for treble row `r`, button `i`. Same on every accordion, so it
+/// can be played without looking: outside row = A row, next = Q row, third =
+/// number row, every row starting at its left-most key. The Z row is always
+/// the left hand (basses).
+pub fn treble_key(_inst: &Instrument, r: usize, i: usize) -> Option<Key> {
+    match r {
+        0 => AROW.get(i).copied(),
+        1 => QROW.get(i).copied(),
+        2 => NUM.get(i).copied(),
+        _ => None,
     }
 }
 
-/// The key row that plays basses.
-pub fn bass_keys(inst: &Instrument) -> &'static [Key] {
-    match (inst.kind, &inst.bass) {
-        (Kind::Diatonic, Bass::Diatonic(_)) => &ZROW,
-        (Kind::Diatonic, Bass::Stradella) => &ZROW,
-        (Kind::Chromatic, _) => &NUM,
-    }
+/// The key row that plays basses: always the Z row.
+pub fn bass_keys(_inst: &Instrument) -> &'static [Key] {
+    &ZROW
 }
 
 pub const NAMES: [&str; 12] = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
@@ -208,9 +199,11 @@ fn bass_row(s: &str, tr: i32) -> Vec<(BassSnd, BassSnd)> {
 }
 
 /// Chromatic rows: semitones on the diagonal, minor thirds along a row.
-fn chromatic(base: u8, dir: i32, len: usize, rows: usize) -> Vec<Vec<Button>> {
-    (0..rows)
-        .map(|r| {
+fn chromatic(base: u8, dir: i32) -> Vec<Vec<Button>> {
+    [AROW.len(), QROW.len(), NUM.len()]
+        .iter()
+        .enumerate()
+        .map(|(r, &len)| {
             (0..len)
                 .map(|i| {
                     let n = (base as i32 + 3 * i as i32 + dir * r as i32).clamp(0, 127) as u8;
@@ -255,8 +248,8 @@ pub fn stradella_label(root_pc: u8, row: usize) -> String {
     match row {
         0 => NAMES[((root_pc + 4) % 12) as usize].to_lowercase(),
         1 => n.to_string(),
-        2 => format!("{n}M"),
-        3 => format!("{n}m"),
+        2 => format!("{n} maj"),
+        3 => format!("{n} min"),
         4 => format!("{n}7"),
         _ => format!("{n}°"),
     }
@@ -405,8 +398,8 @@ pub fn instruments() -> Vec<Instrument> {
             source: "C system rows (accordionwise, AccordionLab, Wikibooks)",
             verified: true,
             kind: Kind::Chromatic,
-            rows: chromatic(48, 1, 12, 5),
-            dup_rows: 2,
+            rows: chromatic(48, 1),
+            dup_rows: 0,
             bass: Bass::Stradella,
             registers: &REG_CHROMATIC,
             tuning: Tuning { beat_a4: 7.0, bright: 7.0, cassotto: false },
@@ -420,8 +413,8 @@ pub fn instruments() -> Vec<Instrument> {
             source: "B system rows (Wikibooks, AccordionLab)",
             verified: true,
             kind: Kind::Chromatic,
-            rows: chromatic(47, -1, 12, 5),
-            dup_rows: 2,
+            rows: chromatic(47, -1),
+            dup_rows: 0,
             bass: Bass::Stradella,
             registers: &REG_CHROMATIC,
             tuning: Tuning { beat_a4: 4.0, bright: 7.0, cassotto: false },
@@ -435,8 +428,8 @@ pub fn instruments() -> Vec<Instrument> {
             source: "B system rows (bayan treble is B system)",
             verified: true,
             kind: Kind::Chromatic,
-            rows: chromatic(47, -1, 12, 5),
-            dup_rows: 2,
+            rows: chromatic(47, -1),
+            dup_rows: 0,
             bass: Bass::Stradella,
             registers: &REG_BAYAN,
             tuning: Tuning { beat_a4: 0.0, bright: 6.0, cassotto: true },
@@ -446,12 +439,12 @@ pub fn instruments() -> Vec<Instrument> {
         Instrument {
             name: "Finnish C-system",
             family: "Chromatic",
-            blurb: "Finnish 5-row: the C system shifted so the C♯/E row is outside and C sits on the third row.",
+            blurb: "Finnish: the C system shifted so the C♯/E row is outside and C sits on the third row.",
             source: "Finnish C system (accordionists.info, Johann Pascher's chart)",
             verified: true,
             kind: Kind::Chromatic,
-            rows: chromatic(49, 1, 12, 5),
-            dup_rows: 2,
+            rows: chromatic(49, 1),
+            dup_rows: 0,
             bass: Bass::Stradella,
             registers: &REG_CHROMATIC,
             tuning: Tuning { beat_a4: 3.0, bright: 7.0, cassotto: false },
@@ -543,7 +536,8 @@ mod tests {
                 }
             }
             let lo = inst.rows[..3].iter().flatten().map(|x| x.push).min().unwrap() + 2;
-            let hi = inst.rows[..3].iter().flatten().map(|x| x.push).max().unwrap() - 2;
+            // the A row is one key shorter, so the very top is incomplete
+            let hi = inst.rows[..3].iter().map(|r| r.iter().map(|x| x.push).max().unwrap()).min().unwrap();
             assert!((lo..=hi).all(|n| have[n as usize]), "{}", inst.name);
         }
     }
