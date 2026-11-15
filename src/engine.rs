@@ -954,6 +954,15 @@ impl Engine {
                 return;
             }
         }
+        if st == 0xB0 && ch != 9 {
+            // mapped controller knobs work in every mode (accordion included)
+            let t = self.p.cc_map[(m[1] & 0x7F) as usize].load(Relaxed);
+            if t != target::NONE {
+                let _ = self.tx.try_send(UiEvt::Cc { cc: m[1] & 0x7F, val: m[2] });
+                self.apply_target(t, m[1] & 0x7F, m[2]);
+                return;
+            }
+        }
         if self.p.acc_on.load(Relaxed) && matches!(st, 0x80 | 0x90 | 0xB0) {
             let k = m[1] & 0x7F;
             match st {

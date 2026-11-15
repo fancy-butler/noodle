@@ -281,7 +281,10 @@ impl App {
             }
             if pressed {
                 let fkeys = [Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9, Key::F10, Key::F11, Key::F12];
-                if let Some(n) = fkeys.iter().position(|k| *k == key) {
+                // Alt/Option + 1…9 0 - = does the same as F1…F12 (Mac keyboards need fn for real F-keys)
+                let alt_keys = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9, Key::Num0, Key::Minus, Key::Equals];
+                let reg_n = fkeys.iter().position(|k| *k == key).or_else(|| if modifiers.alt { alt_keys.iter().position(|k| *k == key) } else { None });
+                if let Some(n) = reg_n {
                     if n < self.acc_inst().registers.len() {
                         self.s.acc_reg = n;
                         let r = self.acc_inst().registers[n];
@@ -565,10 +568,16 @@ impl App {
         let strip = Rect::from_min_size(Pos2::new(rect.left(), top.bottom() + 6.0), Vec2::new(rect.width(), 92.0));
         self.acc_drone_panel(ui, strip);
         let area = Rect::from_min_max(Pos2::new(rect.left(), strip.bottom() + 8.0), rect.max);
-        let width_u = 15.3;
-        let height_u = 6.75;
-        let u = (area.width() / width_u).min(area.height() / height_u).min(96.0);
-        let ox = area.center().x - width_u * u / 2.0;
+        // fit what is actually drawn: the Buttons look hides the computer-only keys, and a
+        // 2-row box has no number row, so that space is closed up and the rest grows
+        let round_look = self.s.acc_round;
+        let nrows_fit = self.acc_inst().rows.len();
+        let shift = if round_look && nrows_fit < 3 { 1.0 } else { 0.0 };
+        let (x_min, x_max) = if round_look { (if nrows_fit >= 3 { 0.85 } else { 1.3 }, 13.7) } else { (0.0, 15.3) };
+        let width_u = x_max - x_min;
+        let height_u = if round_look { 5.45 + 1.0 - shift } else { 6.75 };
+        let u = (area.width() / width_u).min(area.height() / height_u).min(150.0);
+        let ox = area.center().x - (x_min + width_u / 2.0) * u;
         let oy = area.top() + (area.height() - height_u * u) / 2.0;
         let p = ui.painter_at(rect);
         let push = self.acc.as_ref().unwrap().push;
@@ -585,7 +594,10 @@ impl App {
         let cap_col = card_hi();
         let dead_col = card_bg();
         let ink = fg();
-        let key_rect = |x: f32, row_y: f32, w: f32, h: f32| Rect::from_min_size(Pos2::new(ox + x * u, oy + row_y * u), Vec2::new(w * u - u * 0.08, h * u - u * 0.08));
+        let key_rect = |x: f32, row_y: f32, w: f32, h: f32| {
+            let ry = if row_y >= 0.9 { row_y - shift } else { row_y };
+            Rect::from_min_size(Pos2::new(ox + x * u, oy + ry * u), Vec2::new(w * u - u * 0.08, h * u - u * 0.08))
+        };
         let round = self.s.acc_round;
         let look = self.acc_inst().look;
         let dead = |r: Rect, label: &str| {
@@ -628,10 +640,10 @@ impl App {
             // the cases: treble board behind the treble rows, bass board behind the Z row
             let nrows = self.acc_inst().rows.len();
             let (top_y, left_x) = if nrows >= 3 { (0.86, 0.9) } else { (1.86, 1.4) };
-            let treble = Rect::from_min_max(Pos2::new(ox + left_x * u, oy + top_y * u), Pos2::new(ox + 13.6 * u, oy + 3.96 * u));
+            let treble = Rect::from_min_max(Pos2::new(ox + left_x * u, oy + (top_y - shift) * u), Pos2::new(ox + 13.6 * u, oy + (3.96 - shift) * u));
             p.rect_filled(treble, u * 0.25, rgb(look.body));
             p.rect_stroke(treble, u * 0.25, Stroke::new(3.0, rgb(look.accent)), egui::StrokeKind::Inside);
-            let bass = Rect::from_min_max(Pos2::new(ox + 2.08 * u, oy + 3.92 * u), Pos2::new(ox + 12.28 * u, oy + 4.96 * u));
+            let bass = Rect::from_min_max(Pos2::new(ox + 2.08 * u, oy + (3.92 - shift) * u), Pos2::new(ox + 12.28 * u, oy + (4.96 - shift) * u));
             p.rect_filled(bass, u * 0.25, rgb(look.body2).linear_multiply(0.85));
             p.rect_stroke(bass, u * 0.25, Stroke::new(3.0, rgb(look.accent)), egui::StrokeKind::Inside);
         }
@@ -845,7 +857,7 @@ impl App {
             p.text(r.center(), Align2::CENTER_CENTER, if push { "◀ PUSH ▶" } else { "◀ PULL ▶" }, FontId::proportional(u * 0.4), Color32::from_rgb(0x10, 0x10, 0x10));
             if round {
                 let extra = if strad { "   ·   Shift: counterbass / minor   ·   Ctrl: 7th   ·   both: dim   ·   ← → move basses" } else { "" };
-                p.text(r.center_bottom() + Vec2::new(0.0, u * 0.3), Align2::CENTER_CENTER, format!("` drone   ·   Tab: next register   ·   Esc: leave{extra}"), FontId::proportional((u * 0.16).max(11.0)), text_dim());
+                p.text(r.center_bottom() + Vec2::new(0.0, u * 0.3), Align2::CENTER_CENTER, format!("` drone   ·   Tab: next register   ·   {} + 1…9: register   ·   Esc: leave{extra}", if cfg!(target_os = "macos") { "⌥ Option" } else { "Alt" }), FontId::proportional((u * 0.16).max(11.0)), text_dim());
             }
             let hint = if self.s.acc_space_pull { "hold = pull · let go = push" } else { "hold = push · let go = pull" };
             p.text(r.center_bottom() - Vec2::new(0.0, u * 0.14), Align2::CENTER_CENTER, hint, FontId::proportional(u * 0.14), Color32::from_rgb(0x10, 0x10, 0x10));

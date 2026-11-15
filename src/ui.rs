@@ -254,6 +254,24 @@ pub const MINILAB3_MAP: [(u8, u8); 14] = [
     (114, target::BROWSE),
     (112, target::CATEGORY),
 ];
+/// The same controls in the MiniLab 3's DAW program (Arturia support chart, "DAWs" column).
+/// The MiniLab switches to this when a DAW script talks to it and can stay there, so map both.
+pub const MINILAB3_DAW_MAP: [(u8, u8); 14] = [
+    (86, target::FILTER),
+    (87, target::RESO),
+    (89, target::DRIVE),
+    (90, target::DELAY),
+    (110, target::REVERB),
+    (111, target::REPEATS),
+    (116, target::CHORUS),
+    (117, target::ARP_GATE),
+    (14, target::MASTER),
+    (15, target::LAYER_VOL),
+    (30, target::DRUM_VOL),
+    (31, target::SONG_VOL),
+    (28, target::BROWSE),
+    (29, target::CATEGORY),
+];
 /// Staff transposition (written pitch) for transposing instruments: (label, semitones added to concert pitch)
 pub const WRITTEN: [(&str, i32); 7] = [
     ("Concert pitch", 0),
@@ -840,8 +858,8 @@ impl App {
                 a.store(target::NONE, Relaxed);
             }
             if want {
-                for (cc, t) in MINILAB3_MAP {
-                    self.p.cc_map[cc as usize].store(t, Relaxed);
+                for (cc, t) in MINILAB3_MAP.iter().chain(MINILAB3_DAW_MAP.iter()) {
+                    self.p.cc_map[*cc as usize].store(*t, Relaxed);
                 }
                 for i in 0..8u8 {
                     self.p.cc_map[(102 + i) as usize].store(target::PAD0 + i, Relaxed);
@@ -1725,7 +1743,16 @@ impl App {
         let p = self.p.clone();
         let now = now_s(&self.t0);
         let mapped = self.ml3_active;
-        let title = if mapped { "MINILAB 3  ·  mapped 1:1" } else { "MINILAB 3 LAYOUT  ·  not detected (Controller: MiniLab 3 to force)" };
+        let last = (0..128usize).max_by(|a, b| self.cc_seen[*a].partial_cmp(&self.cc_seen[*b]).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        let heard = if self.cc_seen[last] > 0.0 {
+            let t = p.cc_map[last].load(Relaxed);
+            let to = if t == target::NONE { "not mapped".to_string() } else { format!("→ {}", target::name(t)) };
+            format!("  ·  last knob: CC {} = {} {}", last, self.cc_vals[last], to)
+        } else {
+            "  ·  no knob/fader messages received yet".to_string()
+        };
+        let title_s = if mapped { format!("MINILAB 3  ·  mapped 1:1{heard}") } else { format!("MINILAB 3 LAYOUT  ·  not detected (Controller: MiniLab 3 to force){heard}") };
+        let title = title_s.as_str();
         let cur_name = self.preset_name(self.s.main);
         let cat = match self.category {
             None => "All sounds".to_string(),
@@ -1738,7 +1765,10 @@ impl App {
             let (area, _) = ui.allocate_exact_size(Vec2::new(610.0, 176.0), Sense::hover());
             let o = area.min;
             let painter = ui.painter().clone();
-            let hot = |cc: u8| now - self.cc_seen[cc as usize] < 0.5;
+            let hot = |cc: u8| {
+                let daw = MINILAB3_MAP.iter().position(|(c, _)| *c == cc).map(|i| MINILAB3_DAW_MAP[i].0);
+                now - self.cc_seen[cc as usize] < 0.5 || daw.is_some_and(|d| now - self.cc_seen[d as usize] < 0.5)
+            };
             // --- left column: shift/hold, oct, touch strips
             let btn = |r: Rect, label: &str, lit: bool| {
                 painter.rect_filled(r, 4.0, if lit { fg() } else { card_hi() });

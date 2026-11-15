@@ -311,6 +311,15 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if (p.cutoff.get() - 32.0 / 127.0).abs() > 0.01 || p.master.get() < 0.99 || browse != 1 || pad != 1 {
         fails.push("controller mapping".into());
     }
+    // the same knob must still work in accordion mode
+    p.acc_on.store(true, Relaxed);
+    tx.send(Cmd::Midi([0xB0, 74, 100])).unwrap();
+    render(0.05, "knob in accordion mode", &mut eng);
+    p.acc_on.store(false, Relaxed);
+    println!("  accordion mode: CC74→filter {:.2}", p.cutoff.get());
+    if (p.cutoff.get() - 100.0 / 127.0).abs() > 0.01 {
+        fails.push("knobs dead in accordion mode".into());
+    }
     p.master.set(0.8);
 
     // wind controller: breath (CC2) must control loudness
