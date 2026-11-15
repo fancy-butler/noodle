@@ -501,6 +501,8 @@ pub struct Engine {
     pipe_n: usize,
     /// output limiter gain (1 = untouched)
     lim_g: f32,
+    /// subsonic high-pass state per channel (x1, x2, y1, y2)
+    hp: [[f32; 4]; 2],
     chord_of: [[i16; 4]; 128],
 }
 
@@ -602,6 +604,7 @@ impl Engine {
             pipe_held: [0; 16],
             pipe_n: 0,
             lim_g: 1.0,
+            hp: [[0.0; 4]; 2],
             chord_of: [[-1; 4]; 128],
         }
     }
@@ -2086,6 +2089,15 @@ impl Engine {
             let dsamp = ((dbeats / bps) as usize).clamp(1, dlen - 1);
             let mut blk_peak = 0f32;
             let lim_rel = 1.0 - (-1.0 / (0.15 * sr)).exp();
+            // 2nd-order Butterworth high-pass at 22 Hz: takes out DC (pulse waves, drive) and
+            // sub-bass the speakers can't play but still pump their cones over
+            let (hb0, hb1, hb2, ha1, ha2) = {
+                let w = std::f32::consts::TAU * 22.0 / sr;
+                let (sn, cs) = (w.sin(), w.cos());
+                let al = sn / std::f32::consts::SQRT_2;
+                let a0 = 1.0 + al;
+                ((1.0 + cs) / 2.0 / a0, -(1.0 + cs) / a0, (1.0 + cs) / 2.0 / a0, -2.0 * cs / a0, (1.0 - al) / a0)
+            };
 
             for i in 0..len {
                 let mut x = [self.bl[i], self.br[i]];
@@ -2118,8 +2130,14 @@ impl Engine {
                 // rustysynth runs at ~-6 dB, so some make-up gain; then a limiter that turns
                 // loud chords down (instant attack, 150 ms release) instead of squaring them off.
                 // The soft clipper stays as a last-resort safety only.
-                let pre_l = (x[0] + rl * dmix) * master * 1.6;
-                let pre_r = (x[1] + rr * dmix) * master * 1.6;
+                let mut hpf = |c: usize, v: f32| {
+                    let h = &mut self.hp[c];
+                    let y = hb0 * v + hb1 * h[0] + hb2 * h[1] - ha1 * h[2] - ha2 * h[3];
+                    *h = [v, h[0], y, h[2]];
+                    y
+                };
+                let pre_l = hpf(0, (x[0] + rl * dmix) * master * 1.6);
+                let pre_r = hpf(1, (x[1] + rr * dmix) * master * 1.6);
                 let a = pre_l.abs().max(pre_r.abs());
                 blk_peak = blk_peak.max(a);
                 if a * self.lim_g > LIM_CEIL {

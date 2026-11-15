@@ -118,8 +118,13 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     let block = 256usize;
     let mut l = vec![0.0f32; block];
     let mut r = vec![0.0f32; block];
+    let mut t_total = 0f32;
     let mut render = |secs: f32, label: &str, eng: &mut Engine| {
         let n = (secs * sr as f32) as usize / block;
+        if std::env::var("NOODLE_TIMES").is_ok() {
+            println!("@{t_total:.2}s");
+        }
+        t_total += (n * block) as f32 / sr as f32;
         let (mut peak, mut sum, mut cnt) = (0.0f32, 0.0f64, 0usize);
         let t = std::time::Instant::now();
         for _ in 0..n {
