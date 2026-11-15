@@ -9,6 +9,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod abc;
+mod accordion;
 mod analog;
 mod chip;
 mod collections;
@@ -22,6 +23,7 @@ mod native;
 mod packs;
 mod pipe_art;
 mod pipes;
+mod reed;
 mod sampler;
 mod session;
 mod settings;
@@ -411,6 +413,47 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     }
     p.metro_on.store(false, Relaxed);
     render(0.3, "", &mut eng);
+
+    // accordion: B/C box, a few buttons in each bellows direction, a bass, a reversal
+    {
+        use engine::AccMsg;
+        let insts = accordion::instruments();
+        let bc = &insts[0];
+        render(0.5, "  (before accordion)", &mut eng);
+        tx.send(Cmd::Acc(AccMsg::Setup(Some((bc.registers[2], bc.bass_ranks, bc.tuning))))).unwrap();
+        tx.send(Cmd::Acc(AccMsg::Bellows(true))).unwrap();
+        let tune = [(1usize, 2usize, true), (1, 2, false), (1, 3, true), (1, 3, false), (1, 4, true), (1, 4, false), (1, 5, true)];
+        let (bn, chord) = accordion::bass_notes(accordion::BassSnd::Major(0));
+        tx.send(Cmd::Acc(AccMsg::Bass { id: 300, notes: [bn[0], bn[1], bn[2]], n: 3, chord, on: true })).unwrap();
+        let mut loud = 0.0f32;
+        for (r, i, push) in tune {
+            tx.send(Cmd::Acc(AccMsg::Bellows(push))).unwrap();
+            let b = bc.rows[r][i];
+            tx.send(Cmd::Acc(AccMsg::Treble { id: 1, note: if push { b.push } else { b.pull }, on: true })).unwrap();
+            let (pk, _) = render(0.25, "", &mut eng);
+            loud = loud.max(pk);
+            tx.send(Cmd::Acc(AccMsg::Treble { id: 1, note: 0, on: false })).unwrap();
+        }
+        tx.send(Cmd::Acc(AccMsg::Bass { id: 300, notes: [0; 3], n: 0, chord, on: false })).unwrap();
+        println!("accordion B/C scale + C chord, wet register: peak {loud:.3}");
+        render(1.5, "  accordion released (reverb tail)", &mut eng);
+        let quiet = render(0.6, "  then quiet", &mut eng);
+        if loud < 0.05 || loud > 1.2 {
+            fails.push(format!("accordion level {loud}"));
+        }
+        if quiet.1 > 0.003 {
+            fails.push("accordion kept sounding".into());
+        }
+        // MIDI keyboard in accordion mode plays the accordion, not the piano
+        tx.send(note(64, true)).unwrap();
+        let m = render(0.4, "  MIDI key → accordion", &mut eng);
+        tx.send(note(64, false)).unwrap();
+        if m.0 < 0.02 {
+            fails.push("MIDI key silent in accordion mode".into());
+        }
+        tx.send(Cmd::Acc(AccMsg::Setup(None))).unwrap();
+        render(0.5, "", &mut eng);
+    }
 
     // drones + bagpipe chanter: GHB in A
     p.wind_on.store(false, Relaxed);

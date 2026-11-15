@@ -16,6 +16,8 @@ use std::sync::atomic::Ordering::Relaxed;
 
 #[path = "game_screen.rs"]
 mod game_screen;
+#[path = "acc_screen.rs"]
+mod acc_screen;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -181,6 +183,8 @@ pub struct App {
     scale_filter: String,
     style_done: bool,
     game_mode: bool,
+    acc_mode: bool,
+    acc: Option<acc_screen::AccState>,
     game: Option<Game>,
     show_results: bool,
     drone_running: bool,
@@ -481,6 +485,8 @@ impl App {
             scale_filter: String::new(),
             style_done: false,
             game_mode: std::env::var("NOODLE_GAME").is_ok(),
+            acc_mode: false,
+            acc: None,
             game: None,
             show_results: false,
             drone_running: false,
@@ -1090,6 +1096,10 @@ impl App {
     }
 
     fn keyboard_input(&mut self, ctx: &egui::Context) {
+        if self.acc_mode {
+            self.acc_keys(ctx);
+            return;
+        }
         let focused = ctx.input(|i| i.focused);
         if !focused && !self.keys_down.is_empty() {
             for (_, k) in self.keys_down.drain() {
@@ -1569,9 +1579,6 @@ impl App {
                 }
                 if self.s.show_drone {
                     self.drone_card(ui);
-                }
-                if self.fingering_visible() {
-                    self.fingering_card(ui);
                 }
             });
         });
@@ -2078,12 +2085,47 @@ impl App {
         }
     }
 
-    fn fingering_card(&mut self, ui: &mut egui::Ui) {
+    /// Fingering as a side pane you can open and close: big charts, now and next.
+    fn fingering_pane(&mut self, ctx: &egui::Context) {
         use crate::fingering::{lookup, parse, CHARTS};
+        if !self.fingering_visible() {
+            return;
+        }
+        if !self.s.fing_pane {
+            egui::SidePanel::right("fing_tab").exact_width(30.0).resizable(false).frame(egui::Frame::new().fill(panel())).show(ctx, |ui| {
+                let r = ui.max_rect();
+                let resp = ui.allocate_rect(r, Sense::click());
+                let p = ui.painter();
+                if resp.hovered() {
+                    p.rect_filled(r, 0.0, card_hi());
+                }
+                p.text(Pos2::new(r.center().x, r.top() + 18.0), Align2::CENTER_CENTER, "◂", FontId::proportional(16.0), YOURS);
+                let word = "FINGERING";
+                for (i, ch) in word.chars().enumerate() {
+                    p.text(Pos2::new(r.center().x, r.top() + 44.0 + i as f32 * 15.0), Align2::CENTER_CENTER, ch.to_string(), FontId::proportional(12.0), fg());
+                }
+                if resp.on_hover_text("Open the fingering pane").clicked() {
+                    self.s.fing_pane = true;
+                }
+            });
+            return;
+        }
         let idx = self.s.fing_idx.min(CHARTS.len() - 1);
-        card(ui, "FINGERING", 280.0, |ui| {
+        egui::SidePanel::right("fing_pane").resizable(true).default_width(self.s.fing_pane_w.clamp(260.0, 900.0)).width_range(240.0..=1000.0).frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin::same(10))).show(ctx, |ui| {
+            self.s.fing_pane_w = ui.available_width() + 20.0;
             ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("fing").selected_text(CHARTS[idx].name).width(190.0).show_ui(ui, |ui| {
+                ui.label(RichText::new("FINGERING").size(13.0).strong().color(text_dim()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("▸ Hide").on_hover_text("Fold the pane away (it stays as a tab on the right)").clicked() {
+                        self.s.fing_pane = false;
+                    }
+                    if ui.button("⊞ Whole chart").clicked() {
+                        self.show_chart = !self.show_chart;
+                    }
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_salt("fing").selected_text(CHARTS[idx].name).width(200.0).show_ui(ui, |ui| {
                     for (i, c) in CHARTS.iter().enumerate() {
                         if ui.selectable_value(&mut self.s.fing_idx, i, c.name).on_hover_text(format!("From: {}", c.source)).clicked() {
                             self.s.fing_tr = 0;
@@ -2100,23 +2142,30 @@ impl App {
                     });
                 }
                 ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the instrument's range show the same note in its range");
-                if ui.button("⊞").on_hover_text("Whole chart").clicked() {
-                    self.show_chart = !self.show_chart;
-                }
             });
             let chart = &CHARTS[idx];
             let tr: i8 = chart.trans.get(self.s.fing_tr.min(chart.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0);
-            // what you're playing now (held), else the last thing you played
             let held = (0..128u8).rev().find(|k| self.held[0][*k as usize] > 0);
             let now_key = held.or(self.last_live);
             let next_key = self.next_target();
-            let tall = chart.holes.iter().any(|h| h.0 == crate::fingering::Hole::Key);
-            let (r, _) = ui.allocate_exact_size(Vec2::new(270.0, if tall { 175.0 } else { 132.0 }), Sense::hover());
-            let left = Rect::from_min_max(r.min, Pos2::new(r.center().x, r.bottom()));
-            let right = Rect::from_min_max(Pos2::new(r.center().x, r.top()), r.max);
+            let avail = ui.available_size();
+            let foot = 34.0;
+            let (r, _) = ui.allocate_exact_size(Vec2::new(avail.x, (avail.y - foot).max(200.0)), Sense::hover());
+            // now big on top, next smaller underneath; side by side when the pane is wide
+            let wide = r.width() > r.height() * 0.9;
+            let (now_r, next_r) = if wide {
+                let split = r.left() + r.width() * 0.6;
+                (Rect::from_min_max(r.min, Pos2::new(split - 6.0, r.bottom())), Rect::from_min_max(Pos2::new(split + 6.0, r.top() + r.height() * 0.2), r.max))
+            } else {
+                let split = r.top() + r.height() * 0.62;
+                (Rect::from_min_max(r.min, Pos2::new(r.right(), split - 6.0)), Rect::from_min_max(Pos2::new(r.left() + r.width() * 0.15, split + 6.0), Pos2::new(r.right() - r.width() * 0.15, r.bottom())))
+            };
+            ui.painter().rect_filled(now_r, 12.0, card_bg());
+            ui.painter().rect_filled(next_r, 12.0, card_bg().gamma_multiply(0.7));
             let speller = self.speller();
             let mut flagged = false;
             let mut draw = |rect: Rect, key: Option<u8>, ghost: bool, prefix: &str| {
+                let rect = rect.shrink(10.0);
                 match key {
                     Some(k) => {
                         let found = lookup(chart, k, self.s.fing_any, tr);
@@ -2128,7 +2177,7 @@ impl App {
                                 }
                                 format!("{prefix}{}{}{}", if speller.name(k % 12).len() > 0 { name } else { String::new() }, if exact { "" } else { " (8va)" }, if e.check { " ?" } else { "" })
                             }
-                            None => format!("{prefix}{name}"),
+                            None => format!("{prefix}{name} — not on this instrument"),
                         };
                         let st = found.map(|(e, _)| parse(e.states));
                         crate::pipe_art::draw_fingering(ui.painter(), rect, chart, st.as_deref(), &label, ghost, fg());
@@ -2136,16 +2185,16 @@ impl App {
                     None => crate::pipe_art::draw_fingering(ui.painter(), rect, chart, None, if ghost { "next —" } else { "play a note" }, ghost, fg()),
                 }
             };
-            draw(left, now_key, false, "");
+            draw(now_r, now_key, false, "");
             if next_key.is_some() {
-                draw(right, next_key, true, "next ");
+                draw(next_r, next_key, true, "next ");
             } else {
-                ui.painter().text(right.center(), Align2::CENTER_CENTER, "Walk it / Game /\na song part\nshows the next\nfingering here", FontId::proportional(11.0), text_dim());
+                ui.painter().text(next_r.center(), Align2::CENTER_CENTER, "Walk it, Game\nor a song shows\nthe next one here", FontId::proportional(12.0), text_dim());
             }
             if flagged {
-                ui.label(RichText::new("? = hard to read on the source chart — please confirm").size(10.5).color(YOURS));
+                ui.label(RichText::new("? = hard to read on the source chart — please confirm").size(11.0).color(YOURS));
             } else if !chart.note.is_empty() {
-                ui.label(RichText::new(chart.note).size(10.5).color(text_dim()));
+                ui.label(RichText::new(chart.note).size(11.0).color(text_dim()));
             }
         });
     }
@@ -2600,7 +2649,18 @@ impl App {
                 }
             }).response.on_hover_text("Show the staff in written pitch for your instrument (sax, clarinet, whistle…)");
             ui.separator();
+            let mut am = self.acc_mode;
+            if ui.toggle_value(&mut am, RichText::new("Accordion").strong()).on_hover_text("Turn Noodle into a button accordion: Irish, Scottish, French and English diatonics, C-griff, B-griff, bayan, Finnish. Space is the bellows.").changed() {
+                if am {
+                    self.enter_accordion();
+                } else {
+                    self.exit_accordion();
+                }
+            }
             if ui.toggle_value(&mut self.game_mode, RichText::new("🎮 Game").strong()).on_hover_text("Rhythm-game training: notes fall, you hit them on time").changed() {
+                if self.game_mode && self.acc_mode {
+                    self.exit_accordion();
+                }
                 if self.game_mode {
                     self.scale_on = true;
                     self.rebuild_walk();
@@ -3889,6 +3949,15 @@ impl eframe::App for App {
             setup_style(ctx);
             self.style_done = true;
         }
+        {
+            static ACC_ENV: std::sync::Once = std::sync::Once::new();
+            ACC_ENV.call_once(|| {
+                if let Ok(v) = std::env::var("NOODLE_ACC") {
+                    self.s.acc_inst = v.parse().unwrap_or(0);
+                    self.enter_accordion();
+                }
+            });
+        }
         self.apply_controller();
         self.apply_drones();
         self.pump();
@@ -3926,6 +3995,20 @@ impl eframe::App for App {
                 ui.label(RichText::new(e).color(BAD));
             }
         });
+        if self.acc_mode {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(10, 6))).show(ctx, |ui| {
+                let rect = ui.available_rect_before_wrap();
+                ui.allocate_rect(rect, Sense::hover());
+                self.acc_screen(ui, rect);
+            });
+            self.help(ctx);
+            self.tunes_window(ctx);
+            self.packs_window(ctx);
+            let now = now_s(&self.t0);
+            self.autosave(now);
+            ctx.request_repaint();
+            return;
+        }
         if !self.s.hide_modules && !self.game_mode {
             egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
                 self.modules(ui);
@@ -3938,6 +4021,9 @@ impl eframe::App for App {
             .exact_height(if self.s.kb_size <= 37 { 170.0 } else { 140.0 })
             .frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
             .show(ctx, |ui| self.piano(ui));
+        if !self.game_mode {
+            self.fingering_pane(ctx);
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
             if self.game_mode {
                 let rect = ui.available_rect_before_wrap();

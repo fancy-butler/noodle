@@ -39,6 +39,8 @@ impl AF64 {
 pub const MAIN_CH: i32 = 0;
 pub const LAYER_CH: i32 = 1;
 pub const DRUM_CH: i32 = 9;
+/// the accordion (both hands) lives on this otherwise unused channel
+pub const ACC_CH: i32 = 8;
 /// Each looper overdub pass gets its own channel pair, so every layer of the
 /// loop keeps the instrument it was recorded with.
 pub const PASS_CH: [(u8, u8); 6] = [(2, 3), (4, 5), (6, 7), (10, 11), (12, 13), (14, 15)];
@@ -201,6 +203,8 @@ pub struct Params {
     pub drone_tone: AtomicU8, // 0 bright pipe, 1 medium pipe, 2 sweet pipe, 3 reed (shruti/harmonium)
     // bagpipe chanter
     pub pipe_mode: AtomicBool,
+    /// accordion mode: keyboard notes go to the accordion's treble
+    pub acc_on: AtomicBool,
     pub pipe_tonic: AtomicU8,
     pub pipe_just: AtomicBool,
     pub pipe_tune: AtomicI32, // cents
@@ -293,6 +297,7 @@ impl Params {
             drone_level: AF32::new(0.6),
             drone_tone: AtomicU8::new(0),
             pipe_mode: AtomicBool::new(false),
+            acc_on: AtomicBool::new(false),
             pipe_tonic: AtomicU8::new(69),
             pipe_just: AtomicBool::new(true),
             pipe_tune: AtomicI32::new(0),
@@ -323,6 +328,16 @@ pub enum Cmd {
     DrumInst(Option<Arc<crate::native::InstDef>>),
     SongPlay(bool),
     SongSeek(f64),
+    Acc(AccMsg),
+}
+
+pub enum AccMsg {
+    /// load an accordion (None = put it away)
+    Setup(Option<(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning)>),
+    Register(crate::reed::Register),
+    Treble { id: u16, note: u8, on: bool },
+    Bass { id: u16, notes: [u8; 3], n: u8, chord: bool, on: bool },
+    Bellows(bool),
 }
 
 pub enum UiEvt {
@@ -843,6 +858,59 @@ impl Engine {
         }
     }
 
+    fn acc_player(&mut self) -> Option<&mut crate::reed::Accordion> {
+        match self.native[ACC_CH as usize].as_mut() {
+            Some(crate::native::Native::Reed(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    fn acc(&mut self, m: AccMsg) {
+        match m {
+            AccMsg::Setup(None) => {
+                self.p.acc_on.store(false, Relaxed);
+                self.native[ACC_CH as usize] = None;
+            }
+            AccMsg::Setup(Some((reg, bass, tuning))) => {
+                self.native[ACC_CH as usize] = Some(crate::native::Native::new(&crate::native::InstDef::Reed(reg, bass, tuning), self.sr));
+                self.p.acc_on.store(true, Relaxed);
+            }
+            AccMsg::Register(r) => {
+                if let Some(a) = self.acc_player() {
+                    a.set_register(r);
+                }
+            }
+            AccMsg::Treble { id, note, on } => {
+                if on {
+                    self.vis(note, 100, src::LIVE);
+                } else {
+                    self.vis(note, 0, src::LIVE);
+                }
+                if let Some(a) = self.acc_player() {
+                    if on {
+                        a.treble_on(id, note);
+                    } else {
+                        a.off(id);
+                    }
+                }
+            }
+            AccMsg::Bass { id, notes, n, chord, on } => {
+                if let Some(a) = self.acc_player() {
+                    if on {
+                        a.bass_on(id, &notes[..n as usize], chord);
+                    } else {
+                        a.off(id);
+                    }
+                }
+            }
+            AccMsg::Bellows(push) => {
+                if let Some(a) = self.acc_player() {
+                    a.bellows(push);
+                }
+            }
+        }
+    }
+
     fn handle_midi(&mut self, m: [u8; 3]) {
         let st = m[0] & 0xF0;
         let ch = m[0] & 0x0F;
@@ -885,6 +953,32 @@ impl Engine {
                 }
                 return;
             }
+        }
+        if self.p.acc_on.load(Relaxed) && matches!(st, 0x80 | 0x90 | 0xB0) {
+            let k = m[1] & 0x7F;
+            match st {
+                0x90 if m[2] > 0 => {
+                    self.vis(k, m[2], src::LIVE);
+                    if let Some(a) = self.acc_player() {
+                        a.treble_on(1000 + k as u16, k);
+                    }
+                }
+                0x90 | 0x80 => {
+                    self.vis(k, 0, src::LIVE);
+                    if let Some(a) = self.acc_player() {
+                        a.off(1000 + k as u16);
+                    }
+                }
+                _ => {
+                    let _ = self.tx.try_send(UiEvt::Cc { cc: k, val: m[2] });
+                    if matches!(k, 7 | 11 | 2) {
+                        if let Some(a) = self.acc_player() {
+                            a.pressure(m[2]);
+                        }
+                    }
+                }
+            }
+            return;
         }
         match st {
             0x90 if m[2] > 0 => self.live_on(m[1] & 0x7F, m[2]),
@@ -1837,6 +1931,7 @@ impl Engine {
                     self.song_playing = on && self.song.is_some();
                 }
                 Cmd::SongSeek(t) => self.song_seek(t),
+                Cmd::Acc(m) => self.acc(m),
                 Cmd::DrumInst(i) => {
                     self.drum_inst = i.clone();
                     if let Some(n) = self.native[DRUM_CH as usize].as_mut() {

@@ -10,6 +10,7 @@ pub enum InstDef {
     Chip(crate::chip::Patch),
     ChipDrums(usize),
     Analog(crate::analog::Patch),
+    Reed(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning),
 }
 
 pub enum Native {
@@ -17,6 +18,7 @@ pub enum Native {
     Chip(Box<crate::chip::Player>),
     Drums(crate::chip::DrumPlayer),
     Analog(Box<crate::analog::Player>),
+    Reed(Box<crate::reed::Accordion>),
 }
 
 impl Native {
@@ -26,6 +28,7 @@ impl Native {
             InstDef::Chip(p) => Native::Chip(Box::new(crate::chip::Player::new(*p, sr))),
             InstDef::ChipDrums(k) => Native::Drums(crate::chip::DrumPlayer::new(*k, sr)),
             InstDef::Analog(p) => Native::Analog(Box::new(crate::analog::Player::new(*p, sr))),
+            InstDef::Reed(r, b, t) => Native::Reed(Box::new(crate::reed::Accordion::new(sr, *r, b, *t))),
         }
     }
 
@@ -39,6 +42,11 @@ impl Native {
                 Native::Chip(p) => p.cc(k, v),
                 Native::Drums(p) => p.cc(k, v),
                 Native::Analog(p) => p.cc(k, v),
+                Native::Reed(p) => {
+                    if matches!(k, 7 | 11) {
+                        p.pressure(v)
+                    }
+                }
             },
             0xE0 => {
                 let v14 = (d2 << 7) | d1;
@@ -47,6 +55,7 @@ impl Native {
                     Native::Chip(p) => p.bend(v14),
                     Native::Drums(_) => {}
                     Native::Analog(p) => p.bend(v14),
+                    Native::Reed(_) => {}
                 }
             }
             _ => {}
@@ -59,6 +68,7 @@ impl Native {
             Native::Chip(p) => p.note_on(k, v),
             Native::Drums(p) => p.note_on(k, v),
             Native::Analog(p) => p.note_on(k, v),
+            Native::Reed(p) => p.treble_on(1000 + k as u16, k),
         }
     }
 
@@ -68,6 +78,7 @@ impl Native {
             Native::Chip(p) => p.note_off(k),
             Native::Drums(_) => {}
             Native::Analog(p) => p.note_off(k),
+            Native::Reed(p) => p.off(1000 + k as u16),
         }
     }
 
@@ -77,6 +88,7 @@ impl Native {
             Native::Chip(p) => p.all_off(hard),
             Native::Drums(p) => p.all_off(),
             Native::Analog(p) => p.all_off(hard),
+            Native::Reed(p) => p.all_off(hard),
         }
     }
 
@@ -86,6 +98,7 @@ impl Native {
             Native::Chip(p) => p.render(l, r),
             Native::Drums(p) => p.render(l, r),
             Native::Analog(p) => p.render(l, r),
+            Native::Reed(p) => p.render(l, r),
         }
     }
 }

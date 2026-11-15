@@ -403,25 +403,27 @@ pub fn draw_harmonium(p: &Painter, r: Rect, stops: u8, lit: &[bool; 128], hover:
 pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, states: Option<&[u8]>, label: &str, ghost: bool, ink: Color32) {
     use crate::fingering::Hole;
     let a = if ghost { 0.45 } else { 1.0 };
+    // everything scales with the space it's given (the side pane draws big)
+    let u = (r.height() / 200.0).clamp(0.8, 3.2).min(r.width() / 70.0).max(0.8);
     let has_keys = chart.holes.iter().any(|h| h.0 == Hole::Key);
-    let body_w = (r.width() * 0.26).min(30.0);
-    let top = r.top() + 22.0;
+    let body_w = (r.width() * 0.26).min(30.0 * u);
+    let top = r.top() + 22.0 * u.min(1.8);
     // names of pressed keys go underneath, wrapped to the cell width
     let finger_c = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
     let caption = states.map(|s| {
         chart.holes.iter().zip(s.iter()).filter(|(h, st)| matches!(h.0, Hole::Key | Hole::Small) && **st == 1).map(|(h, _)| h.1).collect::<Vec<_>>().join(" + ")
     }).unwrap_or_default();
-    let cap = (!caption.is_empty()).then(|| p.layout(caption, FontId::proportional(10.0), finger_c, r.width() - 4.0));
+    let cap = (!caption.is_empty()).then(|| p.layout(caption, FontId::proportional(10.0 * u.min(1.6)), finger_c, r.width() - 4.0));
     let bot = r.bottom() - cap.as_ref().map(|g| g.size().y + 4.0).unwrap_or(0.0).max(10.0);
     // keyed instruments need room on the right for key pills
     let cx = r.center().x + if has_keys { -body_w * 0.35 } else { body_w * 0.25 };
     let body = Rect::from_min_max(Pos2::new(cx - body_w / 2.0, top), Pos2::new(cx + body_w / 2.0, bot));
     p.rect_filled(body, body_w * 0.35, WOOD.gamma_multiply(a));
     p.rect_filled(Rect::from_min_size(body.min - Vec2::new(2.0, 4.0), Vec2::new(body_w + 4.0, 8.0)), 3.0, IVORY.gamma_multiply(a));
-    p.text(Pos2::new(r.center().x, r.top() + 2.0), Align2::CENTER_TOP, label, FontId::proportional(15.0), ink.gamma_multiply(a));
+    p.text(Pos2::new(r.center().x, r.top() + 2.0), Align2::CENTER_TOP, label, FontId::proportional(15.0 * u.min(1.8)), ink.gamma_multiply(a));
     let rows = chart.holes.iter().filter(|h| matches!(h.0, Hole::Front | Hole::Thumb | Hole::Double)).count();
     let gap_extra = chart.breaks.len() as f32 * 0.6;
-    let step = (bot - top - 26.0) / (rows as f32 + gap_extra);
+    let step = (bot - top - 26.0 * u.min(1.8)) / (rows as f32 + gap_extra);
     let rad = (step * 0.36).min(body_w * 0.36).max(3.0);
     let closed = Color32::from_rgb(0x15, 0x10, 0x0c).gamma_multiply(a);
     let open_fill = Color32::from_rgb(0xf6, 0xef, 0xdc).gamma_multiply(a);
@@ -449,8 +451,8 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
             p.circle_filled(c, rr, Color32::from_gray(90).gamma_multiply(a));
         }
     };
-    let mut y = top + 16.0;
-    let mut last_y = top + 16.0;
+    let mut y = top + 16.0 * u.min(1.8);
+    let mut last_y = y;
     let mut first_row = true;
     let mut keys_here = 0usize;
     let mut pressed: Vec<&str> = Vec::new();
@@ -473,7 +475,7 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                     Hole::Thumb => {
                         draw_hole(c, rad, st);
                         let t = if name.contains("octave") { "8va" } else { "T" };
-                        p.text(c - Vec2::new(rad + 2.0, 0.0), Align2::RIGHT_CENTER, t, FontId::proportional(9.5), ink.gamma_multiply(0.6 * a));
+                        p.text(c - Vec2::new(rad + 2.0, 0.0), Align2::RIGHT_CENTER, t, FontId::proportional(9.5 * u.min(1.8)), ink.gamma_multiply(0.6 * a));
                     }
                     _ => draw_hole(c, rad, st),
                 }
@@ -491,10 +493,10 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                 }
             }
             Hole::Key => {
-                let kc = Pos2::new(cx + body_w * 0.5 + 7.0 + (keys_here % 3) as f32 * 10.0, last_y + (keys_here / 3) as f32 * 8.0);
+                let kc = Pos2::new(cx + body_w * 0.5 + 7.0 * u + (keys_here % 3) as f32 * 10.0 * u, last_y + (keys_here / 3) as f32 * 8.0 * u);
                 keys_here += 1;
                 let on = st == Some(1);
-                let kr = Rect::from_center_size(kc, Vec2::new(8.0, 6.0));
+                let kr = Rect::from_center_size(kc, Vec2::new(8.0, 6.0) * u);
                 p.rect_filled(kr, 2.0, if on { finger } else { IVORY.gamma_multiply(a) });
                 p.rect_stroke(kr, 2.0, Stroke::new(0.8_f32, closed), eframe::egui::StrokeKind::Inside);
                 if on {
@@ -508,14 +510,14 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                     (0..20)
                         .map(|k| {
                             let t = k as f32 / 20.0 * std::f32::consts::TAU;
-                            c + Vec2::new(t.cos() * body_w * 0.55, t.sin() * 4.0)
+                            c + Vec2::new(t.cos() * body_w * 0.55, t.sin() * 4.0 * u)
                         })
                         .collect(),
                     if on { finger } else { open_fill },
                     Stroke::new(1.0_f32, closed),
                 ));
                 if on {
-                    p.text(c + Vec2::new(body_w * 0.6 + 3.0, 0.0), Align2::LEFT_CENTER, if name.contains('×') { "×" } else { "knee" }, FontId::proportional(10.0), finger);
+                    p.text(c + Vec2::new(body_w * 0.6 + 3.0, 0.0), Align2::LEFT_CENTER, if name.contains('×') { "×" } else { "knee" }, FontId::proportional(10.0 * u.min(1.8)), finger);
                 }
             }
         }
@@ -526,6 +528,6 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
         p.galley(Pos2::new(r.center().x - sz.x / 2.0, r.bottom() - sz.y), g, finger);
     }
     if states.is_none() {
-        p.text(Pos2::new(cx, (top + bot) / 2.0), Align2::CENTER_CENTER, "—", FontId::proportional(20.0), ink.gamma_multiply(0.5));
+        p.text(Pos2::new(cx, (top + bot) / 2.0), Align2::CENTER_CENTER, "—", FontId::proportional(20.0 * u.min(1.8)), ink.gamma_multiply(0.5));
     }
 }
