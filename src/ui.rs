@@ -421,6 +421,12 @@ impl App {
         let mut s = Settings::load();
         s.drone_mode = 0; // performance modes never come back on by themselves
         s.pipe_cont = false;
+        if let Ok(f) = std::env::var("NOODLE_FING") {
+            if let Some(i) = crate::fingering::CHARTS.iter().position(|c| c.name.starts_with(f.as_str())) {
+                s.fing_idx = i;
+                s.fing_tr = 0;
+            }
+        }
         s.push_to(&h.p);
         let (load_tx, load_rx) = crossbeam_channel::unbounded();
         let sf_paths = sounds::find_soundfonts();

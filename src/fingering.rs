@@ -467,6 +467,205 @@ pub const CHARTS: &[Chart] = &[
             f(84, "OOO"),
         ],
     },
+    Chart {
+        name: "Clarinet (Boehm)",
+        source: "Woodwind Fingering Guide (wfg.woodwind.org, Timothy Reichard et al.), basic fingering chart for Boehm-system clarinet",
+        holes: &[
+            (Key, "register key"),
+            (Thumb, "thumb hole"),
+            (Key, "A key"),
+            (Key, "G♯ key"),
+            (Front, "LH 1st"),
+            (Front, "LH 2nd"),
+            (Front, "LH 3rd"),
+            (Key, "LH pinky E/B"),
+            (Key, "LH pinky F/C"),
+            (Key, "LH pinky F♯/C♯"),
+            (Key, "LH pinky C♯/G♯"),
+            (Key, "side key E♭/B♭"),
+            (Front, "RH 1st"),
+            (Front, "RH 2nd"),
+            (Front, "RH 3rd"),
+            (Small, "B/F♯ sliver"),
+            (Key, "RH pinky E/B"),
+            (Key, "RH pinky F/C"),
+            (Key, "RH pinky F♯/C♯"),
+            (Key, "RH pinky G♯/D♯"),
+        ],
+        breaks: &[12],
+        note: "Written pitch. Low E, F and F♯ (and B, C, C♯ an octave and a fifth up) can be played with either little finger; the chart shows the first one the Guide lists.",
+        trans: &[("B♭ clarinet", -2), ("A clarinet", -3), ("E♭ clarinet", 3), ("Bass clarinet (B♭)", -14), ("Written pitch", 0)],
+        fings: &[
+            f(52, "OCOOCCCCOOOOCCCOOOOO"), // E3  T 123E|123
+            f(53, "OCOOCCCOOOOOCCCOOCOO"), // F3  T 123|123F
+            f(54, "OCOOCCCOOCOOCCCOOOOO"), // F#3  T 123F#|123
+            f(55, "OCOOCCCOOOOOCCCOOOOO"), // G3  T 123|123
+            f(56, "OCOOCCCOOOOOCCCOOOOC"), // G#3  T 123|123G#
+            f(57, "OCOOCCCOOOOOCCOOOOOO"), // A3  T 123|12-
+            f(58, "OCOOCCCOOOOOCOOOOOOO"), // Bb3  T 123|1--
+            f(59, "OCOOCCCOOOOOOCOOOOOO"), // B3  T 123|-2-
+            f(60, "OCOOCCCOOOOOOOOOOOOO"), // C4  T 123|---
+            f(61, "OCOOCCCOOOCOOOOOOOOO"), // C#4  T 123C#|---
+            f(62, "OCOOCCOOOOOOOOOOOOOO"), // D4  T 12-|---
+            f(63, "OCOOCCOOOOOCOOOOOOOO"), // D#4  T 12-|4---
+            f(64, "OCOOCOOOOOOOOOOOOOOO"), // E4  T 1--|---
+            f(65, "OCOOOOOOOOOOOOOOOOOO"), // F4  T ---|---
+            f(66, "OOOOCOOOOOOOOOOOOOOO"), // F#4  1--|---
+            f(67, "OOOOOOOOOOOOOOOOOOOO"), // G4  ---|---
+            f(68, "OOOCOOOOOOOOOOOOOOOO"), // G#4  G#---|---
+            f(69, "OOCOOOOOOOOOOOOOOOOO"), // A4  A---|---
+            f(70, "COCOOOOOOOOOOOOOOOOO"), // Bb4  R A---|---
+            f(71, "CCOOCCCCOOOOCCCOOOOO"), // B4  RT 123E|123
+            f(72, "CCOOCCCOOOOOCCCOOCOO"), // C5  RT 123|123F
+            f(73, "CCOOCCCOOCOOCCCOOOOO"), // C#5  RT 123F#|123
+            f(74, "CCOOCCCOOOOOCCCOOOOO"), // D5  RT 123|123
+            f(75, "CCOOCCCOOOOOCCCOOOOC"), // D#5  RT 123|123G#
+            f(76, "CCOOCCCOOOOOCCOOOOOO"), // E5  RT 123|12-
+            f(77, "CCOOCCCOOOOOCOOOOOOO"), // F5  RT 123|1--
+            f(78, "CCOOCCCOOOOOOCOOOOOO"), // F#5  RT 123|-2-
+            f(79, "CCOOCCCOOOOOOOOOOOOO"), // G5  RT 123|---
+            f(80, "CCOOCCCOOOCOOOOOOOOO"), // G#5  RT 123C#|---
+            f(81, "CCOOCCOOOOOOOOOOOOOO"), // A5  RT 12-|---
+            f(82, "CCOOCCOOOOOCOOOOOOOO"), // Bb5  RT 12-|4---
+            f(83, "CCOOCOOOOOOOOOOOOOOO"), // B5  RT 1--|---
+            f(84, "CCOOOOOOOOOOOOOOOOOO"), // C6  RT ---|---
+            f(85, "CCOOOCCOOOOOCCOOOOOO"), // C#6  RT -23|12-
+            f(86, "CCOOOCCOOOOOCOOOOOOC"), // D6  RT -23|1--G#
+            q(87, "CCOOOCCOOOOOCOOCOOOC"), // D#6  RT -23|1-B-G#
+            f(88, "CCOOOCCOOOOOOOOOOOOC"), // E6  RT -23|---G#
+            f(89, "CCOOOCCOOOCOOOOOOOOC"), // F6  RT -23C#|---G#
+            f(90, "CCOOOCOOOOOOOOOOOOOC"), // F#6  RT -2-|---G#
+            f(91, "CCOOOCOOOOOOCCOOOOOC"), // G6  RT -2-|12-G#
+        ],
+    },
+    Chart {
+        name: "Oboe",
+        source: "Woodwind Fingering Guide (wfg.woodwind.org, Timothy Reichard et al.), basic fingering chart for oboe",
+        holes: &[
+            (Key, "octave key I (thumb)"),
+            (Key, "octave key II"),
+            (Front, "LH 1st (half-hole)"),
+            (Front, "LH 2nd"),
+            (Front, "LH 3rd"),
+            (Key, "LH pinky G♯"),
+            (Key, "LH pinky E♭"),
+            (Key, "LH pinky low B"),
+            (Key, "LH pinky low B♭"),
+            (Small, "B trill key"),
+            (Front, "RH 1st"),
+            (Front, "RH 2nd"),
+            (Small, "F key"),
+            (Front, "RH 3rd"),
+            (Key, "RH pinky low C"),
+            (Key, "RH pinky C♯"),
+            (Key, "RH pinky E♭"),
+        ],
+        breaks: &[10],
+        note: "Half-filled LH 1st = half-hole. Third-octave fingerings (C♯6 up) vary a lot between oboes; they're flagged.",
+        trans: &[],
+        fings: &[
+            f(58, "OOCCCOOOCOCCOCCOO"), // Bb3  123Bb|123C
+            f(59, "OOCCCOOCOOCCOCCOO"), // B3  123B|123C
+            f(60, "OOCCCOOOOOCCOCCOO"), // C4  123|123C
+            f(61, "OOCCCOOOOOCCOCOCO"), // C#4  123|123C#
+            f(62, "OOCCCOOOOOCCOCOOO"), // D4  123|123
+            f(63, "OOCCCOOOOOCCOCOOC"), // Eb4  123|123Eb
+            f(64, "OOCCCOOOOOCCOOOOO"), // E4  123|12-
+            f(65, "OOCCCOOOOOCCCOOOO"), // F4  123|12F-
+            f(66, "OOCCCOOOOOCOOOOOO"), // F#4  123|1--
+            f(67, "OOCCCOOOOOOOOOOOO"), // G4  123|---
+            f(68, "OOCCCCOOOOOOOOOOO"), // G#4  123G#|---
+            f(69, "OOCCOOOOOOOOOOOOO"), // A4  12-|---
+            f(70, "OOCCOOOOOOCOOOOOO"), // Bb4  12-|1--
+            f(71, "OOCOOOOOOOOOOOOOO"), // B4  1--|---
+            f(72, "OOCOOOOOOOCOOOOOO"), // C5  1--|1--
+            f(73, "OOHCCOOOOOCCOCOCO"), // C#5  023|123C#
+            f(74, "OOHCCOOOOOCCOCOOO"), // D5  023|123
+            f(75, "OOHCCOOOOOCCOCOOC"), // Eb5  023|123Eb
+            f(76, "COCCCOOOOOCCOOOOO"), // E5  I 123|12-
+            f(77, "COCCCOOOOOCCCOOOO"), // F5  I 123|12F-
+            f(78, "COCCCOOOOOCOOOOOO"), // F#5  I 123|1--
+            f(79, "COCCCOOOOOOOOOOOO"), // G5  I 123|---
+            f(80, "COCCCCOOOOOOOOOOO"), // G#5  I 123G#|---
+            f(81, "OCCCOOOOOOOOOOOOO"), // A5  II 12-|---
+            f(82, "OCCCOOOOOOCOOOOOO"), // Bb5  II 12-|1--
+            f(83, "OCCOOOOOOOOOOOOOO"), // B5  II 1--|---
+            f(84, "OCCOOOOOOOCOOOOOO"), // C6  II 1--|1--
+            q(85, "OOOCCOOOOOCOOOCOO"), // C#6  -23|1--C
+            q(86, "OOHCCOOOOOOOOOCOO"), // D6  023|---C
+            q(87, "OOHCCOOOOCOCOCOOO"), // Eb6  023B|-23
+            q(88, "COHCCCCOOOOCOCOOO"), // E6  I 023G#Eb|-23
+            q(89, "COHCOCCOOOOCOCOOO"), // F6  I 02-G#Eb|-23
+        ],
+    },
+    Chart {
+        name: "Bassoon",
+        source: "Woodwind Fingering Guide (wfg.woodwind.org, Timothy Reichard et al.), basic fingering chart for Heckel-system bassoon",
+        holes: &[
+            (Key, "LH thumb low B♭"),
+            (Key, "LH thumb low B"),
+            (Key, "LH thumb low C"),
+            (Key, "LH thumb low D"),
+            (Key, "whisper key"),
+            (Key, "LH thumb C♯"),
+            (Key, "A flick key"),
+            (Front, "LH 1st (half-hole)"),
+            (Front, "LH 2nd"),
+            (Front, "LH 3rd"),
+            (Key, "LH pinky E♭"),
+            (Key, "LH pinky C♯"),
+            (Key, "RH thumb B♭"),
+            (Key, "RH thumb E"),
+            (Key, "RH thumb F♯"),
+            (Front, "RH 1st"),
+            (Front, "RH 2nd"),
+            (Front, "RH 3rd"),
+            (Key, "RH pinky F"),
+            (Key, "RH pinky G♯"),
+        ],
+        breaks: &[12],
+        note: "Concert pitch (bass clef). Half-filled LH 1st = half-hole (the Guide gives ¼, ½ or ¾ for F♯3, G3, G♯3, G4, G♯4).",
+        trans: &[],
+        fings: &[
+            f(34, "CCCCOOOCCCOOOCOCCCCO"), // Bb1  Bb B C D 123|E 123F
+            f(35, "OCCCOOOCCCOOOCOCCCCO"), // B1  B C D 123|E 123F
+            f(36, "OOCCOOOCCCOOOCOCCCCO"), // C2  C D 123|E 123F
+            f(37, "OOCCOOOCCCOCOCOCCCCO"), // C#2  C D 123C#|E 123F
+            f(38, "OOOCOOOCCCOOOCOCCCCO"), // D2  D 123|E 123F
+            f(39, "OOOCOOOCCCCOOCOCCCCO"), // D#2  D 123Eb|E 123F
+            f(40, "OOOOCOOCCCOOOCOCCCCO"), // E2  W 123|E 123F
+            f(41, "OOOOCOOCCCOOOOOCCCCO"), // F2  W 123|123F
+            f(42, "OOOOCOOCCCOOOOCCCCCO"), // F#2  W 123|F# 123F
+            f(43, "OOOOCOOCCCOOOOOCCCOO"), // G2  W 123|123
+            f(44, "OOOOCOOCCCOOOOOCCCOC"), // G#2  W 123|123G#
+            f(45, "OOOOCOOCCCOOOOOCCOOO"), // A2  W 123|12-
+            f(46, "OOOOCOOCCCOOCOOCCOOO"), // Bb2  W 123|Bb 12-
+            f(47, "OOOOCOOCCCOOOOOCOOOO"), // B2  W 123|1--
+            f(48, "OOOOCOOCCCOOOOOOOOOO"), // C3  W 123|---
+            f(49, "OOOCCCOCCCOOOOOOOOOO"), // C#3  D C# W 123|---
+            f(50, "OOOOCOOCCOOOOOOOOOOO"), // D3  W 12-|---
+            f(51, "OOOOCOOCOCOOOOOOOOOO"), // D#3  W 1-3|---
+            f(52, "OOOOCOOCOOOOOOOOOOOO"), // E3  W 1--|---
+            f(53, "OOOOCOOOOOOOOOOOOOOO"), // F3  W ---|---
+            f(54, "OOOOCOOHCCOOOOCCCCCO"), // F#3  W ¼23|F# 123F
+            f(55, "OOOOCOOHCCCOOOOCCCOO"), // G3  W ½23Eb|123
+            f(56, "OOOOCOOHCCOOOOOCCCOC"), // G#3  W ¾23|123G#
+            f(57, "OOOOOOOCCCOOOOOCCOOO"), // A3  123|12-
+            f(58, "OOOOOOOCCCOOCOOCCOOO"), // Bb3  123|Bb 12-
+            f(59, "OOOOOOOCCCOOOOOCOOOO"), // B3  123|1--
+            f(60, "OOOOOOOCCCOOOOOOOOOO"), // C4  123|---
+            f(61, "OOOCOCOCCCOOOOOOOOOO"), // C#4  D C# 123|---
+            f(62, "OOOOOOOCCOOOOOOOOOOO"), // D4  12-|---
+            f(63, "OOOOOOOCCOOOOOOCCCOO"), // Eb4  12-|123
+            f(64, "OOOOOOOCOCCOOOOCCCOO"), // E4  1-3Eb|123
+            f(65, "OOOOOOOCOCCOOOOCCOOO"), // F4  1-3Eb|12-
+            f(66, "OOOOOOOOCCCOCOOCCOOO"), // F#4  -23Eb|Bb 12-
+            f(67, "OOOOCOOHCCCOOOOCOOCO"), // G4  W ½23Eb|1--F
+            f(68, "OOOOCOOHCCCOOOOOOCOO"), // G#4  W ¾23Eb|--3
+            f(69, "OOOOOCCCCCCOOOOOOCOO"), // A4  a C# 123Eb|--3
+            f(70, "OOOOOCCCCCCOOOOCCOCO"), // Bb4  a C# 123Eb|12-F
+        ],
+    },
 ];
 
 /// Parsed states (0 open, 1 closed, 2 half) for a chart entry.
@@ -534,6 +733,17 @@ pub fn chart_for_sound(name: &str) -> Option<(usize, usize)> {
         let t = if n.contains(" c ") || n.ends_with(" c") { 1 } else { 0 };
         return Some((c, t));
     }
+    if n.contains("clarinet") {
+        let c = find("Clarinet")?;
+        let t = if n.contains("bass") { trans(c, "bass") } else if n.contains("e♭") || n.contains("eb ") { trans(c, "e♭") } else { 0 };
+        return Some((c, t));
+    }
+    if n.contains("oboe") {
+        return find("Oboe").map(|c| (c, 0));
+    }
+    if n.contains("bassoon") && !n.contains("contra") {
+        return find("Bassoon").map(|c| (c, 0));
+    }
     if n.contains("sax") {
         let c = find("Saxophone")?;
         let t = ["alto", "tenor", "soprano", "bari"].iter().find(|w| n.contains(*w)).map(|w| trans(c, w)).unwrap_or(0);
@@ -588,6 +798,21 @@ mod tests {
         assert_eq!(parse(lookup(tp, 62, false, 0).unwrap().0.states), vec![1, 0, 1]);
         assert_eq!(lookup(tp, 60, false, -2).unwrap().0.midi, 62);
         assert_eq!(chart_for_sound("Trumpet (vibrato)").map(|x| CHARTS[x.0].name), Some("Trumpet"));
+        // clarinet: B♭ clarinet, concert C5 = written D5 = register + thumb + all six
+        let cl = CHARTS.iter().find(|c| c.name.starts_with("Clarinet")).unwrap();
+        let st = parse(lookup(cl, 72, false, -2).unwrap().0.states);
+        assert_eq!(st[0..2], [1, 1]);
+        assert_eq!([st[4], st[5], st[6], st[12], st[13], st[14]], [1; 6]);
+        // open G
+        assert!(parse(lookup(cl, 67, false, 0).unwrap().0.states).iter().all(|x| *x == 0));
+        // oboe D5 = half-hole
+        let ob = CHARTS.iter().find(|c| c.name == "Oboe").unwrap();
+        assert_eq!(parse(lookup(ob, 74, false, 0).unwrap().0.states)[2], 2);
+        // bassoon low B♭ = all four left-thumb low keys
+        let bn = CHARTS.iter().find(|c| c.name == "Bassoon").unwrap();
+        assert_eq!(parse(lookup(bn, 34, false, 0).unwrap().0.states)[0..4], [1, 1, 1, 1]);
+        assert_eq!(chart_for_sound("Clarinet").map(|x| x.0), Some(CHARTS.iter().position(|c| c.name.starts_with("Clarinet")).unwrap()));
+        assert_eq!(chart_for_sound("Bassoon").map(|x| CHARTS[x.0].name), Some("Bassoon"));
         assert_eq!(chart_for_sound("Bagpipe in G (with drones)").map(|x| x.0), Some(0));
     }
 }

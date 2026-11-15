@@ -416,6 +416,8 @@ enum Shp {
     End,
     /// trumpet valve
     Valve,
+    /// small key with its name written inside (crowded clusters)
+    Tag,
 }
 
 /// A key or hole on a chart diagram: centre (fraction of box width / height),
@@ -488,6 +490,82 @@ fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, V
             sp(0.84, 0.90, 0.13, 0.08, Key, "C"),
         ];
         return (0.5, v, vec![0.48], vec![]);
+    }
+    if chart.name.starts_with("Clarinet") {
+        // clarinet chart: register key + thumb hole left, A and G♯ keys at the top right,
+        // LH 1-2-3, the LH pinky cluster, side E♭ key, RH 1-2-3 with the B sliver, RH pinky cluster
+        let v = vec![
+            sp(0.18, 0.05, 0.14, 0.08, Tag, "R"),
+            sp(0.24, 0.13, 0.15, 0.15, Hole, "T"),
+            sp(0.82, 0.04, 0.13, 0.07, Tag, "A"),
+            sp(0.82, 0.11, 0.13, 0.07, Tag, "G♯"),
+            sp(0.56, 0.10, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.20, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.30, 0.18, 0.18, Hole, ""),
+            sp(0.16, 0.34, 0.13, 0.07, Tag, "E"),
+            sp(0.30, 0.34, 0.13, 0.07, Tag, "F"),
+            sp(0.16, 0.41, 0.13, 0.07, Tag, "F♯"),
+            sp(0.30, 0.41, 0.13, 0.07, Tag, "C♯"),
+            sp(0.84, 0.52, 0.13, 0.07, Tag, "E♭"),
+            sp(0.56, 0.56, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.66, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.76, 0.18, 0.18, Hole, ""),
+            sp(0.76, 0.71, 0.07, 0.07, Dot, "B"),
+            sp(0.70, 0.86, 0.13, 0.07, Tag, "E"),
+            sp(0.84, 0.86, 0.13, 0.07, Tag, "F"),
+            sp(0.70, 0.93, 0.13, 0.07, Tag, "F♯"),
+            sp(0.84, 0.93, 0.13, 0.07, Tag, "G♯"),
+        ];
+        return (0.5, v, vec![0.48], vec![]);
+    }
+    if chart.name.starts_with("Oboe") {
+        let v = vec![
+            sp(0.20, 0.05, 0.14, 0.08, Tag, "I"),
+            sp(0.82, 0.05, 0.14, 0.08, Tag, "II"),
+            sp(0.56, 0.12, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.22, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.32, 0.18, 0.18, Hole, ""),
+            sp(0.18, 0.33, 0.13, 0.07, Tag, "G♯"),
+            sp(0.18, 0.40, 0.13, 0.07, Tag, "E♭"),
+            sp(0.32, 0.37, 0.13, 0.07, Tag, "B"),
+            sp(0.32, 0.44, 0.13, 0.07, Tag, "B♭"),
+            sp(0.74, 0.17, 0.07, 0.07, Dot, "B"),
+            sp(0.56, 0.57, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.67, 0.18, 0.18, Hole, ""),
+            sp(0.74, 0.72, 0.07, 0.07, Dot, "F"),
+            sp(0.56, 0.77, 0.18, 0.18, Hole, ""),
+            sp(0.72, 0.88, 0.13, 0.07, Tag, "C"),
+            sp(0.72, 0.95, 0.13, 0.07, Tag, "C♯"),
+            sp(0.86, 0.915, 0.13, 0.07, Tag, "E♭"),
+        ];
+        return (0.5, v, vec![0.49], vec![]);
+    }
+    if chart.name.starts_with("Bassoon") {
+        // bassoon: the left-thumb cluster (low B♭ B C D, whisper, C♯, A flick) and right-thumb keys
+        // sit on the side of the instrument, so they're drawn to the left of the finger holes
+        let v = vec![
+            sp(0.15, 0.04, 0.14, 0.065, Tag, "B♭"),
+            sp(0.15, 0.105, 0.14, 0.065, Tag, "B"),
+            sp(0.15, 0.17, 0.14, 0.065, Tag, "C"),
+            sp(0.15, 0.235, 0.14, 0.065, Tag, "D"),
+            sp(0.31, 0.27, 0.14, 0.07, Tag, "W"),
+            sp(0.31, 0.06, 0.14, 0.065, Tag, "C♯"),
+            sp(0.31, 0.125, 0.14, 0.065, Tag, "a"),
+            sp(0.62, 0.10, 0.18, 0.18, Hole, ""),
+            sp(0.62, 0.20, 0.18, 0.18, Hole, ""),
+            sp(0.62, 0.30, 0.18, 0.18, Hole, ""),
+            sp(0.86, 0.29, 0.13, 0.065, Tag, "E♭"),
+            sp(0.86, 0.36, 0.13, 0.065, Tag, "C♯"),
+            sp(0.20, 0.57, 0.14, 0.065, Tag, "B♭"),
+            sp(0.20, 0.64, 0.14, 0.065, Tag, "E"),
+            sp(0.20, 0.71, 0.14, 0.065, Tag, "F♯"),
+            sp(0.62, 0.56, 0.18, 0.18, Hole, ""),
+            sp(0.62, 0.66, 0.18, 0.18, Hole, ""),
+            sp(0.62, 0.76, 0.18, 0.18, Hole, ""),
+            sp(0.84, 0.87, 0.13, 0.065, Tag, "F"),
+            sp(0.84, 0.94, 0.13, 0.065, Tag, "G♯"),
+        ];
+        return (0.5, v, vec![0.46], vec![]);
     }
     if chart.name.starts_with("Trumpet") {
         let v = vec![sp(0.2, 0.42, 0.22, 0.22, Valve, "1"), sp(0.5, 0.42, 0.22, 0.22, Valve, "2"), sp(0.8, 0.42, 0.22, 0.22, Valve, "3")];
@@ -615,6 +693,14 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
                     p.circle_stroke(cc, rad, stroke);
                 }
             }
+            Shp::Tag => {
+                let rr = Rect::from_center_size(c, Vec2::new(w, h));
+                let round = w.min(h) / 2.0;
+                p.rect_filled(rr, round, fill);
+                p.rect_stroke(rr, round, stroke, eframe::egui::StrokeKind::Middle);
+                let fs = (h * 0.72).clamp(6.0, 16.0);
+                p.text(c, Align2::CENTER_CENTER, s.label, FontId::proportional(fs), if on { paper } else { ink_c.gamma_multiply(0.75) });
+            }
             Shp::Key | Shp::Lever | Shp::End => {
                 let rr = Rect::from_center_size(c, Vec2::new(w, h));
                 let round = w.min(h) / 2.0;
@@ -627,7 +713,7 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
             let rr = Rect::from_center_size(c, Vec2::new(w, h)).expand(2.5);
             p.rect_stroke(rr, w.min(h) / 2.0 + 2.5, Stroke::new((1.6 * u).min(3.0), accent), eframe::egui::StrokeKind::Outside);
         }
-        if !s.label.is_empty() && s.shape != Shp::Valve && bw > 80.0 {
+        if !s.label.is_empty() && s.shape != Shp::Valve && s.shape != Shp::Tag && bw > 80.0 {
             if s.shape == Shp::Lever && s.h > s.w {
                 // upright levers: name underneath
                 p.text(c + Vec2::new(0.0, h / 2.0 + 2.0), Align2::CENTER_TOP, s.label, small.clone(), ink_c.gamma_multiply(if on { 1.0 } else { 0.5 }));
