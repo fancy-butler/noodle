@@ -519,8 +519,7 @@ fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, V
         return (0.5, v, vec![0.48], vec![]);
     }
     if chart.name.starts_with("Ocarina") {
-        let v = OC_HOLES.iter().zip(["L thumb", "L1", "L2", "L3", "L4", "R thumb", "R1", "R2", "R3", "R4", "L sub", "R sub"]).map(|((x, y, r), l)| Spot { x: *x, y: *y, w: r * 2.0, h: r * 2.0, shape: Hole, label: l }).collect();
-        return (OC_ASPECT, v, vec![], vec![]);
+        return (OC_ASPECT, oc_spots(), vec![], vec![]);
     }
     if chart.name.starts_with("Oboe") {
         let v = vec![
@@ -621,100 +620,128 @@ fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, V
     (0.42, v, dividers, hands)
 }
 
-/// Hole positions on the ocarina picture (box units: x 0..1 across, y 0..1 down; box is 1.9:1),
-/// in the chart's order: Lt, L1-L4, Rt, R1-R4, L subhole, R subhole. Radii are in box-width units.
-const OC_HOLES: [(f32, f32, f32); 12] = [
-    (0.41, 0.80, 0.034), // left thumb (underneath)
-    (0.47, 0.31, 0.036), // L index
-    (0.37, 0.26, 0.036), // L middle
-    (0.27, 0.33, 0.034), // L ring
-    (0.18, 0.49, 0.022), // L pinky
-    (0.62, 0.80, 0.034), // right thumb (underneath)
-    (0.585, 0.33, 0.036),
-    (0.685, 0.28, 0.036),
-    (0.785, 0.35, 0.034),
-    (0.865, 0.51, 0.022), // R pinky
-    (0.39, 0.15, 0.016), // L subhole
-    (0.70, 0.165, 0.016), // R subhole
+/// The usual 12-hole transverse ("sweet potato") ocarina seen from above, traced from a
+/// photo: mouthpiece hanging off the lower left, tail pointing right. Pixel coordinates of an
+/// 800×533 photo; `oc_pt` maps them into the picture box.
+const OC_OUTLINE: [(f32, f32); 41] = [
+    (14.0, 150.0), (22.0, 108.0), (45.0, 82.0), (80.0, 68.0), (130.0, 62.0), (200.0, 64.0), (300.0, 72.0), (400.0, 88.0),
+    (480.0, 105.0), (560.0, 135.0), (640.0, 175.0), (710.0, 220.0), (760.0, 260.0), (790.0, 295.0), (792.0, 312.0), (778.0, 325.0),
+    (740.0, 333.0), (680.0, 338.0), (600.0, 345.0), (520.0, 352.0), (440.0, 362.0), (360.0, 372.0), (290.0, 382.0), (240.0, 392.0),
+    (215.0, 405.0), (185.0, 440.0), (165.0, 478.0), (152.0, 505.0), (135.0, 518.0), (110.0, 515.0), (95.0, 495.0), (93.0, 465.0),
+    (100.0, 430.0), (108.0, 395.0), (100.0, 355.0), (75.0, 320.0), (45.0, 280.0), (25.0, 235.0), (14.0, 195.0), (12.0, 172.0), (13.0, 160.0),
 ];
-pub const OC_ASPECT: f32 = 1.9;
+/// Top holes, same photo, in the chart's order (Lt, L1-L4, Rt, R1-R4, L subhole, R subhole): (x, y, radius) in pixels.
+/// The thumb entries are placeholders: thumbs are drawn on the underside view.
+const OC_HOLES_PX: [(f32, f32, f32); 12] = [
+    (0.0, 0.0, 0.0),
+    (393.0, 141.0, 23.0), // L index
+    (272.0, 157.0, 26.0), // L middle
+    (165.0, 138.0, 27.0), // L ring
+    (82.0, 115.0, 23.0),  // L pinky
+    (0.0, 0.0, 0.0),
+    (385.0, 253.0, 23.0), // R index
+    (493.0, 220.0, 13.0), // R middle
+    (606.0, 238.0, 17.0), // R ring
+    (691.0, 262.0, 12.0), // R pinky
+    (162.0, 197.0, 8.0),  // L subhole
+    (500.0, 180.0, 9.0),  // R subhole
+];
+/// Thumb holes on the underside (same pixel space, as if seen through the instrument).
+const OC_THUMBS_PX: [(f32, f32, f32); 2] = [(330.0, 250.0, 26.0), (470.0, 290.0, 26.0)];
+pub const OC_ASPECT: f32 = 785.0 / 455.0;
 
-/// A transverse 12-hole ocarina seen from above, holes filled when covered.
-/// Thumb holes are underneath, so they're drawn as dashed rings with a "thumb" tag.
+fn oc_pt(bx: Rect, x: f32, y: f32) -> Pos2 {
+    Pos2::new(bx.left() + (x - 10.0) / 785.0 * bx.width(), bx.top() + (y - 60.0) / 455.0 * bx.height())
+}
+
+/// Hole positions as layout spots (for captions / anything that wants the chart_layout shape).
+fn oc_spots() -> Vec<Spot> {
+    let labels = ["L thumb", "L1", "L2", "L3", "L4", "R thumb", "R1", "R2", "R3", "R4", "L sub", "R sub"];
+    (0..12)
+        .map(|i| {
+            let (x, y, r) = if i == 0 { OC_THUMBS_PX[0] } else if i == 5 { OC_THUMBS_PX[1] } else { OC_HOLES_PX[i] };
+            Spot { x: (x - 10.0) / 785.0, y: (y - 60.0) / 455.0, w: r * 2.0 / 785.0, h: r * 2.0 / 785.0, shape: Shp::Hole, label: labels[i] }
+        })
+        .collect()
+}
+
+/// One silhouette of the body, filled as a fan from a point inside it.
+fn oc_body(p: &Painter, bx: Rect, fill: Color32, rim: Stroke, shadow: Option<Color32>) {
+    let pts: Vec<Pos2> = OC_OUTLINE.iter().map(|(x, y)| oc_pt(bx, *x, *y)).collect();
+    let fan = |pts: &[Pos2], col: Color32| {
+        let mut m = eframe::egui::epaint::Mesh::default();
+        let c = oc_pt(bx, 250.0, 250.0);
+        let shift = pts[0] - oc_pt(bx, OC_OUTLINE[0].0, OC_OUTLINE[0].1);
+        m.colored_vertex(c + shift, col);
+        for q in pts {
+            m.colored_vertex(*q, col);
+        }
+        let n = pts.len() as u32;
+        for k in 0..n {
+            m.add_triangle(0, 1 + k, 1 + (k + 1) % n);
+        }
+        p.add(Shape::mesh(m));
+    };
+    if let Some(sh) = shadow {
+        let off = Vec2::new(0.0, bx.height() * 0.035);
+        let sp: Vec<Pos2> = pts.iter().map(|q| *q + off).collect();
+        fan(&sp, sh);
+    }
+    fan(&pts, fill);
+    p.add(Shape::closed_line(pts, rim));
+}
+
+/// A 12-hole ocarina from above with its covered holes filled, plus a small underside view
+/// in the empty corner under the tail showing the two thumb holes.
 pub fn draw_ocarina(p: &Painter, area: Rect, states: Option<&[u8]>, a: f32, glaze: Color32) -> Rect {
-    let (bw, bh) = if area.width() / area.height() > OC_ASPECT { (area.height() * OC_ASPECT, area.height()) } else { (area.width(), area.width() / OC_ASPECT) };
-    let bx = Rect::from_center_size(area.center(), Vec2::new(bw, bh));
-    let at = |x: f32, y: f32| Pos2::new(bx.left() + x * bw, bx.top() + y * bh);
+    // the whole picture is the top view plus the underside view hanging below the tail
+    const EXTRA: f32 = 1.22;
+    let asp = OC_ASPECT / EXTRA;
+    let (bw, th) = if area.width() / area.height() > asp { (area.height() * asp, area.height()) } else { (area.width(), area.width() / asp) };
+    let bh = th / EXTRA;
+    let whole = Rect::from_center_size(area.center(), Vec2::new(bw, th));
+    let bx = Rect::from_min_size(whole.min, Vec2::new(bw, bh));
     let glaze = glaze.gamma_multiply(a);
     let dark = Color32::from_rgb(glaze.r() / 3, glaze.g() / 3, glaze.b() / 3).gamma_multiply(a);
-    // body: a sweet-potato egg, fuller on the mouthpiece side, tapering to the tail
-    let body: Vec<Pos2> = (0..64)
-        .map(|k| {
-            let t = k as f32 / 64.0 * std::f32::consts::TAU;
-            let (c, sn) = (t.cos(), t.sin());
-            let rx = 0.44;
-            let ry = 0.36 * (1.0 - 0.30 * c.max(0.0)) * (1.0 + 0.05 * (-c).max(0.0));
-            at(0.53 + rx * c, 0.45 + ry * sn)
-        })
-        .collect();
-    // mouthpiece: a tube from the lower left of the body toward the player, drawn first
-    // so the body sits on top of where it joins
-    let mp = [at(0.15, 0.60), at(0.27, 0.70), at(0.105, 0.955), at(0.045, 0.915)];
-    let shadow_mp: Vec<Pos2> = mp.iter().map(|q| *q + Vec2::new(0.0, bh * 0.03)).collect();
-    p.add(Shape::convex_polygon(shadow_mp, Color32::from_black_alpha((90.0 * a) as u8), Stroke::NONE));
-    p.add(Shape::convex_polygon(mp.to_vec(), glaze, Stroke::new(2.0, dark)));
-    // rounded tip with the windway slit
-    p.circle_filled(at(0.075, 0.935), bh * 0.055, glaze);
-    p.circle_stroke(at(0.075, 0.935), bh * 0.055, Stroke::new(2.0, dark));
-    p.line_segment([at(0.055, 0.935), at(0.095, 0.935)], Stroke::new((bh * 0.014).max(1.5), dark));
-    // drop shadow (reads as the body's thickness), body, rim
-    let shadow: Vec<Pos2> = body.iter().map(|q| *q + Vec2::new(0.0, bh * 0.035)).collect();
-    p.add(Shape::convex_polygon(shadow, dark, Stroke::NONE));
-    p.add(Shape::convex_polygon(body.clone(), glaze, Stroke::new(2.0, dark)));
-    // the voicing window (labium) where the sound comes out
-    let lab = Rect::from_center_size(at(0.22, 0.66), Vec2::new(bw * 0.06, bh * 0.06));
-    p.rect_filled(lab, bw * 0.01, dark);
-    // glossy highlight
-    let hl: Vec<Pos2> = (0..24)
-        .map(|k| {
-            let t = k as f32 / 24.0 * std::f32::consts::TAU;
-            at(0.55 + 0.22 * t.cos(), 0.17 + 0.04 * t.sin())
-        })
-        .collect();
-    p.add(Shape::convex_polygon(hl, Color32::from_white_alpha((40.0 * a) as u8), Stroke::NONE));
-    // holes
     let paper = Color32::from_rgb(0xf7, 0xf2, 0xe6).gamma_multiply(a);
-    let ink = Color32::from_rgb(0x14, 0x12, 0x10).gamma_multiply(a);
+    let pit = Color32::from_rgb(0x12, 0x0e, 0x0c).gamma_multiply(a);
     let finger = Color32::from_rgb(0xf3, 0xc0, 0x9a).gamma_multiply(a);
-    for (i, (x, y, r)) in OC_HOLES.iter().enumerate() {
-        let c = at(*x, *y);
-        let rad = r * bw;
-        let st = states.and_then(|v| v.get(i)).copied().unwrap_or(0);
-        let thumb = i == 0 || i == 5;
-        if thumb {
-            // underneath: dashed ring, filled with a fingertip colour when covered
-            if st == 1 {
-                p.circle_filled(c, rad, finger);
-            }
-            for k in 0..14 {
-                let a0 = k as f32 / 14.0 * std::f32::consts::TAU;
-                p.line_segment([c + Vec2::angled(a0) * rad, c + Vec2::angled(a0 + 0.25) * rad], Stroke::new((rad * 0.14).max(1.2), paper));
-            }
-            if bh > 110.0 {
-                p.text(c + Vec2::new(0.0, rad + bh * 0.02), Align2::CENTER_TOP, if i == 0 { "L thumb" } else { "R thumb" }, FontId::proportional((bh * 0.045).clamp(8.0, 18.0)), paper.gamma_multiply(0.8));
-            }
-            continue;
-        }
-        // open hole = dark pit with a light lip; covered = fingertip pad; half = half pad
-        p.circle_filled(c, rad * 1.18, paper.gamma_multiply(0.85));
-        p.circle_filled(c, rad, ink);
-        if st == 1 {
-            p.circle_filled(c, rad * 1.12, finger);
-            p.circle_stroke(c, rad * 1.12, Stroke::new((rad * 0.12).max(1.0), Color32::from_rgb(0xa8, 0x6c, 0x4a).gamma_multiply(a)));
-        } else if st == 2 {
-            let pts: Vec<Pos2> = (0..=16).map(|k| { let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI; c + Vec2::new(t.cos(), t.sin()) * rad * 1.12 }).collect();
+    let pad_rim = Stroke::new((bw * 0.003).max(1.0), Color32::from_rgb(0xa8, 0x6c, 0x4a).gamma_multiply(a));
+    let st = |i: usize| states.and_then(|v| v.get(i)).copied().unwrap_or(0);
+    let hole = |c: Pos2, rad: f32, s: u8| {
+        p.circle_filled(c, rad, pit);
+        p.circle_stroke(c, rad, Stroke::new((rad * 0.12).max(1.0), dark));
+        if s == 1 {
+            p.circle_filled(c, rad * 1.15, finger);
+            p.circle_stroke(c, rad * 1.15, pad_rim);
+        } else if s == 2 {
+            let pts: Vec<Pos2> = (0..=16).map(|k| { let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI; c + Vec2::new(t.cos(), t.sin()) * rad * 1.15 }).collect();
             p.add(Shape::convex_polygon(pts, finger, Stroke::NONE));
         }
+    };
+    let k = bw / 785.0;
+    // underside view first, tucked under the tail
+    let ub = Rect::from_min_size(Pos2::new(bx.left() + bw * 0.52, bx.top() + bh * 0.78), Vec2::new(bw * 0.44, bh * 0.44));
+    oc_body(p, ub, glaze.gamma_multiply(0.75), Stroke::new(1.5, dark), None);
+    for (j, (x, y, r)) in OC_THUMBS_PX.iter().enumerate() {
+        hole(oc_pt(ub, *x, *y), r * ub.width() / 785.0, st(if j == 0 { 0 } else { 5 }));
+    }
+    let fs = (bh * 0.045).clamp(9.0, 18.0);
+    p.text(oc_pt(ub, 20.0, 330.0), Align2::RIGHT_CENTER, "underneath:\nthumb holes", FontId::proportional(fs), paper.gamma_multiply(0.75));
+    if bh > 110.0 {
+        p.text(oc_pt(ub, 330.0, 250.0) - Vec2::new(0.0, 26.0 * ub.width() / 785.0 + fs * 0.2), Align2::CENTER_BOTTOM, "L", FontId::proportional(fs), paper.gamma_multiply(0.8));
+        p.text(oc_pt(ub, 470.0, 290.0) - Vec2::new(0.0, 26.0 * ub.width() / 785.0 + fs * 0.2), Align2::CENTER_BOTTOM, "R", FontId::proportional(fs), paper.gamma_multiply(0.8));
+    }
+    // top view
+    oc_body(p, bx, glaze, Stroke::new(2.0, dark), Some(dark));
+    // windway at the mouthpiece tip
+    p.line_segment([oc_pt(bx, 105.0, 505.0), oc_pt(bx, 140.0, 508.0)], Stroke::new((k * 6.0).max(1.5), dark));
+    // glossy highlight along the top
+    let hl: Vec<Pos2> = (0..24).map(|t| { let t = t as f32 / 24.0 * std::f32::consts::TAU; oc_pt(bx, 330.0 + 200.0 * t.cos(), 100.0 + 14.0 * t.sin()) }).collect();
+    p.add(Shape::convex_polygon(hl, Color32::from_white_alpha((34.0 * a) as u8), Stroke::NONE));
+    for i in [1usize, 2, 3, 4, 6, 7, 8, 9, 10, 11] {
+        let (x, y, r) = OC_HOLES_PX[i];
+        hole(oc_pt(bx, x, y), r * k, st(i));
     }
     bx
 }

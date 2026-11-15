@@ -114,7 +114,7 @@ impl App {
         p.text(Pos2::new(big.center().x, big.top() + 10.0), Align2::CENTER_TOP, title, FontId::proportional(name_h * 0.8), if now_q { YOURS } else { fg() });
         let pic = Rect::from_min_max(Pos2::new(big.left() + 30.0, big.top() + name_h + 20.0), Pos2::new(big.right() - 30.0, big.bottom() - 40.0));
         crate::pipe_art::draw_ocarina(&p, pic, now_st.as_deref(), 1.0, glaze);
-        let foot = if now_q { "? = Pure Ocarinas' two charts disagree on this one — check it on yours" } else { "Subholes: slide the middle finger forward over both holes  ·  half-filled = half-cover  ·  dashed = thumb holes underneath" };
+        let foot = if now_q { "? = Pure Ocarinas' two charts disagree on this one — check it on yours" } else { "Subholes: slide the middle finger forward over both holes  ·  half-filled = half-cover  ·  small view = the underside, where your thumbs go" };
         p.text(Pos2::new(big.center().x, big.bottom() - 16.0), Align2::CENTER_CENTER, foot, FontId::proportional(12.0), text_dim());
         // next
         if next_key.is_some() {
