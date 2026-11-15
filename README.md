@@ -72,6 +72,10 @@ sudo dnf install fluid-soundfont-gm     # Fedora
 
 Extra sound banks go in `~/.local/share/noodle/soundfonts` (Windows: `%APPDATA%\noodle\soundfonts`, macOS: `~/Library/Application Support/noodle/soundfonts`), and songs go in `…/noodle/songs`. Noodle also looks in your Music, Downloads and MuseScore score folders.
 
+## Releases
+
+Every version bump pushed to main publishes itself: the build makes release `v<version>` with the Linux .tar.gz, Windows .zip and Mac .dmg attached. Downloads: https://github.com/fancy-butler/noodle/releases/latest
+
 ## Build
 
 ```sh
