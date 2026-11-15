@@ -54,6 +54,8 @@ pub struct Settings {
     pub kb_size: u8,
     pub kb_lo: u8,
     pub kb_follow: bool,
+    /// true: play only the notes the instrument (its fingering chart) really has
+    pub real_range: bool,
     pub layout: u8,     // 0 classic, 1 MiniLab 3
     pub controller: u8, // 0 auto-detect, 1 off, 2 MiniLab 3
     pub score_dark: bool,
@@ -170,6 +172,7 @@ impl Default for Settings {
             kb_size: 88,
             kb_lo: 21,
             kb_follow: true,
+            real_range: false,
             layout: 0,
             controller: 0,
             score_dark: false,

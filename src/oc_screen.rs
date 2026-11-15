@@ -42,7 +42,7 @@ impl App {
         self.oc_mode = true;
         self.oc_prev = Some(self.s.main);
         self.oc_prev_oct = self.s.kb_octave;
-        self.s.fing_any = true;
+        self.s.fing_any = !self.s.real_range;
         // the recorded ocarina if it's there, otherwise the General MIDI one (the header offers the download)
         let rec = crate::packs::better_for_gm(79).filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
         match rec {
@@ -94,7 +94,8 @@ impl App {
                 let base = ((self.s.kb_octave + 1) * 12) as u8;
                 ui.label(RichText::new(format!("Plays {}–{}  ·  lowest = every hole covered  ·  computer key A = {}", theory::note_name_oct(lo), theory::note_name_oct(hi), theory::note_name_oct(base))).size(12.5).color(fg()));
             }
-            ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the ocarina's range show the same note in its range");
+            ui.separator();
+            self.range_switch(ui);
             ui.separator();
             ui.label(RichText::new("Glaze").size(12.0).color(text_dim()));
             for (i, (n, c)) in GLAZES.iter().enumerate() {

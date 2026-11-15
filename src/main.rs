@@ -311,6 +311,31 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if (p.cutoff.get() - 32.0 / 127.0).abs() > 0.01 || p.master.get() < 0.99 || browse != 1 || pad != 1 {
         fails.push("controller mapping".into());
     }
+    // real range mode: an ocarina-range instrument refuses C4 and plays C5
+    p.range_lo.store(69, Relaxed);
+    p.range_hi.store(89, Relaxed);
+    while urx.try_recv().is_ok() {}
+    tx.send(Cmd::Midi([0x90, 60, 100])).unwrap();
+    tx.send(Cmd::Midi([0x90, 72, 100])).unwrap();
+    render(0.05, "real range", &mut eng);
+    tx.send(Cmd::Midi([0x80, 60, 0])).unwrap();
+    tx.send(Cmd::Midi([0x80, 72, 0])).unwrap();
+    render(0.05, "real range off", &mut eng);
+    p.range_lo.store(0, Relaxed);
+    p.range_hi.store(127, Relaxed);
+    let (mut refused, mut played60, mut played72) = (false, false, false);
+    while let Ok(e) = urx.try_recv() {
+        match e {
+            UiEvt::OutOfRange(60) => refused = true,
+            UiEvt::Note { key: 60, vel, .. } if vel > 0 => played60 = true,
+            UiEvt::Note { key: 72, vel, .. } if vel > 0 => played72 = true,
+            _ => {}
+        }
+    }
+    println!("  real range: C4 refused {refused}, C4 played {played60}, C5 played {played72}");
+    if !refused || played60 || !played72 {
+        fails.push("real range mode".into());
+    }
     // the same knob must still work in accordion mode
     p.acc_on.store(true, Relaxed);
     tx.send(Cmd::Midi([0xB0, 74, 100])).unwrap();

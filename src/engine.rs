@@ -122,6 +122,8 @@ pub struct Params {
     pub delay_fb: AF32,
     pub delay_time: AtomicU8,
     pub cutoff: AF32,
+    /// loudest output sample (before the soft clipper) since the UI last looked
+    pub out_peak: AF32,
     pub resonance: AF32,
     pub drive: AF32,
     pub bpm: AF32,
@@ -205,6 +207,9 @@ pub struct Params {
     pub pipe_mode: AtomicBool,
     /// accordion mode: keyboard notes go to the accordion's treble
     pub acc_on: AtomicBool,
+    /// "real range" mode: live notes outside range_lo..=range_hi (sounding pitch) are refused
+    pub range_lo: AtomicU8,
+    pub range_hi: AtomicU8,
     pub pipe_tonic: AtomicU8,
     pub pipe_just: AtomicBool,
     pub pipe_tune: AtomicI32, // cents
@@ -229,6 +234,7 @@ impl Params {
             delay_fb: AF32::new(0.35),
             delay_time: AtomicU8::new(3),
             cutoff: AF32::new(1.0),
+            out_peak: AF32::new(0.0),
             resonance: AF32::new(0.1),
             drive: AF32::new(0.0),
             bpm: AF32::new(110.0),
@@ -298,6 +304,8 @@ impl Params {
             drone_tone: AtomicU8::new(0),
             pipe_mode: AtomicBool::new(false),
             acc_on: AtomicBool::new(false),
+            range_lo: AtomicU8::new(0),
+            range_hi: AtomicU8::new(127),
             pipe_tonic: AtomicU8::new(69),
             pipe_just: AtomicBool::new(true),
             pipe_tune: AtomicI32::new(0),
@@ -355,6 +363,8 @@ pub enum UiEvt {
     /// relative encoder: browse sounds / categories
     Browse(i8),
     Category(i8),
+    /// a live note the instrument can't play (real range mode)
+    OutOfRange(u8),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -779,6 +789,11 @@ impl Engine {
         }
         let t = (k as i32 + self.p.transpose.load(Relaxed)).clamp(0, 127);
         let s = self.snap(t) as u8;
+        if s < self.p.range_lo.load(Relaxed) || s > self.p.range_hi.load(Relaxed) {
+            self.sounded_for[k as usize] = -1;
+            let _ = self.tx.try_send(UiEvt::OutOfRange(s));
+            return;
+        }
         self.sounded_for[k as usize] = s as i16;
         self.vis(s, vel, src::LIVE);
         if self.p.pipe_mode.load(Relaxed) {
@@ -2063,6 +2078,7 @@ impl Engine {
             let dbeats = DELAY_TIMES[(self.p.delay_time.load(Relaxed) as usize).min(DELAY_TIMES.len() - 1)].1;
             let dlen = self.dl.len();
             let dsamp = ((dbeats / bps) as usize).clamp(1, dlen - 1);
+            let mut blk_peak = 0f32;
 
             for i in 0..len {
                 let mut x = [self.bl[i], self.br[i]];
@@ -2093,10 +2109,16 @@ impl Engine {
                 self.dr[self.dpos] = rl * dfb;
                 self.dpos = (self.dpos + 1) % dlen;
                 // rustysynth runs at ~-6 dB; make up 2x, then a soft knee so big chords don't crackle
-                let l = soft_clip((x[0] + rl * dmix) * master * 2.0);
-                let r = soft_clip((x[1] + rr * dmix) * master * 2.0);
+                let pre_l = (x[0] + rl * dmix) * master * 2.0;
+                let pre_r = (x[1] + rr * dmix) * master * 2.0;
+                blk_peak = blk_peak.max(pre_l.abs()).max(pre_r.abs());
+                let l = soft_clip(pre_l);
+                let r = soft_clip(pre_r);
                 out_l[done + i] = l;
                 out_r[done + i] = r;
+            }
+            if blk_peak > self.p.out_peak.get() {
+                self.p.out_peak.set(blk_peak);
             }
             done += len;
         }

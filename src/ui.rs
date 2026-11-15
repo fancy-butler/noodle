@@ -190,6 +190,11 @@ pub struct App {
     oc_prev: Option<(i32, i32)>,
     oc_prev_oct: i32,
     oc_tr_seen: usize,
+    /// the instrument's real range (sounding), when it's shown/enforced
+    inst_range: Option<(u8, u8)>,
+    range_chart: Option<usize>,
+    meter: f32,
+    meter_hot: f64,
     acc: Option<acc_screen::AccState>,
     acc_events: Vec<egui::Event>,
     game: Option<Game>,
@@ -521,6 +526,10 @@ impl App {
             oc_prev: None,
             oc_prev_oct: 4,
             oc_tr_seen: 0,
+            inst_range: None,
+            range_chart: None,
+            meter: 0.0,
+            meter_hot: -10.0,
             acc: None,
             acc_events: Vec::new(),
             game: None,
@@ -821,7 +830,7 @@ impl App {
                 return (lo.min(103), hi.min(127));
             }
         }
-        if let Some((lo, hi)) = self.oc_range() {
+        if let Some((lo, hi)) = self.inst_range {
             return ((lo / 12) * 12, ((hi / 12) * 12 + 12).min(127));
         }
         let size = self.s.kb_size.clamp(12, 88);
@@ -1048,6 +1057,7 @@ impl App {
                     self.cc_seen[cc as usize] = now;
                 }
                 UiEvt::Bend(v) => self.bend = v,
+                UiEvt::OutOfRange(k) => self.wrong[k as usize] = now,
                 UiEvt::Pad { note, vel } => {
                     if vel > 0 && (36..44).contains(&note) {
                         self.pad_hit[(note - 36) as usize] = now;
@@ -1599,6 +1609,26 @@ impl App {
                 if ui.button(icon).on_hover_text(format!("{tip}  (F3)")).clicked() {
                     self.s.theme = (self.s.theme + 1) % 3;
                 }
+                // output level: shows whether Noodle itself is hitting its limiter
+                let pk = self.p.out_peak.get();
+                self.p.out_peak.set(0.0);
+                let now = now_s(&self.t0);
+                self.meter = (self.meter * 0.9).max(pk);
+                if pk >= 0.85 {
+                    self.meter_hot = now;
+                }
+                let (mr, _) = ui.allocate_exact_size(Vec2::new(54.0, 12.0), Sense::hover());
+                let hot = now - self.meter_hot < 2.0;
+                let pnt = ui.painter();
+                pnt.rect_filled(mr, 3.0, gray(35));
+                let w = (self.meter / 1.0).clamp(0.0, 1.0) * mr.width();
+                let col = if self.meter >= 0.85 { BAD } else if self.meter >= 0.5 { YOURS } else { GOOD };
+                pnt.rect_filled(Rect::from_min_size(mr.min, Vec2::new(w, mr.height())), 3.0, col);
+                pnt.line_segment([Pos2::new(mr.left() + mr.width() * 0.85, mr.top()), Pos2::new(mr.left() + mr.width() * 0.85, mr.bottom())], Stroke::new(1.0, Color32::WHITE));
+                if hot {
+                    pnt.rect_stroke(mr, 3.0, Stroke::new(2.0, BAD), StrokeKind::Outside);
+                }
+                ui.interact(mr, ui.id().with("outmeter"), Sense::hover()).on_hover_text("Noodle's output level. Past the white line Noodle's own limiter is squashing it (red outline = that happened in the last 2 s). If you hear distortion while this stays green, it's happening after Noodle: system volume above 100%, the interface or the speakers.");
                 let cpu = self.p.cpu.get();
                 ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { text_dim() }));
                 let ok = self.p.audio_ok.load(Relaxed);
@@ -3365,7 +3395,7 @@ impl App {
             None
         };
         let bh = rect.height() * 0.62;
-        let oc = self.oc_range();
+        let oc = self.inst_range;
         for black in [false, true] {
             for k in lo..=hi {
                 let (x, w, b) = key_x(rect, k, lo, hi);
@@ -3415,7 +3445,7 @@ impl App {
                     } else if k == olo {
                         let pill = Rect::from_center_size(Pos2::new(r.center().x, r.top() + if b { bh * 0.45 } else { rect.height() * 0.7 }), Vec2::new(r.width() - 2.0, 30.0));
                         painter.rect_filled(pill, 6.0, Color32::from_black_alpha(215));
-                        painter.text(pill.center(), Align2::CENTER_CENTER, "lowest\nall holes", FontId::proportional(9.5), Color32::WHITE);
+                        painter.text(pill.center(), Align2::CENTER_CENTER, "lowest\nnote", FontId::proportional(9.5), Color32::WHITE);
                     }
                 }
                 if keys_style && in_scale {
@@ -4038,6 +4068,45 @@ impl App {
         }
     }
 
+    /// The chart's range, sounding pitch (lowest..highest fingering + transposition).
+    fn chart_range(&self, idx: usize) -> (u8, u8) {
+        let c = &crate::fingering::CHARTS[idx.min(crate::fingering::CHARTS.len() - 1)];
+        let tr = c.trans.get(self.s.fing_tr.min(c.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0) as i32;
+        let lo = c.fings.iter().map(|f| f.midi).min().unwrap_or(0) as i32 + tr;
+        let hi = c.fings.iter().map(|f| f.midi).max().unwrap_or(127) as i32 + tr;
+        (lo.clamp(0, 127) as u8, hi.clamp(0, 127) as u8)
+    }
+
+    /// Free play vs real range: which instrument range to show on the keys and refuse outside of.
+    fn apply_range(&mut self) {
+        let chart = if self.oc_mode || (!self.acc_mode && !self.game_mode && self.fingering_visible()) { Some(self.s.fing_idx) } else { None };
+        self.inst_range = match chart {
+            Some(c) if self.oc_mode || self.s.real_range => Some(self.chart_range(c)),
+            _ => None,
+        };
+        let (lo, hi) = match self.inst_range {
+            Some(r) if self.s.real_range => r,
+            _ => (0, 127),
+        };
+        self.p.range_lo.store(lo, Relaxed);
+        self.p.range_hi.store(hi, Relaxed);
+        self.range_chart = chart;
+    }
+
+    /// Free play | Real range switch (only when the sound has a fingering chart).
+    fn range_switch(&mut self, ui: &mut egui::Ui) {
+        let Some(c) = self.range_chart else { return };
+        let name = crate::fingering::CHARTS[c].name.split(" (").next().unwrap_or("").to_string();
+        let (lo, hi) = self.chart_range(c);
+        let mut real = self.s.real_range;
+        ui.selectable_value(&mut real, false, "Free play").on_hover_text("Every key sounds, like a synth. Fingerings for notes out of range show the same note an octave in.");
+        ui.selectable_value(&mut real, true, format!("{name} range")).on_hover_text(format!("Only the notes a real {} plays ({}–{}) sound; the rest flash red. Fingerings exact.", name.to_lowercase(), theory::note_name_oct(lo), theory::note_name_oct(hi)));
+        if real != self.s.real_range {
+            self.s.real_range = real;
+            self.s.fing_any = !real;
+        }
+    }
+
     fn kb_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Keys").color(text_dim()));
@@ -4056,6 +4125,10 @@ impl App {
                 ui.toggle_value(&mut self.s.kb_follow, "Follow").on_hover_text("Slide along when you play outside the visible keys (e.g. after Oct +/−)");
                 let (lo, hi) = self.range();
                 ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(text_dim()));
+            }
+            if self.range_chart.is_some() {
+                ui.separator();
+                self.range_switch(ui);
             }
             ui.separator();
             ui.label(RichText::new("Layout").color(text_dim()));
@@ -4175,6 +4248,7 @@ impl eframe::App for App {
         }
         self.apply_controller();
         self.apply_drones();
+        self.apply_range();
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop

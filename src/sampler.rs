@@ -1590,3 +1590,23 @@ mod diagnose {
         }
     }
 }
+
+#[cfg(test)]
+mod level_probe {
+    use super::*;
+    /// NOODLE_PROBE=path.sfz: peak of each key at velocity 100, after Noodle's 0.8 master × 2 make-up.
+    #[test]
+    #[ignore]
+    fn probe() {
+        let Ok(path) = std::env::var("NOODLE_PROBE") else { return };
+        let inst = Arc::new(load(Path::new(&path)).unwrap());
+        for key in (48..=108u8).step_by(2) {
+            let mut p = Player::new(inst.clone(), 48000.0);
+            p.note_on(key, 100);
+            let (mut l, mut r) = (vec![0.0; 24000], vec![0.0; 24000]);
+            p.render(&mut l, &mut r);
+            let pk = l.iter().chain(r.iter()).fold(0f32, |a, b| a.max(b.abs())) * 0.8 * 2.0;
+            println!("key {key:3}  peak after master {pk:.2} {}", if pk > 0.85 { "← into the clipper" } else { "" });
+        }
+    }
+}
