@@ -311,6 +311,22 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if (p.cutoff.get() - 32.0 / 127.0).abs() > 0.01 || p.master.get() < 0.99 || browse != 1 || pad != 1 {
         fails.push("controller mapping".into());
     }
+    // limiter: a fistful of loud notes at full volume is turned down, not squared off
+    p.master.set(3.0); // way past full, to make sure the limiter catches it
+    for k in [48u8, 52, 55, 60, 64, 67, 72, 76, 79, 84, 88, 91] {
+        tx.send(Cmd::Midi([0x90, k, 127])).unwrap();
+    }
+    let (pk, _) = render(1.0, "12 loud notes, master 3x", &mut eng);
+    for k in [48u8, 52, 55, 60, 64, 67, 72, 76, 79, 84, 88, 91] {
+        tx.send(Cmd::Midi([0x80, k, 0])).unwrap();
+    }
+    render(0.5, "released", &mut eng);
+    let pre = p.out_peak.get();
+    println!("  limiter: before {pre:.2}, out {pk:.2}");
+    if pk > 0.86 {
+        fails.push("limiter let peaks into the clipper".into());
+    }
+    p.master.set(0.8);
     // real range mode: an ocarina-range instrument refuses C4 and plays C5
     p.range_lo.store(69, Relaxed);
     p.range_hi.store(89, Relaxed);

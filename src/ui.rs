@@ -1628,7 +1628,7 @@ impl App {
                 if hot {
                     pnt.rect_stroke(mr, 3.0, Stroke::new(2.0, BAD), StrokeKind::Outside);
                 }
-                ui.interact(mr, ui.id().with("outmeter"), Sense::hover()).on_hover_text("Noodle's output level. Past the white line Noodle's own limiter is squashing it (red outline = that happened in the last 2 s). If you hear distortion while this stays green, it's happening after Noodle: system volume above 100%, the interface or the speakers.");
+                ui.interact(mr, ui.id().with("outmeter"), Sense::hover()).on_hover_text("Noodle's output level. Green and yellow are normal. Red = louder than the ceiling, so the limiter is turning it down (cleanly; the outline stays lit for 2 s). Distortion while this is green or yellow is happening after Noodle: the interface or the speakers.");
                 let cpu = self.p.cpu.get();
                 ui.label(RichText::new(format!("DSP {:.0}%", cpu * 100.0)).size(11.0).color(if cpu > 0.7 { BAD } else { text_dim() }));
                 let ok = self.p.audio_ok.load(Relaxed);

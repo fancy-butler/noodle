@@ -499,8 +499,13 @@ pub struct Engine {
     chanter: i16,
     pipe_held: [u8; 16],
     pipe_n: usize,
+    /// output limiter gain (1 = untouched)
+    lim_g: f32,
     chord_of: [[i16; 4]; 128],
 }
+
+/// Output ceiling for the limiter (just under the soft clipper's knee).
+const LIM_CEIL: f32 = 0.84;
 
 #[inline]
 fn soft_clip(x: f32) -> f32 {
@@ -596,6 +601,7 @@ impl Engine {
             chanter: -1,
             pipe_held: [0; 16],
             pipe_n: 0,
+            lim_g: 1.0,
             chord_of: [[-1; 4]; 128],
         }
     }
@@ -2079,6 +2085,7 @@ impl Engine {
             let dlen = self.dl.len();
             let dsamp = ((dbeats / bps) as usize).clamp(1, dlen - 1);
             let mut blk_peak = 0f32;
+            let lim_rel = 1.0 - (-1.0 / (0.15 * sr)).exp();
 
             for i in 0..len {
                 let mut x = [self.bl[i], self.br[i]];
@@ -2108,12 +2115,20 @@ impl Engine {
                 self.dl[self.dpos] = (x[0] + x[1]) * 0.5 * (dmix > 0.0) as u8 as f32 + rr * dfb;
                 self.dr[self.dpos] = rl * dfb;
                 self.dpos = (self.dpos + 1) % dlen;
-                // rustysynth runs at ~-6 dB; make up 2x, then a soft knee so big chords don't crackle
-                let pre_l = (x[0] + rl * dmix) * master * 2.0;
-                let pre_r = (x[1] + rr * dmix) * master * 2.0;
-                blk_peak = blk_peak.max(pre_l.abs()).max(pre_r.abs());
-                let l = soft_clip(pre_l);
-                let r = soft_clip(pre_r);
+                // rustysynth runs at ~-6 dB, so some make-up gain; then a limiter that turns
+                // loud chords down (instant attack, 150 ms release) instead of squaring them off.
+                // The soft clipper stays as a last-resort safety only.
+                let pre_l = (x[0] + rl * dmix) * master * 1.6;
+                let pre_r = (x[1] + rr * dmix) * master * 1.6;
+                let a = pre_l.abs().max(pre_r.abs());
+                blk_peak = blk_peak.max(a);
+                if a * self.lim_g > LIM_CEIL {
+                    self.lim_g = LIM_CEIL / a;
+                } else {
+                    self.lim_g += (1.0 - self.lim_g) * lim_rel;
+                }
+                let l = soft_clip(pre_l * self.lim_g);
+                let r = soft_clip(pre_r * self.lim_g);
                 out_l[done + i] = l;
                 out_r[done + i] = r;
             }
