@@ -685,12 +685,16 @@ pub fn load(path: &Path) -> Result<Instrument, String> {
     if inst.mono && (n.contains("bagpipe") || n.contains("drone")) {
         inst.mono_from = 60;
     }
+    let fixed = fix_octaves(&mut inst);
+    if fixed > 0 {
+        eprintln!("{}: {fixed} sample(s) mapped an octave off — corrected", inst.name);
+    }
     if inst.mono {
-        // held wind notes outlast their recordings: loop the steady middle with a crossfade
+        // held wind notes outlast their recordings: loop the steadiest stretch, pitch-matched
         for r in inst.regions.iter_mut() {
-            let len = r.sample.len();
-            let secs = len as f32 / r.sample.rate;
-            if r.loop_mode == LoopMode::Off && r.trigger == Trig::Attack && secs > 1.2 {
+            let secs = r.sample.len() as f32 / r.sample.rate;
+            if r.loop_mode == LoopMode::Off && r.trigger == Trig::Attack && secs > 1.0 && !smart_loop(r) {
+                let len = r.sample.len();
                 let ls = (len as f32 * 0.35) as usize;
                 let le = ((len as f32 * 0.85) as usize).min(r.end.saturating_sub(2));
                 if le > ls + 1000 {
@@ -701,13 +705,221 @@ pub fn load(path: &Path) -> Result<Instrument, String> {
                 }
             }
         }
+        even_levels(&mut inst);
     }
     Ok(inst)
+}
+
+
+// ---------------------------------------------------------------- checking recordings
+
+/// YIN pitch estimate (Hz) and its aperiodicity (lower = clearer), on `x` at `sr`.
+pub fn yin(x: &[f32], sr: f32) -> Option<(f32, f32)> {
+    let taumin = (sr / 2600.0) as usize;
+    let taumax = (sr / 45.0) as usize;
+    let w = 2048usize;
+    if x.len() < w + taumax + 2 {
+        return None;
+    }
+    let mut d = vec![0f32; taumax + 1];
+    for t in 1..=taumax {
+        let mut s = 0f32;
+        for i in 0..w {
+            let e = x[i] - x[i + t];
+            s += e * e;
+        }
+        d[t] = s;
+    }
+    let mut cm = vec![1f32; taumax + 1];
+    let mut run = 0f32;
+    for t in 1..=taumax {
+        run += d[t];
+        cm[t] = if run > 0.0 { d[t] * t as f32 / run } else { 1.0 };
+    }
+    let mut pick = None;
+    let mut t = taumin.max(2);
+    while t < taumax {
+        if cm[t] < 0.15 {
+            while t + 1 < taumax && cm[t + 1] < cm[t] {
+                t += 1;
+            }
+            pick = Some(t);
+            break;
+        }
+        t += 1;
+    }
+    let t = pick?;
+    let (a, b, c) = (cm[t - 1], cm[t], cm[t + 1]);
+    let den = a - 2.0 * b + c;
+    let off = if den.abs() > 1e-9 { 0.5 * (a - c) / den } else { 0.0 };
+    Some((sr / (t as f32 + off), b))
+}
+
+fn rms(x: &[f32]) -> f32 {
+    if x.is_empty() {
+        return 0.0;
+    }
+    (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+}
+
+/// Some free libraries map samples an octave off (VSCO's piccolo, one of its oboe notes):
+/// listen to each recording and move its key centre by whole octaves when it plainly sounds elsewhere.
+pub fn fix_octaves(inst: &mut Instrument) -> usize {
+    let tune_too = inst.mono;
+    let mut fixed = 0;
+    for r in inst.regions.iter_mut() {
+        if r.trigger != Trig::Attack || r.keytrack < 50.0 {
+            continue;
+        }
+        // measure at five points; act only when most of them agree
+        let d = &r.sample.l;
+        let mut m: Vec<f32> = [0.3f32, 0.4, 0.5, 0.6, 0.7]
+            .iter()
+            .filter_map(|fr| {
+                let a = (d.len() as f32 * fr) as usize;
+                yin(&d[a.min(d.len())..], r.sample.rate).filter(|(f, ap)| *ap < 0.12 && *f > 0.0).map(|(f, _)| 69.0 + 12.0 * (f / 440.0).log2())
+            })
+            .collect();
+        if m.len() < 3 {
+            continue;
+        }
+        m.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = m[m.len() / 2];
+        if m.iter().filter(|x| (*x - med).abs() < 0.5).count() < 3 {
+            continue;
+        }
+        let expected = r.center - r.tune / 100.0;
+        let diff = med - expected;
+        let k = (diff / 12.0).round();
+        let res = diff - 12.0 * k;
+        if k != 0.0 && res.abs() < 0.7 {
+            r.center += 12.0 * k;
+            fixed += 1;
+        }
+        // a recording noticeably out of tune (winds only; pianos are stretched on purpose)
+        if tune_too && res.abs() > 0.12 && res.abs() < 0.6 {
+            r.tune -= res * 100.0;
+        }
+    }
+    fixed
+}
+
+/// Loop a held note in the steadiest stretch of its recording, with loop ends matched in pitch.
+fn smart_loop(r: &mut Region) -> bool {
+    let d = &r.sample.l;
+    let sr = r.sample.rate;
+    let len = d.len().min(r.end.max(1));
+    let w = (sr * 0.02) as usize;
+    if len < (sr * 1.0) as usize || w == 0 {
+        return false;
+    }
+    let env: Vec<f32> = d[..len].chunks(w).map(rms).collect();
+    // smooth over ~100 ms
+    let sm: Vec<f32> = (0..env.len()).map(|i| { let a = i.saturating_sub(2); let b = (i + 3).min(env.len()); env[a..b].iter().sum::<f32>() / (b - a) as f32 }).collect();
+    let peak = sm.iter().cloned().fold(0f32, f32::max);
+    if peak <= 0.0 {
+        return false;
+    }
+    let start = sm.iter().position(|v| *v > peak * 0.5).unwrap_or(0).max((0.25 * sr) as usize / w);
+    let stop = (sm.len() as f32 * 0.92) as usize;
+    if stop <= start + 10 {
+        return false;
+    }
+    let mut body: Vec<f32> = sm[start..stop].to_vec();
+    body.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = body[body.len() / 2];
+    // longest run near the median level
+    let (mut best, mut cur) = ((0usize, 0usize), (start, start));
+    for i in start..stop {
+        if sm[i] > med * 0.72 && sm[i] < med * 1.4 {
+            if cur.1 != i {
+                cur = (i, i);
+            }
+            cur.1 = i + 1;
+            if cur.1 - cur.0 > best.1 - best.0 {
+                best = cur;
+            }
+        } else {
+            cur = (i + 1, i + 1);
+        }
+    }
+    let run = best.1 - best.0;
+    if (run * w) < (sr * 0.6) as usize {
+        return false;
+    }
+    let ls = (best.0 + run / 10) * w;
+    let mut le = (best.1 - run / 20) * w;
+    // match the loop end to the loop start, one pitch period at a time
+    let period = yin(&d[ls..], sr).map(|(f, _)| (sr / f) as usize).unwrap_or(0).clamp(0, (sr / 40.0) as usize);
+    if period > 8 {
+        let n = (period * 2).max(512).min(2048);
+        let refw = &d[ls..(ls + n).min(len)];
+        let mut best_c = f32::MIN;
+        let mut best_e = le;
+        let lo = le.saturating_sub(period * 2);
+        for e in lo..=le {
+            if e + n >= len {
+                break;
+            }
+            let c: f32 = refw.iter().zip(&d[e..e + n]).map(|(a, b)| a * b).sum();
+            if c > best_c {
+                best_c = c;
+                best_e = e;
+            }
+        }
+        le = best_e;
+    }
+    if le <= ls + (sr * 0.4) as usize {
+        return false;
+    }
+    r.loop_mode = LoopMode::Sustain;
+    r.loop_start = ls;
+    r.loop_end = le;
+    r.xfade = ((sr * 0.18) as usize).min((le - ls) / 3);
+    true
+}
+
+pub fn even_levels_pub(inst: &mut Instrument) {
+    even_levels(inst)
+}
+
+/// Even out note-to-note level within each velocity layer (recordings vary a lot).
+fn even_levels(inst: &mut Instrument) {
+    let mut layers: HashMap<(u8, u8), Vec<usize>> = HashMap::new();
+    for (i, r) in inst.regions.iter().enumerate() {
+        if r.trigger == Trig::Attack {
+            layers.entry((r.lovel, r.hivel)).or_default().push(i);
+        }
+    }
+    for idx in layers.values() {
+        let lv: Vec<(usize, f32)> = idx
+            .iter()
+            .map(|&i| {
+                let r = &inst.regions[i];
+                let d = &r.sample.l;
+                let (a, b) = if r.loop_mode != LoopMode::Off { (r.loop_start, r.loop_end) } else { (d.len() / 5, d.len() / 2) };
+                (i, rms(&d[a.min(d.len())..b.min(d.len())]) * r.gain)
+            })
+            .filter(|x| x.1 > 0.0)
+            .collect();
+        if lv.len() < 3 {
+            continue;
+        }
+        let mut v: Vec<f32> = lv.iter().map(|x| x.1).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = v[v.len() / 2];
+        for (i, l) in lv {
+            inst.regions[i].gain *= (med / l).powf(0.7).clamp(0.4, 2.5);
+        }
+    }
 }
 
 /// Hold notes past the end of the recordings: loop each sample's steady middle with a crossfade.
 pub fn loop_sustains(inst: &mut Instrument) {
     for r in inst.regions.iter_mut() {
+        if r.loop_mode == LoopMode::Off && r.trigger == Trig::Attack && smart_loop(r) {
+            continue;
+        }
         let len = r.sample.len();
         let secs = len as f32 / r.sample.rate;
         if r.loop_mode == LoopMode::Off && r.trigger == Trig::Attack && secs > 0.8 {
@@ -721,6 +933,7 @@ pub fn loop_sustains(inst: &mut Instrument) {
             }
         }
     }
+    even_levels(inst);
 }
 
 // ---------------------------------------------------------------- player
@@ -1200,5 +1413,134 @@ mod live_tests {
         println!("8 s held A4: max step {max:.4}, 99.9th pct {p999:.4}, rms in last second {rms_end:.4}");
         assert!(rms_end > 0.01, "still sounding after 8 s");
         assert!(max < p999 * 4.0, "no clicks");
+    }
+}
+
+#[cfg(test)]
+mod diagnose {
+    use super::*;
+    fn f0(x: &[f32], sr: f32) -> f32 {
+        // normalised autocorrelation, 60 Hz .. 2.5 kHz
+        let n = x.len().min(8192);
+        let x = &x[..n];
+        let (lo, hi) = ((sr / 2500.0) as usize, (sr / 60.0) as usize);
+        let mut best = (0usize, 0f32);
+        let e0: f32 = x.iter().map(|v| v * v).sum();
+        let mut vals = vec![0f32; hi + 2];
+        for lag in lo..=hi {
+            let mut s = 0f32;
+            for i in 0..n - lag {
+                s += x[i] * x[i + lag];
+            }
+            vals[lag] = s / e0;
+        }
+        // first peak above 0.8 of the global max
+        let gmax = vals[lo..=hi].iter().cloned().fold(0f32, f32::max);
+        for lag in lo + 1..hi {
+            if vals[lag] > 0.85 * gmax && vals[lag] >= vals[lag - 1] && vals[lag] >= vals[lag + 1] {
+                best = (lag, vals[lag]);
+                break;
+            }
+        }
+        if best.0 == 0 {
+            return 0.0;
+        }
+        // parabolic interpolation
+        let l = best.0;
+        let (a, b, c) = (vals[l - 1], vals[l], vals[l + 1]);
+        let d = 0.5 * (a - c) / (a - 2.0 * b + c);
+        sr / (l as f32 + d)
+    }
+
+    /// cargo test --release sampler::diagnose::demo -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn demo() {
+        // a little tune on each recorded wind, through Noodle's own sampler
+        let sr = 48000.0;
+        let tune: [(i32, f32); 9] = [(0, 0.4), (2, 0.4), (4, 0.4), (5, 0.4), (7, 0.8), (9, 0.4), (7, 0.4), (4, 0.4), (0, 1.4)];
+        let mut out: Vec<f32> = Vec::new();
+        for (name, root) in [("Flute (vibrato)", 72), ("Piccolo", 79), ("Clarinet", 62), ("Oboe (vibrato)", 69), ("Ocarina (vibrato)", 72), ("Tenor saxophone (vibrato)", 55)] {
+            let p = crate::packs::PACKS.iter().find(|p| p.name == name).unwrap();
+            let inst = Arc::new(load(&crate::packs::installed_path(p)).unwrap());
+            let mut pl = Player::new(inst, sr);
+            for (iv, dur) in tune {
+                let k = (root + iv) as u8;
+                pl.note_on(k, 100);
+                let n = (sr * dur) as usize;
+                let mut l = vec![0f32; n];
+                let mut r = vec![0f32; n];
+                for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+                    pl.render(a, b);
+                }
+                pl.note_off(k);
+                out.extend(l);
+            }
+            let mut l = vec![0f32; (sr * 0.8) as usize];
+            let mut r = l.clone();
+            pl.render(&mut l, &mut r);
+            out.extend(l);
+        }
+        let peak = out.iter().fold(0f32, |m, x| m.max(x.abs())).max(1e-6);
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut w = hound::WavWriter::create("/tmp/winds_demo.wav", spec).unwrap();
+        for x in &out {
+            w.write_sample((x / peak * 0.8 * 32000.0) as i16).unwrap();
+        }
+        println!("{:.1}s written", out.len() as f32 / sr);
+    }
+
+    /// cargo test --release sampler::diagnose -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn winds() {
+        let names: Vec<String> = std::env::var("NOODLE_PACKS").map(|v| v.split('|').map(String::from).collect()).unwrap();
+        for name in names {
+            let p = crate::packs::PACKS.iter().find(|p| p.name == name).unwrap();
+            let inst = Arc::new(load(&crate::packs::installed_path(p)).unwrap());
+            let lo = inst.regions.iter().map(|r| r.lokey).min().unwrap();
+            let hi = inst.regions.iter().map(|r| r.hikey).max().unwrap();
+            println!("== {name}: keys {lo}..{hi}, {} regions", inst.regions.len());
+            let sr = 48000.0;
+            let mut worst_c = 0f32;
+            let mut levels = vec![];
+            let mut jumps = vec![];
+            for key in (lo..=hi).step_by(1) {
+                let mut pl = Player::new(inst.clone(), sr);
+                pl.note_on(key, 100);
+                let n = (sr * 4.0) as usize;
+                let mut l = vec![0f32; n];
+                let mut r = vec![0f32; n];
+                for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+                    pl.render(a, b);
+                }
+                let steady = &l[(sr * 0.6) as usize..(sr * 0.6) as usize + 8192];
+                let f = f0(steady, sr);
+                let want = 440.0 * 2f32.powf((key as f32 - 69.0) / 12.0);
+                let cents = if f > 0.0 { 1200.0 * (f / want).log2() } else { f32::NAN };
+                // octave errors are a detector problem, not a tuning one
+                let c = ((cents + 600.0).rem_euclid(1200.0)) - 600.0;
+                worst_c = worst_c.max(c.abs());
+                let win = 960;
+                let rms: Vec<f32> = l.chunks(win).map(|c| (c.iter().map(|x| x * x).sum::<f32>() / win as f32).sqrt()).collect();
+                let body = &rms[10..rms.len() - 1];
+                let mean = body.iter().sum::<f32>() / body.len() as f32;
+                let jump = body.windows(2).map(|w| if w[0].min(w[1]) > 1e-4 { (w[1] / w[0]).max(w[0] / w[1]) } else { 1.0 }).fold(1f32, f32::max);
+                levels.push(mean);
+                jumps.push((key, jump));
+                let wi = body.windows(2).enumerate().filter(|(_, w)| w[0].min(w[1]) > 1e-4).max_by(|a, b| (a.1[1] / a.1[0]).max(a.1[0] / a.1[1]).partial_cmp(&(b.1[1] / b.1[0]).max(b.1[0] / b.1[1])).unwrap()).map(|x| x.0).unwrap_or(0);
+                let at = (wi + 10) as f32 * 0.02;
+                if jump > 2.5 {
+                    let rg = inst.regions.iter().find(|r| r.lokey <= key && key <= r.hikey && r.lovel <= 100 && 100 <= r.hivel).unwrap();
+                    let ratio = 2f32.powf((key as f32 - rg.center) / 12.0) * rg.sample.rate / sr;
+                    println!("    worst jump at {at:.2}s; loop {:.2}..{:.2}s in output time, sample {:.1}s", rg.loop_start as f32 / rg.sample.rate / ratio * rg.sample.rate / rg.sample.rate, rg.loop_end as f32 / rg.sample.rate / ratio, rg.sample.len() as f32 / rg.sample.rate / ratio);
+                }
+                if c.abs() > 25.0 || jump > 1.6 {
+                    println!("  key {key}: {cents:+.0} cents (f0 {f:.1} want {want:.1}), level {mean:.3}, worst 20ms level jump x{jump:.2}");
+                }
+            }
+            let (mn, mx) = levels.iter().fold((9f32, 0f32), |(a, b), x| (a.min(*x), b.max(*x)));
+            println!("  worst tuning {worst_c:.0} cents · level range {mn:.3}..{mx:.3} · worst jump x{:.2}", jumps.iter().map(|j| j.1).fold(1f32, f32::max));
+        }
     }
 }
