@@ -51,6 +51,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     }
     enum RawKind {
         Tempo(u32),
+        TimeSig(u8, u8),
         Ch(u8, u8, u8, u8),
     }
     let mut raws: Vec<Raw> = Vec::new();
@@ -62,6 +63,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
             order += 1;
             match ev.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(t)) => raws.push(Raw { tick, order, kind: RawKind::Tempo(t.as_int()) }),
+                TrackEventKind::Meta(MetaMessage::TimeSignature(n, d, _, _)) => raws.push(Raw { tick, order, kind: RawKind::TimeSig(n, d) }),
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
                     let (st, d1, d2) = match message {
@@ -85,7 +87,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     // Note-offs before note-ons at the same tick so repeated notes don't get eaten.
     raws.sort_by_key(|r| {
         let pri = match r.kind {
-            RawKind::Tempo(_) => 0,
+            RawKind::Tempo(_) | RawKind::TimeSig(..) => 0,
             RawKind::Ch(_, 0x80, _, _) => 1,
             RawKind::Ch(_, 0x90, _, 0) => 1,
             RawKind::Ch(_, 0x90, _, _) => 3,
@@ -98,6 +100,47 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
         Timing::Metrical(t) => (t.as_int().max(1) as f64, None),
         Timing::Timecode(fps, sub) => (1.0, Some(1.0 / (fps.as_f32() as f64 * sub.max(1) as f64))),
     };
+    // Parts exported with every note at one velocity (common from notation apps)
+    // get accents from the time signature, like a player would add.
+    {
+        let mut per_ch: [std::collections::HashMap<u8, u32>; 16] = Default::default();
+        for r in &raws {
+            if let RawKind::Ch(ch, 0x90, _, v) = r.kind {
+                if v > 0 {
+                    *per_ch[ch as usize].entry(v).or_default() += 1;
+                }
+            }
+        }
+        let flat: Vec<bool> = per_ch.iter().map(|m| {
+            let total: u32 = m.values().sum();
+            total >= 8 && m.values().copied().max().unwrap_or(0) * 10 >= total * 8
+        }).collect();
+        if flat.iter().enumerate().any(|(c, f)| *f && c != 9) && fixed_sec_per_tick.is_none() {
+            let rhythm = name.to_lowercase();
+            let (mut num, mut den, mut bar_tick, mut sig_tick) = (4u32, 4u32, 0u64, 0u64);
+            for r in raws.iter_mut() {
+                match r.kind {
+                    RawKind::TimeSig(n, d) => {
+                        num = n.max(1) as u32;
+                        den = 1u32 << d.min(6);
+                        sig_tick = r.tick;
+                        bar_tick = r.tick;
+                    }
+                    RawKind::Ch(ch, 0x90, key, v) if v > 0 && flat[ch as usize] && ch != 9 => {
+                        let bar_ticks = (ppq * 4.0 * num as f64 / den as f64).max(1.0) as u64;
+                        let since = r.tick - sig_tick;
+                        bar_tick = sig_tick + since / bar_ticks * bar_ticks;
+                        let pos = (r.tick - bar_tick) as f64 / (ppq * 4.0);
+                        let st = crate::abc::strength(&rhythm, num, den, pos);
+                        let nv = (v as f64 * (0.55 + 0.5 * st)).round().clamp(1.0, 127.0) as u8;
+                        r.kind = RawKind::Ch(ch, 0x90, key, nv);
+                    }
+                    _ => {}
+                }
+            }
+            let _ = bar_tick;
+        }
+    }
     let mut us_per_beat = 500_000.0f64;
     let mut last_tick = 0u64;
     let mut t = 0.0f64;
@@ -111,6 +154,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
         last_tick = r.tick;
         match r.kind {
             RawKind::Tempo(v) => us_per_beat = v.max(1) as f64,
+            RawKind::TimeSig(..) => {}
             RawKind::Ch(ch, st, d1, d2) => evs.push(SongEv { t, ch, st, d1, d2 }),
         }
     }

@@ -28,6 +28,8 @@ pub struct TuneInfo {
     pub scale: &'static str,
     /// written key, e.g. "D major", "E dorian"
     pub key_label: String,
+    /// chord symbols and when they start (seconds)
+    pub chords: Vec<(f64, String)>,
 }
 
 /// Split an ABC file into tunes (each starts at an `X:` line). A file with no
@@ -256,6 +258,8 @@ struct Ev {
     tie: bool,
     /// a bar line came right before this event
     downbeat: bool,
+    /// chord symbol written above this note ("G", "Am7", "D/F#")
+    chord: Option<String>,
 }
 
 struct Parser {
@@ -274,6 +278,7 @@ struct Parser {
     in_ending2: bool,
     downbeat: bool,
     meter: f64,
+    pending_chord: Option<String>,
 }
 
 impl Parser {
@@ -290,7 +295,8 @@ impl Parser {
             self.tup_left -= 1;
         }
         let downbeat = std::mem::take(&mut self.downbeat);
-        self.evs.push(Ev { keys, len, tie, downbeat });
+        let chord = self.pending_chord.take();
+        self.evs.push(Ev { keys, len, tie, downbeat, chord });
     }
 
     /// end of a repeated section: play it again (minus the 1st ending)
@@ -423,8 +429,178 @@ fn field(p: &mut Parser, name: char, val: &str, info: &mut TuneInfo, qpm: &mut O
     }
 }
 
+/// How to play a tune back.
+#[derive(Clone, Copy)]
+pub struct Opts {
+    /// accents and swing that fit the tune type and time signature
+    pub feel: bool,
+    /// play the chord symbols as a backing part (channel 2)
+    pub backing: bool,
+    /// backing instrument (General MIDI program)
+    pub backing_prog: i32,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts { feel: true, backing: true, backing_prog: 25 }
+    }
+}
+
+/// Root pitch class and the chord's notes (semitones above the root), plus an optional bass note.
+pub fn parse_chord(s: &str) -> Option<(u8, Vec<u8>, Option<u8>)> {
+    let s = s.trim();
+    let mut ch = s.chars().peekable();
+    let l = ch.next()?;
+    let li = letter_idx(l).filter(|_| l.is_ascii_uppercase())?;
+    let mut root = LETTER_PC[li];
+    match ch.peek() {
+        Some('#') | Some('♯') => {
+            root += 1;
+            ch.next();
+        }
+        Some('b') | Some('♭') => {
+            root -= 1;
+            ch.next();
+        }
+        _ => {}
+    }
+    let rest: String = ch.collect();
+    let (qual, bass) = match rest.split_once('/') {
+        Some((q, b)) => (q.to_string(), Some(b.to_string())),
+        None => (rest, None),
+    };
+    let q = qual.trim();
+    let iv: Vec<u8> = match q {
+        "" | "maj" | "M" => vec![0, 4, 7],
+        "m" | "min" | "-" => vec![0, 3, 7],
+        "7" | "dom7" => vec![0, 4, 7, 10],
+        "m7" | "min7" | "-7" => vec![0, 3, 7, 10],
+        "maj7" | "M7" | "Δ" => vec![0, 4, 7, 11],
+        "dim" | "o" | "°" => vec![0, 3, 6],
+        "dim7" | "o7" | "°7" => vec![0, 3, 6, 9],
+        "m7b5" | "ø" => vec![0, 3, 6, 10],
+        "aug" | "+" => vec![0, 4, 8],
+        "sus4" | "sus" => vec![0, 5, 7],
+        "sus2" => vec![0, 2, 7],
+        "6" => vec![0, 4, 7, 9],
+        "m6" => vec![0, 3, 7, 9],
+        "9" => vec![0, 4, 7, 10, 14],
+        "5" => vec![0, 7],
+        _ => return None,
+    };
+    let bass = match bass {
+        Some(b) => {
+            let mut bc = b.trim().chars();
+            let bl = bc.next()?;
+            let bi = letter_idx(bl)?;
+            let mut bp = LETTER_PC[bi];
+            match bc.next() {
+                Some('#') | Some('♯') => bp += 1,
+                Some('b') | Some('♭') => bp -= 1,
+                _ => {}
+            }
+            Some(bp.rem_euclid(12) as u8)
+        }
+        None => None,
+    };
+    Some((root.rem_euclid(12) as u8, iv, bass))
+}
+
+/// How strongly a note at `pos` (whole notes from the bar line) is played, 0..1.
+pub fn strength(rhythm: &str, num: u32, den: u32, pos: f64) -> f64 {
+    let r = rhythm.to_lowercase();
+    let eighth = 0.125;
+    let at = |x: f64| (pos - x).abs() < 1e-6;
+    let on_grid = |g: f64| ((pos / g).round() * g - pos).abs() < 1e-6;
+    if r.contains("bulgar") || r.contains("bulgarish") || r.contains("terkish") {
+        // 3 + 3 + 2
+        let e = (pos / eighth).round() as i64 % 8;
+        return if on_grid(eighth) && e == 0 { 1.0 } else if on_grid(eighth) && (e == 3 || e == 6) { 0.95 } else { 0.76 };
+    }
+    if den == 8 && num % 3 == 0 && num >= 6 {
+        // compound time: beats of three eighths, a lilt inside each
+        let beat = 3.0 * eighth;
+        let in_beat = pos - (pos / beat).floor() * beat;
+        let beat_i = (pos / beat).floor() as u32;
+        let head = if at(0.0) {
+            1.0
+        } else if num == 12 && beat_i == 2 && in_beat.abs() < 1e-6 {
+            0.93
+        } else if in_beat.abs() < 1e-6 {
+            0.88
+        } else {
+            0.0
+        };
+        if head > 0.0 {
+            return head;
+        }
+        let k = (in_beat / eighth).round() as i64;
+        return if k == 1 { 0.74 } else if k == 2 { 0.8 } else { 0.72 };
+    }
+    if num == 3 && (den == 4 || den == 8) {
+        let beat = 1.0 / den as f64;
+        let b = (pos / beat).round() as i64;
+        let on = on_grid(beat);
+        if r.contains("mazurka") || r.contains("mazur") {
+            // the mazurka leans on 2 (sometimes 3)
+            return if !on { 0.72 } else if b == 1 { 1.0 } else if b == 0 { 0.88 } else { 0.84 };
+        }
+        if r.contains("polska") {
+            return if !on { 0.74 } else if b == 0 { 0.98 } else if b == 2 { 0.9 } else { 0.82 };
+        }
+        // waltz and friends: strong one
+        return if !on { 0.72 } else if b == 0 { 1.0 } else { 0.8 };
+    }
+    // simple duple/quadruple
+    let bar = num as f64 / den as f64;
+    let quarter = 0.25;
+    if at(0.0) {
+        return 1.0;
+    }
+    if bar >= 0.99 && at(bar / 2.0) {
+        return 0.9;
+    }
+    if on_grid(quarter) {
+        return 0.84;
+    }
+    if r.contains("polka") && on_grid(eighth) {
+        // driving offbeat
+        return 0.86;
+    }
+    if on_grid(eighth) {
+        return 0.76;
+    }
+    0.72
+}
+
+/// Swing (hornpipes, barndances, schottisches): straight eighths become long-short.
+fn swing_ratio(rhythm: &str) -> f64 {
+    let r = rhythm.to_lowercase();
+    if r.contains("hornpipe") || r.contains("barndance") || r.contains("schottis") || r.contains("scottish") || r.contains("fling") {
+        0.64
+    } else {
+        0.5
+    }
+}
+
+/// Bend a position inside the bar for swing: each quarter's first eighth gets `ratio` of the beat.
+fn swing_pos(pos: f64, ratio: f64) -> f64 {
+    if (ratio - 0.5).abs() < 1e-9 {
+        return pos;
+    }
+    let q = 0.25;
+    let b = (pos / q).floor() * q;
+    let x = pos - b;
+    let h = q / 2.0;
+    b + if x < h { x / h * (ratio * q) } else { ratio * q + (x - h) / h * ((1.0 - ratio) * q) }
+}
+
 /// Parse one tune into a playable song. `bank`/`program` choose the sound.
 pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), String> {
+    to_song_opts(text, bank, program, Opts::default())
+}
+
+pub fn to_song_opts(text: &str, bank: i32, program: i32, opts: Opts) -> Result<(Song, TuneInfo), String> {
     let mut info = TuneInfo::default();
     let mut qpm: Option<f64> = None;
     let mut p = Parser {
@@ -440,6 +616,7 @@ pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), 
         in_ending2: false,
         downbeat: true,
         meter: 1.0,
+        pending_chord: None,
     };
     let mut in_body = false;
     let mut first_voice: Option<String> = None;
@@ -498,10 +675,15 @@ pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), 
             match c {
                 ' ' | '\t' | '\\' | '`' => i += 1,
                 '"' => {
-                    // chord symbol / annotation
+                    // chord symbol ("G", "Am7") or an annotation ("^text")
                     i += 1;
+                    let st = i;
                     while i < chars.len() && chars[i] != '"' {
                         i += 1;
+                    }
+                    let txt: String = chars[st..i.min(chars.len())].iter().collect();
+                    if parse_chord(&txt).is_some() {
+                        p.pending_chord = Some(txt.trim().to_string());
                     }
                     i += 1;
                 }
@@ -701,23 +883,72 @@ pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), 
     let qpm = qpm.unwrap_or_else(|| default_qpm(&info.rhythm, &info.meter));
     let sec_per_whole = 60.0 / qpm * 4.0;
 
+    // where each event sits in its bar (whole notes from the bar line); a short
+    // first bar is a pickup, so it ends where a full bar would
+    let (num, den) = {
+        let m = info.meter.trim();
+        match m {
+            "C" => (4, 4),
+            "C|" => (2, 2),
+            _ => {
+                let mut it = m.split('/');
+                (it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(4u32), it.next().and_then(|x| x.trim().parse().ok()).unwrap_or(4u32))
+            }
+        }
+    };
+    let bar_len = num as f64 / den.max(1) as f64;
+    let mut pos_in_bar = Vec::with_capacity(p.evs.len());
+    {
+        let first_bar: f64 = p.evs.iter().enumerate().take_while(|(i, e)| *i == 0 || !e.downbeat).map(|(_, e)| e.len).sum();
+        let mut pos = if first_bar + 1e-9 < bar_len { bar_len - first_bar } else { 0.0 };
+        for (i, e) in p.evs.iter().enumerate() {
+            if e.downbeat && i > 0 {
+                pos = 0.0;
+            }
+            pos_in_bar.push(pos);
+            pos += e.len;
+        }
+    }
+    let swing = if opts.feel { swing_ratio(&info.rhythm) } else { 0.5 };
+
     // flatten to timed notes, merging ties
     let mut notes: Vec<SongNote> = Vec::new();
     let mut t = 0.0f64;
     let mut tied_from: Vec<usize> = Vec::new();
-    for e in &p.evs {
+    let mut chords: Vec<(f64, String)> = Vec::new();
+    let mut seed: u32 = 0x9e37_79b9;
+    for (ei, e) in p.evs.iter().enumerate() {
         let d = e.len * sec_per_whole;
+        let pos = pos_in_bar[ei];
+        // swing moves where notes start and end inside the beat
+        let bar_t = t - pos * sec_per_whole;
+        let st = bar_t + swing_pos(pos, swing) * sec_per_whole;
+        let en = bar_t + swing_pos(pos + e.len, swing) * sec_per_whole;
+        if let Some(c) = &e.chord {
+            chords.push((st, c.clone()));
+        }
         let mut next_tied = Vec::new();
         for &k in &e.keys {
             if let Some(&ni) = tied_from.iter().find(|&&ni| notes[ni].key == k) {
-                notes[ni].end = t + d;
+                notes[ni].end = en;
                 if e.tie {
                     next_tied.push(ni);
                 }
                 continue;
             }
-            let vel = if e.downbeat { 104 } else { 88 };
-            notes.push(SongNote { start: t, end: t + d * 0.92, key: k, vel, ch: 0 });
+            let vel = if opts.feel {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let jitter = (seed % 7) as f64 - 3.0;
+                (strength(&info.rhythm, num, den, pos) * 116.0 + jitter).clamp(30.0, 127.0) as u8
+            } else if e.downbeat {
+                104
+            } else {
+                88
+            };
+            let gate = if num == 3 && den == 4 { 0.96 } else { 0.9 };
+            notes.push(SongNote { start: st, end: st + (en - st) * gate, key: k, vel, ch: 0 });
             if e.tie {
                 next_tied.push(notes.len() - 1);
             }
@@ -728,13 +959,74 @@ pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), 
     for n in notes.iter_mut() {
         n.end = n.end.max(n.start + 0.03);
     }
+    // backing from the chord symbols: bass on the strong beats, chords on the others
+    let mut backing: Vec<SongNote> = Vec::new();
+    if opts.backing && !chords.is_empty() {
+        let total = t;
+        // the pattern inside one bar: (position, is_bass)
+        let pat: Vec<(f64, bool)> = if den == 8 && num % 3 == 0 && num >= 6 {
+            (0..num / 3).flat_map(|b| {
+                let x = b as f64 * 0.375;
+                if num == 6 || num == 12 { if b % 2 == 0 { vec![(x, true)] } else { vec![(x, false)] } } else if b == 0 { vec![(x, true)] } else { vec![(x, false)] }
+            }).collect()
+        } else if num == 3 {
+            let q = 1.0 / den as f64;
+            vec![(0.0, true), (q, false), (2.0 * q, false)]
+        } else if bar_len <= 0.5 {
+            vec![(0.0, true), (0.25, false)]
+        } else {
+            (0..(bar_len / 0.25).round() as u32).map(|b| (b as f64 * 0.25, b % 2 == 0)).collect()
+        };
+        // bar start times: walk the bars from the first downbeat after any pickup
+        let pickup = pos_in_bar.first().copied().unwrap_or(0.0);
+        let first_bar_t = if pickup > 0.0 { (bar_len - pickup) * sec_per_whole } else { 0.0 };
+        let mut bar_i = 0u32;
+        let mut alt = false;
+        loop {
+            let b0 = first_bar_t + bar_i as f64 * bar_len * sec_per_whole;
+            if b0 >= total - 1e-6 {
+                break;
+            }
+            for &(x, bass) in &pat {
+                let at = b0 + swing_pos(x, swing) * sec_per_whole;
+                if at >= total - 1e-6 {
+                    continue;
+                }
+                let Some((_, name)) = chords.iter().rev().find(|(ct, _)| *ct <= at + 1e-6) else { continue };
+                let Some((root, iv, slash)) = parse_chord(name) else { continue };
+                let len = (if bass { 0.22 } else { 0.16 }) * sec_per_whole;
+                if bass {
+                    // root, alternating with the fifth on later bass beats
+                    let pc = if alt && x > 0.0 && slash.is_none() { (root + 7) % 12 } else { slash.unwrap_or(root) };
+                    let k = 36 + ((pc as i32 + 12 - 4) % 12 + 4) as u8; // E2..D#3
+                    backing.push(SongNote { start: at, end: at + len, key: k, vel: 82, ch: 1 });
+                    alt = !alt;
+                } else {
+                    for i in &iv {
+                        let pc = (root as i32 + *i as i32) % 12;
+                        let k = (55 + ((pc - 55i32.rem_euclid(12)).rem_euclid(12))) as u8; // G3..F#4
+                        backing.push(SongNote { start: at, end: at + len, key: k, vel: 64, ch: 1 });
+                    }
+                }
+            }
+            bar_i += 1;
+        }
+    }
+    let has_backing = !backing.is_empty();
+    let n_back = backing.len() as u32;
+    notes.extend(backing);
+    notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
     let mut evs = vec![
         SongEv { t: 0.0, ch: 0, st: 0xB0, d1: 0, d2: bank.clamp(0, 127) as u8 },
         SongEv { t: 0.0, ch: 0, st: 0xC0, d1: program.clamp(0, 127) as u8, d2: 0 },
     ];
+    if has_backing {
+        evs.push(SongEv { t: 0.0, ch: 1, st: 0xB0, d1: 0, d2: 0 });
+        evs.push(SongEv { t: 0.0, ch: 1, st: 0xC0, d1: opts.backing_prog.clamp(0, 127) as u8, d2: 0 });
+    }
     for n in &notes {
-        evs.push(SongEv { t: n.start, ch: 0, st: 0x90, d1: n.key, d2: n.vel });
-        evs.push(SongEv { t: n.end, ch: 0, st: 0x80, d1: n.key, d2: 0 });
+        evs.push(SongEv { t: n.start, ch: n.ch, st: 0x90, d1: n.key, d2: n.vel });
+        evs.push(SongEv { t: n.end, ch: n.ch, st: 0x80, d1: n.key, d2: 0 });
     }
     // note-offs first at equal times
     evs.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap().then((a.st == 0x90).cmp(&(b.st == 0x90))));
@@ -742,8 +1034,13 @@ pub fn to_song(text: &str, bank: i32, program: i32) -> Result<(Song, TuneInfo), 
     let mut programs = [-1i16; 16];
     programs[0] = program as i16;
     let mut npc = [0u32; 16];
-    npc[0] = notes.len() as u32;
-    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: 1, programs, notes_per_ch: npc };
+    npc[0] = notes.len() as u32 - n_back;
+    if has_backing {
+        programs[1] = opts.backing_prog as i16;
+        npc[1] = n_back;
+    }
+    info.chords = chords;
+    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: if has_backing { 0b11 } else { 1 }, programs, notes_per_ch: npc };
     Ok((song, info))
 }
 
@@ -832,6 +1129,43 @@ mod tests {
             println!("  {o}");
         }
         assert!(bad * 200 < all.len());
+    }
+
+    #[test]
+    fn feel_follows_the_tune_type() {
+        // jig: 1st of each three loudest, the middle one softest
+        let (s, _) = to_song("X:1\nR:jig\nM:6/8\nL:1/8\nK:D\n|:DFA dAF|DFA dAF:|", 0, 0).unwrap();
+        let v: Vec<u8> = s.notes.iter().filter(|n| n.ch == 0).take(6).map(|n| n.vel).collect();
+        assert!(v[0] > v[1] && v[3] > v[1] && v[2] > v[1], "jig lilt {v:?}");
+        assert!(v[0] > v[3], "bar's first beat strongest {v:?}");
+        // mazurka leans on beat 2
+        let (s, _) = to_song("X:1\nR:mazurka\nM:3/4\nL:1/4\nK:G\nGAB|GAB|", 0, 0).unwrap();
+        let v: Vec<u8> = s.notes.iter().map(|n| n.vel).collect();
+        assert!(v[1] > v[0] && v[1] > v[2], "mazurka {v:?}");
+        // hornpipe swings: the off-beat eighth starts late
+        let (s, _) = to_song("X:1\nR:hornpipe\nM:4/4\nL:1/8\nQ:1/4=60\nK:G\nGABc dBGB|", 0, 0).unwrap();
+        assert!((s.notes[1].start - 0.64).abs() < 0.01, "swung eighth at {}", s.notes[1].start);
+        // a reel stays straight
+        let (s, _) = to_song("X:1\nR:reel\nM:4/4\nL:1/8\nQ:1/4=60\nK:G\nGABc dBGB|", 0, 0).unwrap();
+        assert!((s.notes[1].start - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn chord_symbols_make_a_backing_part() {
+        assert_eq!(parse_chord("Am7"), Some((9, vec![0, 3, 7, 10], None)));
+        assert_eq!(parse_chord("D/F#"), Some((2, vec![0, 4, 7], Some(6))));
+        assert_eq!(parse_chord("^fine"), None);
+        // waltz with a pickup: bass on 1, chords on 2 and 3, starting at the first full bar
+        let (s, i) = to_song("X:1\nR:waltz\nM:3/4\nL:1/4\nQ:1/4=60\nK:G\nD|\"G\"G2B|\"D\"A2F|", 0, 0).unwrap();
+        assert_eq!(i.chords.len(), 2);
+        assert_eq!(s.channels, 0b11);
+        let back: Vec<&SongNote> = s.notes.iter().filter(|n| n.ch == 1).collect();
+        let bass: Vec<f64> = back.iter().filter(|n| n.key < 52).map(|n| (n.start * 100.0).round() / 100.0).collect();
+        assert_eq!(bass, vec![1.0, 4.0], "bass on each bar's 1 after the pickup");
+        assert!(back.iter().any(|n| n.key % 12 == 11), "G chord has a B");
+        // turned off
+        let (s, _) = to_song_opts("X:1\nM:3/4\nK:G\n\"G\"GAB|", 0, 0, Opts { backing: false, ..Opts::default() }).unwrap();
+        assert_eq!(s.channels, 1);
     }
 
     #[test]

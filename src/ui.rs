@@ -189,6 +189,11 @@ pub struct App {
     show_chart: bool,
     tunes_open: bool,
     tunes: crate::session::Loader,
+    coll: crate::collections::Loader,
+    coll_q: String,
+    coll_kind: String,
+    coll_sel: Option<usize>,
+    coll_ver: usize,
     tune_q: String,
     tune_kind: String,
     tune_sel: Option<usize>,
@@ -197,6 +202,7 @@ pub struct App {
     abc_paste: String,
     abc_file: Vec<crate::abc::TuneText>,
     tune_info: Option<crate::abc::TuneInfo>,
+    last_abc: Option<String>,
 }
 
 fn now_s(t0: &Instant) -> f64 {
@@ -483,14 +489,20 @@ impl App {
             show_chart: std::env::var("NOODLE_SHOW_CHART").is_ok(),
             tunes_open: std::env::var("NOODLE_SHOW_TUNES").is_ok(),
             tunes: Default::default(),
+            coll: Default::default(),
+            coll_q: String::new(),
+            coll_kind: String::new(),
+            coll_sel: None,
+            coll_ver: 0,
             tune_q: std::env::var("NOODLE_TUNE_Q").unwrap_or_default(),
             tune_kind: String::new(),
             tune_sel: None,
             tune_setting: 0,
-            tune_tab: 0,
+            tune_tab: std::env::var("NOODLE_TUNE_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             abc_paste: String::new(),
             abc_file: Vec::new(),
             tune_info: None,
+            last_abc: None,
             s,
         };
         // pick the soundfont: last used if it still exists, else the best one found
@@ -919,7 +931,10 @@ impl App {
 
     /// Load one ABC tune: play it as a song and set the Scale (and so the drones) to its key.
     fn load_abc(&mut self, text: &str) {
-        match crate::abc::to_song(text, self.s.main.0, self.s.main.1) {
+        self.last_abc = Some(text.to_string());
+        let opts = crate::abc::Opts { feel: self.s.abc_feel, backing: self.s.abc_backing, backing_prog: self.s.abc_backing_prog };
+        let (b, pg) = if self.s.main.0 >= sounds::SAMPLE_BANK { (0, 0) } else { self.s.main };
+        match crate::abc::to_song_opts(text, b, pg, opts) {
             Ok((song, info)) => {
                 self.set_song(Some(Arc::new(song)), 0);
                 self.scale_on = true;
@@ -3266,8 +3281,38 @@ impl App {
         let mut open = true;
         let mut load: Option<String> = None;
         egui::Window::new("🎻 Tunes").open(&mut open).collapsible(false).resizable(true).default_size([860.0, 560.0]).max_height(640.0).show(ctx, |ui| {
+            // how tunes play back
+            ui.horizontal(|ui| {
+                let mut changed = false;
+                changed |= ui.toggle_value(&mut self.s.abc_feel, "♩ Feel").on_hover_text("Accents and swing that fit the tune type: jig lilt, reel drive, hornpipe swing, waltz one, mazurka two").changed();
+                changed |= ui.toggle_value(&mut self.s.abc_backing, "🎸 Backing").on_hover_text("Play the tune's chord symbols as an accompaniment, in the style of its time signature").changed();
+                if self.s.abc_backing {
+                    const BACK: [(&str, i32); 7] = [("Guitar", 25), ("Nylon guitar", 24), ("Piano", 0), ("Accordion", 21), ("Harp", 46), ("Banjo", 105), ("Strings", 48)];
+                    let cur = BACK.iter().find(|b| b.1 == self.s.abc_backing_prog).map(|b| b.0).unwrap_or("Guitar");
+                    egui::ComboBox::from_id_salt("backing_prog").selected_text(cur).width(110.0).show_ui(ui, |ui| {
+                        for (n, p) in BACK {
+                            if ui.selectable_value(&mut self.s.abc_backing_prog, p, n).changed() {
+                                changed = true;
+                            }
+                        }
+                    });
+                }
+                if let Some(i) = &self.tune_info {
+                    if !i.chords.is_empty() {
+                        ui.label(RichText::new(format!("{} chord changes", i.chords.len())).size(11.0).color(text_dim()));
+                    } else {
+                        ui.label(RichText::new("this tune has no chord symbols").size(11.0).color(text_dim()));
+                    }
+                }
+                if changed {
+                    if let Some(t) = self.last_abc.clone() {
+                        load = Some(t);
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tune_tab, 0, "The Session");
+                ui.selectable_value(&mut self.tune_tab, 3, crate::collections::SOURCES[0].tab);
                 ui.selectable_value(&mut self.tune_tab, 1, "Paste ABC");
                 if !self.abc_file.is_empty() {
                     ui.selectable_value(&mut self.tune_tab, 2, format!("ABC file ({})", self.abc_file.len()));
@@ -3294,6 +3339,11 @@ impl App {
                             self.abc_paste.clear();
                         }
                     });
+                }
+                3 => {
+                    if let Some(t) = self.collection_tab(ui, ctx) {
+                        load = Some(t);
+                    }
                 }
                 2 => {
                     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -3411,6 +3461,126 @@ impl App {
         if !open {
             self.tunes_open = false;
         }
+    }
+
+    /// A downloaded ABC collection (John Chambers' klezmer tunes): returns ABC to load.
+    fn collection_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<String> {
+        use crate::collections::{self as coll, Status, SOURCES};
+        let src = &SOURCES[0];
+        let mut load = None;
+        if matches!(self.coll.status(), Status::Idle) && coll::downloaded(src) {
+            self.coll.start(src, false, ctx.clone());
+        }
+        match self.coll.status() {
+            Status::Idle | Status::Failed(_) if !coll::downloaded(src) || matches!(self.coll.status(), Status::Failed(_)) => {
+                if let Status::Failed(e) = self.coll.status() {
+                    ui.label(RichText::new(e).color(BAD));
+                }
+                ui.label(src.blurb);
+                ui.label(RichText::new(format!("Noodle downloads the tune files (a few hundred small text files, about 1 MB) straight from the collection's site at MIT into\n{}", coll::dir(src).display())).size(12.0).color(text_dim()));
+                if ui.button(RichText::new("⬇ Download the klezmer tunes").size(15.0)).clicked() {
+                    self.coll.start(src, true, ctx.clone());
+                }
+            }
+            Status::Working(msg) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(msg);
+                });
+            }
+            _ => {
+                let Some(book) = self.coll.book() else {
+                    ui.spinner();
+                    return None;
+                };
+                ui.horizontal(|ui| {
+                    if ui.add(egui::TextEdit::singleline(&mut self.coll_q).hint_text(format!("🔍 search {} klezmer tunes…", book.tunes.len())).desired_width(300.0)).changed() {
+                        self.coll_sel = None;
+                    }
+                    let kl = if self.coll_kind.is_empty() { "All types".to_string() } else { self.coll_kind.clone() };
+                    egui::ComboBox::from_id_salt("coll_kind").selected_text(kl).show_ui(ui, |ui| {
+                        if ui.selectable_value(&mut self.coll_kind, String::new(), "All types").changed() {
+                            self.coll_sel = None;
+                        }
+                        for k in &book.kinds {
+                            if ui.selectable_value(&mut self.coll_kind, k.clone(), k).changed() {
+                                self.coll_sel = None;
+                            }
+                        }
+                    });
+                });
+                let hits = coll::search(&book, &self.coll_q, &self.coll_kind, 600);
+                if self.coll_sel.is_none() {
+                    self.coll_sel = hits.first().copied();
+                    self.coll_ver = 0;
+                }
+                let avail = 430.0;
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(380.0);
+                        egui::ScrollArea::vertical().id_salt("coll_list").max_height(avail).show(ui, |ui| {
+                            if hits.is_empty() {
+                                ui.label(RichText::new("No tunes match.").color(text_dim()));
+                            }
+                            for &i in &hits {
+                                let t = &book.tunes[i];
+                                let key = t.versions.first().map(|v| v.key.as_str()).unwrap_or("");
+                                let kind = if t.kind.is_empty() { String::new() } else { format!("  ·  {}", t.kind) };
+                                let r = ui.selectable_label(self.coll_sel == Some(i), format!("{}{} · {}", t.name, kind, key));
+                                if r.clicked() {
+                                    self.coll_sel = Some(i);
+                                    self.coll_ver = 0;
+                                }
+                                if r.double_clicked() {
+                                    load = Some(t.versions[0].text.clone());
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        let Some(t) = self.coll_sel.and_then(|i| book.tunes.get(i)) else { return };
+                        ui.label(RichText::new(&t.name).size(20.0).strong());
+                        let mut line = vec![];
+                        if !t.kind.is_empty() {
+                            line.push(t.kind.clone());
+                        }
+                        if !t.meter.is_empty() {
+                            line.push(t.meter.clone());
+                        }
+                        ui.label(line.join(" · "));
+                        if !t.source.is_empty() {
+                            ui.label(RichText::new(&t.source).size(12.0).color(text_dim()));
+                        }
+                        let vi = self.coll_ver.min(t.versions.len() - 1);
+                        let v = &t.versions[vi];
+                        ui.horizontal(|ui| {
+                            if t.versions.len() > 1 {
+                                egui::ComboBox::from_id_salt("coll_ver").selected_text(format!("Version {} of {} · K: {}", vi + 1, t.versions.len(), v.key)).width(260.0).show_ui(ui, |ui| {
+                                    for (k, x) in t.versions.iter().enumerate() {
+                                        ui.selectable_value(&mut self.coll_ver, k, format!("Version {} · K: {} · {}", k + 1, x.key, x.file));
+                                    }
+                                });
+                            }
+                            if ui.button(RichText::new("▶ Load").size(15.0)).clicked() {
+                                load = Some(v.text.clone());
+                            }
+                        });
+                        egui::ScrollArea::vertical().id_salt("coll_abc").max_height(avail - 110.0).show(ui, |ui| {
+                            ui.label(RichText::new(&v.text).monospace().size(11.5));
+                        });
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} · {} files", src.credit, book.files)).size(11.0).color(text_dim()));
+                    if ui.small_button("↻ Update").clicked() {
+                        self.coll.start(src, true, ctx.clone());
+                    }
+                    ui.hyperlink_to(RichText::new("Collection home").size(11.0), src.home);
+                });
+            }
+        }
+        load
     }
 
     fn packs_window(&mut self, ctx: &egui::Context) {

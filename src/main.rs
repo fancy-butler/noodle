@@ -11,6 +11,7 @@
 mod abc;
 mod analog;
 mod chip;
+mod collections;
 mod audio;
 mod drums;
 mod game;

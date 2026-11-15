@@ -103,6 +103,9 @@ pub struct Settings {
     pub fing_any: bool,
     pub fing_tr: usize,
     pub metro_beats: u8,
+    pub abc_feel: bool,
+    pub abc_backing: bool,
+    pub abc_backing_prog: i32,
     pub metro_vol: f32,
 }
 
@@ -200,6 +203,9 @@ impl Default for Settings {
             fing_any: true,
             fing_tr: 0,
             metro_beats: 4,
+            abc_feel: true,
+            abc_backing: true,
+            abc_backing_prog: 25,
             metro_vol: 0.6,
         }
     }
