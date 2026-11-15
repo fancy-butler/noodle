@@ -36,6 +36,10 @@ Noodle is a lightweight Linux/Windows instrument that behaves like switching on 
 | **🪈 Fingering** | Draws the instrument and covers the holes or presses the keys for the note you're playing, with the next note shown faded beside it, and a whole-chart view. Charts: Great Highland chanter, Scottish smallpipes, Leicestershire smallpipes (covered/open), uilleann, soprano recorder, sopilka, tin whistle (any key, including low D), Boehm flute and saxophone (alto, tenor, soprano, baritone or written pitch). Every chart is transcribed from a real fingering chart, not worked out from theory. |
 | **Remembers** | Opens exactly how you left it. |
 
+## Ocarina mode
+
+Click **Ocarina** in the header: the window becomes a big 12-hole ocarina (Taiwanese system, alto C; also alto G/F, soprano, bass) that fills in the holes to cover for whatever you play, with the next note of a song beside it. Pick a glaze. Fingerings from Pure Ocarinas (pureocarinas.com).
+
 ## Keys
 
 | Key | Does |

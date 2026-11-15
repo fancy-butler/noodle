@@ -518,6 +518,10 @@ fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, V
         ];
         return (0.5, v, vec![0.48], vec![]);
     }
+    if chart.name.starts_with("Ocarina") {
+        let v = OC_HOLES.iter().zip(["L thumb", "L1", "L2", "L3", "L4", "R thumb", "R1", "R2", "R3", "R4", "L sub", "R sub"]).map(|((x, y, r), l)| Spot { x: *x, y: *y, w: r * 2.0, h: r * 2.0, shape: Hole, label: l }).collect();
+        return (OC_ASPECT, v, vec![], vec![]);
+    }
     if chart.name.starts_with("Oboe") {
         let v = vec![
             sp(0.20, 0.05, 0.14, 0.08, Tag, "I"),
@@ -617,6 +621,104 @@ fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, V
     (0.42, v, dividers, hands)
 }
 
+/// Hole positions on the ocarina picture (box units: x 0..1 across, y 0..1 down; box is 1.9:1),
+/// in the chart's order: Lt, L1-L4, Rt, R1-R4, L subhole, R subhole. Radii are in box-width units.
+const OC_HOLES: [(f32, f32, f32); 12] = [
+    (0.41, 0.80, 0.034), // left thumb (underneath)
+    (0.47, 0.31, 0.036), // L index
+    (0.37, 0.26, 0.036), // L middle
+    (0.27, 0.33, 0.034), // L ring
+    (0.18, 0.49, 0.022), // L pinky
+    (0.62, 0.80, 0.034), // right thumb (underneath)
+    (0.585, 0.33, 0.036),
+    (0.685, 0.28, 0.036),
+    (0.785, 0.35, 0.034),
+    (0.865, 0.51, 0.022), // R pinky
+    (0.39, 0.15, 0.016), // L subhole
+    (0.70, 0.165, 0.016), // R subhole
+];
+pub const OC_ASPECT: f32 = 1.9;
+
+/// A transverse 12-hole ocarina seen from above, holes filled when covered.
+/// Thumb holes are underneath, so they're drawn as dashed rings with a "thumb" tag.
+pub fn draw_ocarina(p: &Painter, area: Rect, states: Option<&[u8]>, a: f32, glaze: Color32) -> Rect {
+    let (bw, bh) = if area.width() / area.height() > OC_ASPECT { (area.height() * OC_ASPECT, area.height()) } else { (area.width(), area.width() / OC_ASPECT) };
+    let bx = Rect::from_center_size(area.center(), Vec2::new(bw, bh));
+    let at = |x: f32, y: f32| Pos2::new(bx.left() + x * bw, bx.top() + y * bh);
+    let glaze = glaze.gamma_multiply(a);
+    let dark = Color32::from_rgb(glaze.r() / 3, glaze.g() / 3, glaze.b() / 3).gamma_multiply(a);
+    // body: a sweet-potato egg, fuller on the mouthpiece side, tapering to the tail
+    let body: Vec<Pos2> = (0..64)
+        .map(|k| {
+            let t = k as f32 / 64.0 * std::f32::consts::TAU;
+            let (c, sn) = (t.cos(), t.sin());
+            let rx = 0.44;
+            let ry = 0.36 * (1.0 - 0.30 * c.max(0.0)) * (1.0 + 0.05 * (-c).max(0.0));
+            at(0.53 + rx * c, 0.45 + ry * sn)
+        })
+        .collect();
+    // mouthpiece: a tube from the lower left of the body toward the player, drawn first
+    // so the body sits on top of where it joins
+    let mp = [at(0.15, 0.60), at(0.27, 0.70), at(0.105, 0.955), at(0.045, 0.915)];
+    let shadow_mp: Vec<Pos2> = mp.iter().map(|q| *q + Vec2::new(0.0, bh * 0.03)).collect();
+    p.add(Shape::convex_polygon(shadow_mp, Color32::from_black_alpha((90.0 * a) as u8), Stroke::NONE));
+    p.add(Shape::convex_polygon(mp.to_vec(), glaze, Stroke::new(2.0, dark)));
+    // rounded tip with the windway slit
+    p.circle_filled(at(0.075, 0.935), bh * 0.055, glaze);
+    p.circle_stroke(at(0.075, 0.935), bh * 0.055, Stroke::new(2.0, dark));
+    p.line_segment([at(0.055, 0.935), at(0.095, 0.935)], Stroke::new((bh * 0.014).max(1.5), dark));
+    // drop shadow (reads as the body's thickness), body, rim
+    let shadow: Vec<Pos2> = body.iter().map(|q| *q + Vec2::new(0.0, bh * 0.035)).collect();
+    p.add(Shape::convex_polygon(shadow, dark, Stroke::NONE));
+    p.add(Shape::convex_polygon(body.clone(), glaze, Stroke::new(2.0, dark)));
+    // the voicing window (labium) where the sound comes out
+    let lab = Rect::from_center_size(at(0.22, 0.66), Vec2::new(bw * 0.06, bh * 0.06));
+    p.rect_filled(lab, bw * 0.01, dark);
+    // glossy highlight
+    let hl: Vec<Pos2> = (0..24)
+        .map(|k| {
+            let t = k as f32 / 24.0 * std::f32::consts::TAU;
+            at(0.55 + 0.22 * t.cos(), 0.17 + 0.04 * t.sin())
+        })
+        .collect();
+    p.add(Shape::convex_polygon(hl, Color32::from_white_alpha((40.0 * a) as u8), Stroke::NONE));
+    // holes
+    let paper = Color32::from_rgb(0xf7, 0xf2, 0xe6).gamma_multiply(a);
+    let ink = Color32::from_rgb(0x14, 0x12, 0x10).gamma_multiply(a);
+    let finger = Color32::from_rgb(0xf3, 0xc0, 0x9a).gamma_multiply(a);
+    for (i, (x, y, r)) in OC_HOLES.iter().enumerate() {
+        let c = at(*x, *y);
+        let rad = r * bw;
+        let st = states.and_then(|v| v.get(i)).copied().unwrap_or(0);
+        let thumb = i == 0 || i == 5;
+        if thumb {
+            // underneath: dashed ring, filled with a fingertip colour when covered
+            if st == 1 {
+                p.circle_filled(c, rad, finger);
+            }
+            for k in 0..14 {
+                let a0 = k as f32 / 14.0 * std::f32::consts::TAU;
+                p.line_segment([c + Vec2::angled(a0) * rad, c + Vec2::angled(a0 + 0.25) * rad], Stroke::new((rad * 0.14).max(1.2), paper));
+            }
+            if bh > 110.0 {
+                p.text(c + Vec2::new(0.0, rad + bh * 0.02), Align2::CENTER_TOP, if i == 0 { "L thumb" } else { "R thumb" }, FontId::proportional((bh * 0.045).clamp(8.0, 18.0)), paper.gamma_multiply(0.8));
+            }
+            continue;
+        }
+        // open hole = dark pit with a light lip; covered = fingertip pad; half = half pad
+        p.circle_filled(c, rad * 1.18, paper.gamma_multiply(0.85));
+        p.circle_filled(c, rad, ink);
+        if st == 1 {
+            p.circle_filled(c, rad * 1.12, finger);
+            p.circle_stroke(c, rad * 1.12, Stroke::new((rad * 0.12).max(1.0), Color32::from_rgb(0xa8, 0x6c, 0x4a).gamma_multiply(a)));
+        } else if st == 2 {
+            let pts: Vec<Pos2> = (0..=16).map(|k| { let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI; c + Vec2::new(t.cos(), t.sin()) * rad * 1.12 }).collect();
+            p.add(Shape::convex_polygon(pts, finger, Stroke::NONE));
+        }
+    }
+    bx
+}
+
 pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, states: Option<&[u8]>, label: &str, ghost: bool, ink: Color32) {
     let a = if ghost { 0.45 } else { 1.0 };
     let u = (r.height() / 200.0).clamp(0.8, 3.2).min(r.width() / 70.0).max(0.8);
@@ -627,7 +729,9 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
     let accent = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
     let caption = states
         .map(|s| {
-            if chart.name.starts_with("Trumpet") {
+            if chart.name.starts_with("Ocarina") {
+                String::new() // the picture says it all
+            } else if chart.name.starts_with("Trumpet") {
                 let v: String = s.iter().enumerate().filter(|(_, x)| **x == 1).map(|(i, _)| char::from(b'1' + i as u8)).collect();
                 if v.is_empty() { "open".to_string() } else { v }
             } else {
@@ -639,6 +743,13 @@ pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, sta
     let cap_h = 16.0 * u.min(1.8);
     let area = Rect::from_min_max(Pos2::new(r.left() + 2.0, r.top() + label_h), Pos2::new(r.right() - 2.0, r.bottom() - cap_h - 2.0));
     if area.height() < 10.0 || area.width() < 10.0 {
+        return;
+    }
+    if chart.name.starts_with("Ocarina") {
+        draw_ocarina(p, area, states, a, Color32::from_rgb(0x2f, 0x5f, 0xb0));
+        if !caption.is_empty() {
+            p.text(Pos2::new(r.center().x, r.bottom() - cap_h / 2.0), Align2::CENTER_CENTER, caption, FontId::proportional((10.5 * u).min(18.0)), accent);
+        }
         return;
     }
     let (bw, bh) = if area.width() / area.height() > aspect { (area.height() * aspect, area.height()) } else { (area.width(), area.width() / aspect) };

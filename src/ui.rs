@@ -18,6 +18,8 @@ use std::sync::atomic::Ordering::Relaxed;
 mod game_screen;
 #[path = "acc_screen.rs"]
 mod acc_screen;
+#[path = "oc_screen.rs"]
+mod oc_screen;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -184,6 +186,8 @@ pub struct App {
     style_done: bool,
     game_mode: bool,
     acc_mode: bool,
+    oc_mode: bool,
+    oc_prev: Option<(i32, i32)>,
     acc: Option<acc_screen::AccState>,
     acc_events: Vec<egui::Event>,
     game: Option<Game>,
@@ -511,6 +515,8 @@ impl App {
             style_done: false,
             game_mode: std::env::var("NOODLE_GAME").is_ok(),
             acc_mode: false,
+            oc_mode: false,
+            oc_prev: None,
             acc: None,
             acc_events: Vec::new(),
             game: None,
@@ -1303,16 +1309,20 @@ impl App {
         }
     }
 
-    /// 0 keyboard, 1 accordion, 2 game
+    /// 0 keyboard, 1 accordion, 2 game, 3 ocarina
     fn set_mode(&mut self, m: usize) {
         if self.acc_mode && m != 1 {
             self.exit_accordion();
+        }
+        if self.oc_mode && m != 3 {
+            self.exit_ocarina();
         }
         if self.game_mode && m != 2 {
             self.exit_game();
         }
         match m {
             1 => self.enter_accordion(),
+            3 => self.enter_ocarina(),
             2 if !self.game_mode => {
                 self.game_mode = true;
                 self.scale_on = true;
@@ -1330,18 +1340,18 @@ impl App {
             ui.label(RichText::new("NOODLE").size(24.0).strong().color(LIVE));
             ui.add_space(8.0);
             // the three ways to use Noodle, up front
-            let cur_mode = if self.acc_mode { 1 } else if self.game_mode { 2 } else { 0 };
+            let cur_mode = if self.acc_mode { 1 } else if self.game_mode { 2 } else if self.oc_mode { 3 } else { 0 };
             let mut want = cur_mode;
             egui::Frame::new().fill(card_bg()).corner_radius(8.0).inner_margin(egui::Margin::same(3)).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (i, (n, tip)) in [
-                    ("Keyboard", "Play sounds from your keyboard: the normal Noodle"),
-                    ("Accordion", "Turn Noodle into a button accordion: Irish, Scottish, French, English diatonics, C-griff, B-griff, bayan, Finnish. Space is the bellows."),
-                    ("Game", "Rhythm-game training: notes fall, you hit them on time"),
+                for (i, n, tip) in [
+                    (0, "Keyboard", "Play sounds from your keyboard: the normal Noodle"),
+                    (1, "Accordion", "Turn Noodle into a button accordion: Irish, Scottish, French, English diatonics, C-griff, B-griff, bayan, Finnish. Space is the bellows."),
+                    (3, "Ocarina", "A big 12-hole ocarina that shows which holes to cover for every note you play, and the next one in a song"),
+                    (2, "Game", "Rhythm-game training: notes fall, you hit them on time"),
                 ]
-                .iter()
-                .enumerate()
                 {
+                    let (n, tip) = (&n, &tip);
                     let on = cur_mode == i;
                     let b = egui::Button::new(RichText::new(*n).size(15.0).strong().color(if on { Color32::BLACK } else { fg() })).fill(if on { YOURS } else { Color32::TRANSPARENT }).min_size(Vec2::new(0.0, 28.0));
                     if ui.add(b).on_hover_text(*tip).clicked() {
@@ -4136,6 +4146,9 @@ impl eframe::App for App {
         {
             static ACC_ENV: std::sync::Once = std::sync::Once::new();
             ACC_ENV.call_once(|| {
+                if std::env::var("NOODLE_OCARINA").is_ok() {
+                    self.set_mode(3);
+                }
                 if let Ok(v) = std::env::var("NOODLE_ACC") {
                     self.s.acc_inst = v.parse().unwrap_or(0);
                     self.enter_accordion();
@@ -4193,7 +4206,7 @@ impl eframe::App for App {
             ctx.request_repaint();
             return;
         }
-        if !self.s.hide_modules && !self.game_mode {
+        if !self.s.hide_modules && !self.game_mode && !self.oc_mode {
             egui::TopBottomPanel::top("modules").frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
                 self.modules(ui);
             });
@@ -4205,7 +4218,7 @@ impl eframe::App for App {
             .exact_height(if self.s.kb_size <= 37 { 170.0 } else { 140.0 })
             .frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 8 }))
             .show(ctx, |ui| self.piano(ui));
-        if !self.game_mode {
+        if !self.game_mode && !self.oc_mode {
             self.fingering_pane(ctx);
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(bg()).inner_margin(egui::Margin { left: 10, right: 10, top: 4, bottom: 0 })).show(ctx, |ui| {
@@ -4213,6 +4226,12 @@ impl eframe::App for App {
                 let rect = ui.available_rect_before_wrap();
                 ui.allocate_rect(rect, Sense::hover());
                 self.game_screen(ui, rect);
+                return;
+            }
+            if self.oc_mode {
+                let rect = ui.available_rect_before_wrap();
+                ui.allocate_rect(rect, Sense::hover());
+                self.oc_screen(ui, rect);
                 return;
             }
             self.learn_bar(ui);

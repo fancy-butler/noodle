@@ -75,6 +75,7 @@ pub struct Settings {
     pub acc_drone_last: u8,
     /// accordion look: round buttons on the case (else plain key caps)
     pub acc_round: bool,
+    pub oc_glaze: u8,
     /// accordion sound: recorded reeds (when downloaded) or the synth
     pub acc_real: bool,
     pub ml3_setup_done: bool,
@@ -187,6 +188,7 @@ impl Default for Settings {
             acc_names: true,
             acc_drone_last: 2,
             acc_round: true,
+            oc_glaze: 0,
             acc_real: true,
             ml3_setup_done: false,
             wind: 0,

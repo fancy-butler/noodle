@@ -666,6 +666,49 @@ pub const CHARTS: &[Chart] = &[
             f(70, "OOOOOCCCCCCOOOOCCOCO"), // Bb4  a C# 123Eb|12-F
         ],
     },
+    Chart {
+        name: "Ocarina (12-hole, alto C)",
+        source: "Pure Ocarinas (pureocarinas.com): fingering system, high-note and accidental charts; low A and B from its 12-hole subhole diagram",
+        holes: &[
+            (Thumb, "left thumb"),
+            (Front, "L index"),
+            (Front, "L middle"),
+            (Front, "L ring"),
+            (Small, "L pinky"),
+            (Thumb, "right thumb"),
+            (Front, "R index"),
+            (Front, "R middle"),
+            (Front, "R ring"),
+            (Small, "R pinky"),
+            (Small, "L subhole"),
+            (Small, "R subhole"),
+        ],
+        breaks: &[5, 10],
+        note: "Taiwanese/Asian 12-hole system. Subholes are covered by sliding the middle finger forward over both holes. Half-filled = half-cover. Pure Ocarinas gives no A♯4, and its two charts disagree on high C, so that one is flagged.",
+        trans: &[("Alto C", 0), ("Alto G", -5), ("Alto F", -7), ("Soprano C", 12), ("Soprano G", 7), ("Bass C", -12)],
+        fings: &[
+            f(69, "CCCCC CCCCC CC"),
+            f(71, "CCCCC CCCCC OC"),
+            f(72, "CCCCC CCCCC OO"),
+            f(73, "CCCCC CCCCH OO"),
+            f(74, "CCCCC CCCCO OO"),
+            f(75, "CCCCC CCCOC OO"),
+            f(76, "CCCCC CCCOO OO"),
+            f(77, "CCCCC CCOOO OO"),
+            f(78, "CCCCC COCOH OO"),
+            f(79, "CCCCC COOOO OO"),
+            f(80, "CCCOC COOCO OO"),
+            f(81, "CCCOC COOOO OO"),
+            f(82, "CCOOC COOCO OO"),
+            f(83, "CCOOC COOOO OO"),
+            q(84, "COOOC COOOO OO"),
+            f(85, "OOOOC COOCO OO"),
+            f(86, "OOOOC COOOO OO"),
+            f(87, "OOCOC OOOOO OO"),
+            f(88, "OOOOC OOOOO OO"),
+            f(89, "OOOOO OOOOO OO"),
+        ],
+    },
 ];
 
 /// Parsed states (0 open, 1 closed, 2 half) for a chart entry.
@@ -737,6 +780,9 @@ pub fn chart_for_sound(name: &str) -> Option<(usize, usize)> {
         let c = find("Clarinet")?;
         let t = if n.contains("bass") { trans(c, "bass") } else if n.contains("e♭") || n.contains("eb ") { trans(c, "e♭") } else { 0 };
         return Some((c, t));
+    }
+    if n.contains("ocarina") {
+        return find("Ocarina").map(|c| (c, 0));
     }
     if n.contains("oboe") {
         return find("Oboe").map(|c| (c, 0));
@@ -813,6 +859,12 @@ mod tests {
         assert_eq!(parse(lookup(bn, 34, false, 0).unwrap().0.states)[0..4], [1, 1, 1, 1]);
         assert_eq!(chart_for_sound("Clarinet").map(|x| x.0), Some(CHARTS.iter().position(|c| c.name.starts_with("Clarinet")).unwrap()));
         assert_eq!(chart_for_sound("Bassoon").map(|x| CHARTS[x.0].name), Some("Bassoon"));
+        // ocarina: low C = ten main holes, no subholes; F6 all open; A4 both subholes
+        let oc = CHARTS.iter().find(|c| c.name.starts_with("Ocarina")).unwrap();
+        assert_eq!(parse(lookup(oc, 72, false, 0).unwrap().0.states), [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]);
+        assert!(parse(lookup(oc, 89, false, 0).unwrap().0.states).iter().all(|x| *x == 0));
+        assert_eq!(parse(lookup(oc, 69, false, 0).unwrap().0.states)[10..], [1, 1]);
+        assert_eq!(chart_for_sound("Ocarina").map(|x| CHARTS[x.0].name), Some("Ocarina (12-hole, alto C)"));
         assert_eq!(chart_for_sound("Bagpipe in G (with drones)").map(|x| x.0), Some(0));
     }
 }
