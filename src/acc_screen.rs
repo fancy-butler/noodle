@@ -345,6 +345,37 @@ impl App {
             } else {
                 ui.label(RichText::new("⚠ unverified").color(Color32::from_rgb(0xff, 0xb0, 0x40))).on_hover_text(source);
             }
+            // drones under the accordion: bagpipe drones or shruti Sa–Pa, in the chosen key
+            ui.separator();
+            ui.label(RichText::new("Drone").size(13.0).color(text_dim()));
+            let cur = match self.s.drone_mode {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            };
+            for (i, n) in ["Off", "Pipes", "Shruti"].iter().enumerate() {
+                if ui.selectable_label(cur == i, RichText::new(*n).size(13.0)).on_hover_text(match i {
+                    1 => "Bagpipe drones (the pipe chosen in Keyboard mode's Drone panel)",
+                    2 => "Shruti box: Sa and Pa (root and fifth)",
+                    _ => "No drone",
+                }).clicked() && cur != i {
+                    self.set_drone_mode(i as u8);
+                    if i == 2 && self.s.shruti_switches == 0 {
+                        self.s.shruti_switches = (1 << 0) | (1 << 7);
+                    }
+                }
+            }
+            if self.s.drone_mode == 1 || self.s.drone_mode == 2 {
+                egui::ComboBox::from_id_salt("acc_drone_key").selected_text(RichText::new(ROOTS[self.s.scale_root].0).strong()).width(44.0).show_ui(ui, |ui| {
+                    for (i, r) in ROOTS.iter().enumerate() {
+                        ui.selectable_value(&mut self.s.scale_root, i, r.0);
+                    }
+                }).response.on_hover_text("Drone key (same as the Scale key)");
+                let mut lv = self.s.drone_level;
+                if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false)).on_hover_text("Drone volume").changed() {
+                    self.s.drone_level = lv;
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕ Leave (Esc)").clicked() {
                     leave = true;

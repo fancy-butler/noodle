@@ -1927,11 +1927,12 @@ impl App {
         p.drone_tone.store(tone, Relaxed);
         p.drone_level.set(self.s.drone_level);
         p.drone_on.store(self.drone_running && mode != 0, Relaxed);
-        p.pipe_mode.store(mode == 1, Relaxed);
+        // in accordion mode the drones sound on their own: no chanter, no harmonium chords
+        p.pipe_mode.store(mode == 1 && !self.acc_mode, Relaxed);
         p.pipe_just.store(self.s.pipe_just, Relaxed);
         p.pipe_tune.store(self.s.pipe_tune, Relaxed);
         p.pipe_continuous.store(self.s.pipe_cont, Relaxed);
-        p.chord_on.store(mode == 3, Relaxed);
+        p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
     }
 
