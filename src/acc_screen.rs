@@ -242,6 +242,9 @@ impl App {
         }
         for ev in events {
             let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
+            if std::env::var("NOODLE_KEYDBG").is_ok() {
+                eprintln!("key {key:?} {pressed}");
+            }
             if repeat {
                 continue;
             }
@@ -261,6 +264,10 @@ impl App {
                     continue;
                 }
                 match key {
+                    Key::Backtick => {
+                        self.acc_drone_toggle();
+                        continue;
+                    }
                     Key::Tab => {
                         let n = self.acc_inst().registers.len();
                         self.s.acc_reg = if modifiers.shift { (self.s.acc_reg + n - 1) % n } else { (self.s.acc_reg + 1) % n };
@@ -311,6 +318,142 @@ impl App {
         (now, next)
     }
 
+    fn acc_drone_toggle(&mut self) {
+        if (self.s.drone_mode == 1 || self.s.drone_mode == 2) && self.drone_running {
+            self.s.acc_drone_last = self.s.drone_mode;
+            self.set_drone_mode(0);
+        } else {
+            let m = if self.s.acc_drone_last == 1 { 1 } else { 2 };
+            self.set_drone_mode(m);
+            if m == 2 && self.s.shruti_switches == 0 {
+                self.s.shruti_switches = (1 << 0) | (1 << 7);
+            }
+        }
+    }
+
+    /// Drones for accordion mode: big, simple, in the strip above the keys.
+    fn acc_drone_panel(&mut self, ui: &mut egui::Ui, strip: Rect) {
+        let p = ui.painter_at(strip);
+        p.rect_filled(strip, 12.0, card_bg());
+        let mut c = ui.new_child(egui::UiBuilder::new().max_rect(strip.shrink2(Vec2::new(14.0, 8.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let ui = &mut c;
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 6.0);
+        let mode = self.s.drone_mode;
+        let on = (mode == 1 || mode == 2) && self.drone_running;
+        // big on/off, also the ` key
+        let (txt, col) = if on { ("DRONE ON", GOOD) } else { ("DRONE OFF", card_hi()) };
+        let b = egui::Button::new(RichText::new(txt).size(17.0).strong().color(if on { Color32::BLACK } else { fg() })).fill(col).min_size(Vec2::new(130.0, 60.0)).corner_radius(10.0);
+        if ui.add(b).on_hover_text("Drone on/off (the ` key, left of 1)").clicked() {
+            self.acc_drone_toggle();
+        }
+        ui.vertical(|ui| {
+            ui.label(RichText::new("` key").size(11.0).color(text_dim()));
+            ui.horizontal(|ui| {
+                for (m, n) in [(1u8, "Pipes"), (2u8, "Shruti")] {
+                    let sel = mode == m || (!on && self.s.acc_drone_last == m);
+                    if ui.selectable_label(sel, RichText::new(n).size(15.0)).clicked() {
+                        self.s.acc_drone_last = m;
+                        if on {
+                            self.set_drone_mode(m);
+                            if m == 2 && self.s.shruti_switches == 0 {
+                                self.s.shruti_switches = (1 << 0) | (1 << 7);
+                            }
+                        }
+                    }
+                }
+            });
+        });
+        ui.separator();
+        // key
+        ui.vertical(|ui| {
+            ui.label(RichText::new("Key").size(11.0).color(text_dim()));
+            egui::ComboBox::from_id_salt("acc_drone_key").selected_text(RichText::new(ROOTS[self.s.scale_root].0).size(20.0).strong()).width(58.0).height(500.0).show_ui(ui, |ui| {
+                for (i, r) in ROOTS.iter().enumerate() {
+                    ui.selectable_value(&mut self.s.scale_root, i, RichText::new(r.0).size(16.0));
+                }
+            });
+        });
+        ui.separator();
+        let kind = if on { mode } else if self.s.acc_drone_last == 1 { 1 } else { 2 };
+        if kind == 1 {
+            // which bagpipe, and each drone on/off
+            let pidx = self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1);
+            let pp = &crate::pipes::PIPES[pidx];
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Bagpipe").size(11.0).color(text_dim()));
+                let mut pick = None;
+                egui::ComboBox::from_id_salt("acc_pipe").selected_text(RichText::new(pp.name).size(15.0)).width(220.0).height(500.0).show_ui(ui, |ui| {
+                    for (i, q) in crate::pipes::PIPES.iter().enumerate() {
+                        if ui.selectable_label(i == pidx, q.name).on_hover_text(q.note).clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                });
+                if let Some(i) = pick {
+                    self.select_pipe(i);
+                }
+            });
+            if self.s.pipe_drones.len() != pp.drones.len() {
+                self.s.pipe_drones = pp.drones.iter().map(|d| d.2).collect();
+            }
+            let tonic = self.p.pipe_tonic.load(Relaxed);
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Drones (click to switch on/off)").size(11.0).color(text_dim()));
+                ui.horizontal(|ui| {
+                    for (i, d) in pp.drones.iter().enumerate() {
+                        let don = self.s.pipe_drones[i];
+                        let nn = theory::note_name_oct((tonic as i32 + d.0 as i32).clamp(0, 127) as u8);
+                        let t = RichText::new(format!("{}\n{}", d.1, nn)).size(14.0).color(if don { Color32::BLACK } else { fg() });
+                        if ui.add(egui::Button::new(t).fill(if don { GOOD } else { card_hi() }).min_size(Vec2::new(76.0, 46.0)).corner_radius(8.0)).clicked() {
+                            self.s.pipe_drones[i] = !don;
+                        }
+                    }
+                });
+            });
+        } else {
+            // shruti: a lever per note of the octave
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Shruti reeds (click to open/close)").size(11.0).color(text_dim()));
+                    let mut preset = None;
+                    egui::ComboBox::from_id_salt("acc_shruti").selected_text("Presets").width(110.0).show_ui(ui, |ui| {
+                        for (i, (n, _)) in crate::pipes::SHRUTI.iter().enumerate() {
+                            if ui.selectable_label(false, *n).clicked() {
+                                preset = Some(i);
+                            }
+                        }
+                    });
+                    if let Some(i) = preset {
+                        self.s.shruti_switches = crate::pipes::SHRUTI[i].1.iter().fold(0u16, |m, r| m | (1 << *r));
+                    }
+                    ui.selectable_value(&mut self.s.shruti_low, true, "Low");
+                    ui.selectable_value(&mut self.s.shruti_low, false, "Mid");
+                });
+                let sp = self.speller();
+                let root = ROOTS[self.s.scale_root].1;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    for semi in 0..=12u8 {
+                        let son = self.s.shruti_switches & (1 << semi) != 0;
+                        let name = sp.name((root + semi) % 12);
+                        let t = RichText::new(if semi == 12 { format!("{name}'") } else { name }).size(14.0).strong().color(if son { Color32::BLACK } else { fg() });
+                        if ui.add(egui::Button::new(t).fill(if son { GOOD } else { card_hi() }).min_size(Vec2::new(38.0, 34.0)).corner_radius(6.0)).clicked() {
+                            self.s.shruti_switches ^= 1 << semi;
+                        }
+                    }
+                });
+            });
+        }
+        ui.separator();
+        ui.vertical(|ui| {
+            ui.label(RichText::new("Volume").size(11.0).color(text_dim()));
+            let mut lv = self.s.drone_level;
+            if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false)).changed() {
+                self.s.drone_level = lv;
+            }
+        });
+    }
+
     pub(super) fn acc_screen(&mut self, ui: &mut egui::Ui, rect: Rect) {
         if self.acc.is_none() {
             self.acc = Some(AccState::new());
@@ -345,37 +488,6 @@ impl App {
             } else {
                 ui.label(RichText::new("⚠ unverified").color(Color32::from_rgb(0xff, 0xb0, 0x40))).on_hover_text(source);
             }
-            // drones under the accordion: bagpipe drones or shruti Sa–Pa, in the chosen key
-            ui.separator();
-            ui.label(RichText::new("Drone").size(13.0).color(text_dim()));
-            let cur = match self.s.drone_mode {
-                1 => 1,
-                2 => 2,
-                _ => 0,
-            };
-            for (i, n) in ["Off", "Pipes", "Shruti"].iter().enumerate() {
-                if ui.selectable_label(cur == i, RichText::new(*n).size(13.0)).on_hover_text(match i {
-                    1 => "Bagpipe drones (the pipe chosen in Keyboard mode's Drone panel)",
-                    2 => "Shruti box: Sa and Pa (root and fifth)",
-                    _ => "No drone",
-                }).clicked() && cur != i {
-                    self.set_drone_mode(i as u8);
-                    if i == 2 && self.s.shruti_switches == 0 {
-                        self.s.shruti_switches = (1 << 0) | (1 << 7);
-                    }
-                }
-            }
-            if self.s.drone_mode == 1 || self.s.drone_mode == 2 {
-                egui::ComboBox::from_id_salt("acc_drone_key").selected_text(RichText::new(ROOTS[self.s.scale_root].0).strong()).width(44.0).show_ui(ui, |ui| {
-                    for (i, r) in ROOTS.iter().enumerate() {
-                        ui.selectable_value(&mut self.s.scale_root, i, r.0);
-                    }
-                }).response.on_hover_text("Drone key (same as the Scale key)");
-                let mut lv = self.s.drone_level;
-                if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false)).on_hover_text("Drone volume").changed() {
-                    self.s.drone_level = lv;
-                }
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕ Leave (Esc)").clicked() {
                     leave = true;
@@ -394,7 +506,9 @@ impl App {
         }
 
         // ---- the keyboard, exactly as it sits in front of you ----
-        let area = Rect::from_min_max(Pos2::new(rect.left(), top.bottom() + 8.0), rect.max);
+        let strip = Rect::from_min_size(Pos2::new(rect.left(), top.bottom() + 6.0), Vec2::new(rect.width(), 92.0));
+        self.acc_drone_panel(ui, strip);
+        let area = Rect::from_min_max(Pos2::new(rect.left(), strip.bottom() + 8.0), rect.max);
         let width_u = 15.3;
         let height_u = 6.75;
         let u = (area.width() / width_u).min(area.height() / height_u).min(96.0);
@@ -462,7 +576,7 @@ impl App {
         }
         // rows: numbers, Q, A, Z — with the keyboard's real stagger
         let rows_y = [0.95, 1.95, 2.95, 3.95];
-        dead(key_rect(0.0, rows_y[0], 1.0, 1.0), "");
+        dead(key_rect(0.0, rows_y[0], 1.0, 1.0), "`\ndrone");
         dead(key_rect(13.0, rows_y[0], 2.0, 1.0), "");
         dead(key_rect(0.0, rows_y[1], 1.5, 1.0), "Tab\nnext\nregister");
         dead(key_rect(13.5, rows_y[1], 1.5, 1.0), "");

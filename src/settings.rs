@@ -72,6 +72,7 @@ pub struct Settings {
     pub acc_reg: usize,
     pub acc_space_pull: bool,
     pub acc_names: bool,
+    pub acc_drone_last: u8,
     pub ml3_setup_done: bool,
     pub wind: u8, // 0 auto-detect, 1 off, 2 on
     pub breath_src: u8,
@@ -180,6 +181,7 @@ impl Default for Settings {
             acc_reg: 0,
             acc_space_pull: false,
             acc_names: true,
+            acc_drone_last: 2,
             ml3_setup_done: false,
             wind: 0,
             breath_src: 0,
