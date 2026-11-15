@@ -400,134 +400,250 @@ pub fn draw_harmonium(p: &Painter, r: Rect, stops: u8, lit: &[bool; 128], hover:
 // Fingering view: one instrument body, holes filled where a finger goes down.
 
 /// Draw `chart` with `states` (None = note not on this instrument). `ghost` = faded (the "next" note).
-pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, states: Option<&[u8]>, label: &str, ghost: bool, ink: Color32) {
+#[derive(Clone, Copy, PartialEq)]
+enum Shp {
+    /// tone hole / main key
+    Hole,
+    /// key: an oval
+    Key,
+    /// long thin lever (side keys, rollers)
+    Lever,
+    /// tiny trill/bis key
+    Dot,
+    /// recorder double hole
+    Double,
+    /// pipe end
+    End,
+    /// trumpet valve
+    Valve,
+}
+
+/// A key or hole on a chart diagram: centre (fraction of box width / height),
+/// size (fractions of box width), shape, small label.
+#[derive(Clone, Copy)]
+struct Spot {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    shape: Shp,
+    label: &'static str,
+}
+
+const fn sp(x: f32, y: f32, w: f32, h: f32, shape: Shp, label: &'static str) -> Spot {
+    Spot { x, y, w, h, shape, label }
+}
+
+/// Where each key/hole sits, in the style real fingering charts use.
+/// Returns (box width / height, spots in `chart.holes` order, hand dividers (y), hand labels (y, text)).
+fn chart_layout(chart: &crate::fingering::Chart) -> (f32, Vec<Spot>, Vec<f32>, Vec<(f32, &'static str)>) {
     use crate::fingering::Hole;
-    let a = if ghost { 0.45 } else { 1.0 };
-    // everything scales with the space it's given (the side pane draws big)
-    let u = (r.height() / 200.0).clamp(0.8, 3.2).min(r.width() / 70.0).max(0.8);
-    let has_keys = chart.holes.iter().any(|h| h.0 == Hole::Key);
-    let body_w = (r.width() * 0.26).min(30.0 * u);
-    let top = r.top() + 22.0 * u.min(1.8);
-    // names of pressed keys go underneath, wrapped to the cell width
-    let finger_c = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
-    let caption = states.map(|s| {
-        chart.holes.iter().zip(s.iter()).filter(|(h, st)| matches!(h.0, Hole::Key | Hole::Small) && **st == 1).map(|(h, _)| h.1).collect::<Vec<_>>().join(" + ")
-    }).unwrap_or_default();
-    let cap = (!caption.is_empty()).then(|| p.layout(caption, FontId::proportional(10.0 * u.min(1.6)), finger_c, r.width() - 4.0));
-    let bot = r.bottom() - cap.as_ref().map(|g| g.size().y + 4.0).unwrap_or(0.0).max(10.0);
-    // keyed instruments need room on the right for key pills
-    let cx = r.center().x + if has_keys { -body_w * 0.35 } else { body_w * 0.25 };
-    let body = Rect::from_min_max(Pos2::new(cx - body_w / 2.0, top), Pos2::new(cx + body_w / 2.0, bot));
-    p.rect_filled(body, body_w * 0.35, WOOD.gamma_multiply(a));
-    p.rect_filled(Rect::from_min_size(body.min - Vec2::new(2.0, 4.0), Vec2::new(body_w + 4.0, 8.0)), 3.0, IVORY.gamma_multiply(a));
-    p.text(Pos2::new(r.center().x, r.top() + 2.0), Align2::CENTER_TOP, label, FontId::proportional(15.0 * u.min(1.8)), ink.gamma_multiply(a));
-    let rows = chart.holes.iter().filter(|h| matches!(h.0, Hole::Front | Hole::Thumb | Hole::Double)).count();
-    let gap_extra = chart.breaks.len() as f32 * 0.6;
-    let step = (bot - top - 26.0 * u.min(1.8)) / (rows as f32 + gap_extra);
-    let rad = (step * 0.36).min(body_w * 0.36).max(3.0);
-    let closed = Color32::from_rgb(0x15, 0x10, 0x0c).gamma_multiply(a);
-    let open_fill = Color32::from_rgb(0xf6, 0xef, 0xdc).gamma_multiply(a);
-    let finger = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
-    let draw_hole = |c: Pos2, rr: f32, s: Option<u8>| match s {
-        Some(1) => {
-            p.circle_filled(c, rr * 1.15, finger);
-            p.circle_filled(c, rr * 0.8, closed);
+    use Shp::*;
+    if chart.name.starts_with("Flute") {
+        // Boehm flute, drawn like the classic vertical flute chart:
+        // thumb keys left, LH 1-2-3, G♯ for the pinky, RH 1-2-3 with trill keys, E♭, foot rollers
+        let v = vec![
+            sp(0.22, 0.07, 0.17, 0.12, Key, "B"),     // B thumb
+            sp(0.22, 0.155, 0.12, 0.07, Key, "B♭"),  // B♭ thumb lever
+            sp(0.56, 0.07, 0.19, 0.19, Hole, ""),
+            sp(0.56, 0.17, 0.19, 0.19, Hole, ""),
+            sp(0.56, 0.27, 0.19, 0.19, Hole, ""),
+            sp(0.82, 0.31, 0.15, 0.09, Key, "G♯"),
+            sp(0.56, 0.45, 0.19, 0.19, Hole, ""),
+            sp(0.30, 0.46, 0.06, 0.16, Lever, "B♭"),  // side lever
+            sp(0.76, 0.50, 0.07, 0.07, Dot, "tr1"),
+            sp(0.56, 0.55, 0.19, 0.19, Hole, ""),
+            sp(0.76, 0.60, 0.07, 0.07, Dot, "tr2"),
+            sp(0.56, 0.65, 0.19, 0.19, Hole, ""),
+            sp(0.82, 0.70, 0.15, 0.09, Key, "E♭"),
+            sp(0.56, 0.79, 0.26, 0.07, Lever, "C♯"),  // foot rollers, lying across
+            sp(0.56, 0.86, 0.26, 0.07, Lever, "C"),
+            sp(0.56, 0.93, 0.26, 0.07, Lever, "B"),
+            sp(0.84, 0.90, 0.07, 0.07, Dot, "gizmo"),
+        ];
+        return (0.5, v, vec![0.36], vec![]);
+    }
+    if chart.name.starts_with("Saxophone") {
+        // the usual sax chart: octave key and palm keys left, LH 1-bis-2-3, G♯ and the low
+        // pinky table right, side keys left, RH 1-2-3, low E♭ and C bottom right
+        let v = vec![
+            sp(0.20, 0.06, 0.15, 0.09, Key, "8va"),
+            sp(0.56, 0.10, 0.18, 0.18, Hole, ""),
+            sp(0.24, 0.16, 0.12, 0.07, Key, "D"),
+            sp(0.24, 0.215, 0.12, 0.07, Key, "E♭"),
+            sp(0.24, 0.27, 0.12, 0.07, Key, "F"),
+            sp(0.56, 0.155, 0.07, 0.07, Dot, "bis"),
+            sp(0.56, 0.21, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.31, 0.18, 0.18, Hole, ""),
+            sp(0.84, 0.29, 0.13, 0.08, Key, "G♯"),
+            sp(0.78, 0.37, 0.10, 0.07, Key, "C♯"),
+            sp(0.90, 0.37, 0.10, 0.07, Key, "B"),
+            sp(0.84, 0.43, 0.10, 0.07, Key, "B♭"),
+            sp(0.56, 0.55, 0.18, 0.18, Hole, ""),
+            sp(0.26, 0.56, 0.06, 0.15, Lever, "B♭"),
+            sp(0.18, 0.56, 0.06, 0.15, Lever, "E"),
+            sp(0.56, 0.66, 0.18, 0.18, Hole, ""),
+            sp(0.56, 0.77, 0.18, 0.18, Hole, ""),
+            sp(0.84, 0.82, 0.13, 0.08, Key, "E♭"),
+            sp(0.84, 0.90, 0.13, 0.08, Key, "C"),
+        ];
+        return (0.5, v, vec![0.48], vec![]);
+    }
+    if chart.name.starts_with("Trumpet") {
+        let v = vec![sp(0.2, 0.42, 0.22, 0.22, Valve, "1"), sp(0.5, 0.42, 0.22, 0.22, Valve, "2"), sp(0.8, 0.42, 0.22, 0.22, Valve, "3")];
+        return (1.9, v, vec![], vec![]);
+    }
+    // holes: one clean column, thumb holes beside the row they belong to, a gap between the hands
+    let rows: Vec<usize> = chart.holes.iter().enumerate().filter(|(_, h)| matches!(h.0, Hole::Front | Hole::Double)).map(|(i, _)| i).collect();
+    let has_end = chart.holes.iter().any(|h| h.0 == Hole::End);
+    let n = rows.len().max(1) as f32 + chart.breaks.len() as f32 * 0.5 + if has_end { 0.8 } else { 0.0 };
+    let step = 0.94 / n;
+    let mut y = 0.03 + step * 0.5;
+    let mut ys = vec![0f32; chart.holes.len()];
+    let mut dividers = vec![];
+    let mut hands = vec![];
+    let mut first = true;
+    for (i, h) in chart.holes.iter().enumerate() {
+        if chart.breaks.contains(&i) {
+            dividers.push(y - step * 0.25);
+            y += step * 0.5;
+            hands.push((y, "R"));
         }
-        Some(2) => {
-            p.circle_filled(c, rr, open_fill);
-            let pts: Vec<Pos2> = (0..=16)
-                .map(|k| {
-                    let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI;
-                    c + Vec2::new(t.cos(), t.sin()) * rr * 1.1
-                })
-                .collect();
-            p.add(Shape::convex_polygon(pts, finger, Stroke::NONE));
+        if first && matches!(h.0, Hole::Front | Hole::Double | Hole::Thumb) {
+            hands.push((y, if chart.breaks.is_empty() { "" } else { "L" }));
+            first = false;
         }
-        Some(_) => {
-            p.circle_filled(c, rr, open_fill);
-            p.circle_stroke(c, rr, Stroke::new(1.0_f32, closed));
-        }
-        None => {
-            p.circle_filled(c, rr, Color32::from_gray(90).gamma_multiply(a));
-        }
-    };
-    let mut y = top + 16.0 * u.min(1.8);
-    let mut last_y = y;
-    let mut first_row = true;
-    let mut keys_here = 0usize;
-    let mut pressed: Vec<&str> = Vec::new();
-    for (i, (kind, name)) in chart.holes.iter().enumerate() {
-        let st = states.and_then(|s| s.get(i)).copied();
-        match kind {
-            Hole::Front | Hole::Thumb | Hole::Double => {
-                if chart.breaks.contains(&i) {
-                    y += step * 0.6;
-                }
-                let c = match kind {
-                    Hole::Thumb => Pos2::new(cx - body_w * 0.5 - rad * 1.6, y),
-                    _ => Pos2::new(cx, y),
-                };
-                match kind {
-                    Hole::Double => {
-                        draw_hole(c - Vec2::new(rad * 0.55, 0.0), rad * 0.55, st.map(|s| if s == 2 { 1 } else { s }));
-                        draw_hole(c + Vec2::new(rad * 0.55, 0.0), rad * 0.55, st.map(|s| if s == 2 { 0 } else { s }));
-                    }
-                    Hole::Thumb => {
-                        draw_hole(c, rad, st);
-                        let t = if name.contains("octave") { "8va" } else { "T" };
-                        p.text(c - Vec2::new(rad + 2.0, 0.0), Align2::RIGHT_CENTER, t, FontId::proportional(9.5 * u.min(1.8)), ink.gamma_multiply(0.6 * a));
-                    }
-                    _ => draw_hole(c, rad, st),
-                }
-                last_y = y;
+        match h.0 {
+            Hole::Front | Hole::Double => {
+                ys[i] = y;
                 y += step;
-                first_row = false;
-                keys_here = 0;
             }
-            Hole::Small => {
-                // between the previous row and the next one, nudged right
-                let c = Pos2::new(cx + rad * 0.95, if first_row { top + 8.0 } else { last_y + step * 0.5 });
-                draw_hole(c, (rad * 0.42).max(2.0), st);
-                if st == Some(1) {
-                    pressed.push(name);
+            _ => ys[i] = y,
+        }
+    }
+    // hole diameter: most of a row's height, in box-width units (the box is 0.42 wide per 1 tall)
+    let d = (step * 0.72 / 0.42).min(0.34);
+    let mut v = vec![];
+    for (i, h) in chart.holes.iter().enumerate() {
+        let spot = match h.0 {
+            Hole::Front => sp(0.58, ys[i], d, d, Hole, ""),
+            Hole::Double => sp(0.58, ys[i], d, d, Double, ""),
+            Hole::Thumb => sp(0.24, ys[i], d * 0.85, d * 0.85, Hole, ""),
+            Hole::Small => sp(0.80, (ys[i] - step * 0.5).max(0.03), d * 0.45, d * 0.45, Dot, ""),
+            Hole::Key => sp(0.85, ys[i] - step, d * 0.75, d * 0.45, Key, ""),
+            Hole::End => sp(0.58, 0.985 - step * 0.35, d * 1.4, d * 0.55, End, "×"),
+        };
+        v.push(spot);
+    }
+    // aspect: tall and narrow, like the instrument
+    (0.42, v, dividers, hands)
+}
+
+pub fn draw_fingering(p: &Painter, r: Rect, chart: &crate::fingering::Chart, states: Option<&[u8]>, label: &str, ghost: bool, ink: Color32) {
+    let a = if ghost { 0.45 } else { 1.0 };
+    let u = (r.height() / 200.0).clamp(0.8, 3.2).min(r.width() / 70.0).max(0.8);
+    let label_h = 22.0 * u.min(1.8);
+    p.text(Pos2::new(r.center().x, r.top() + 2.0), Align2::CENTER_TOP, label, FontId::proportional(15.0 * u.min(1.8)), ink.gamma_multiply(a));
+    let (aspect, spots, dividers, hands) = chart_layout(chart);
+    // valve combination / pressed keys, written underneath like a chart caption
+    let accent = Color32::from_rgb(0xff, 0x8a, 0x3d).gamma_multiply(a);
+    let caption = states
+        .map(|s| {
+            if chart.name.starts_with("Trumpet") {
+                let v: String = s.iter().enumerate().filter(|(_, x)| **x == 1).map(|(i, _)| char::from(b'1' + i as u8)).collect();
+                if v.is_empty() { "open".to_string() } else { v }
+            } else {
+                spots.iter().zip(s.iter()).filter(|(sp, st)| **st == 1 && !sp.label.is_empty() && sp.label != "T").map(|(sp, _)| sp.label).collect::<Vec<_>>().join(" · ")
+            }
+        })
+        .unwrap_or_default();
+    // always leave room for the caption so every diagram in a grid is the same size
+    let cap_h = 16.0 * u.min(1.8);
+    let area = Rect::from_min_max(Pos2::new(r.left() + 2.0, r.top() + label_h), Pos2::new(r.right() - 2.0, r.bottom() - cap_h - 2.0));
+    if area.height() < 10.0 || area.width() < 10.0 {
+        return;
+    }
+    let (bw, bh) = if area.width() / area.height() > aspect { (area.height() * aspect, area.height()) } else { (area.width(), area.width() / aspect) };
+    let bx = Rect::from_center_size(area.center(), Vec2::new(bw, bh));
+    // paper: charts are black-on-white, so draw on an ivory card in either theme
+    let paper = Color32::from_rgb(0xf7, 0xf2, 0xe6).gamma_multiply(a);
+    let ink_c = Color32::from_rgb(0x1a, 0x16, 0x12).gamma_multiply(a);
+    p.rect_filled(bx.expand(4.0), 10.0, paper);
+    let pos = |s: &Spot| Pos2::new(bx.left() + s.x * bw, bx.top() + s.y * bh);
+    for d in &dividers {
+        let y = bx.top() + d * bh;
+        p.line_segment([Pos2::new(bx.left() + bw * 0.12, y), Pos2::new(bx.right() - bw * 0.12, y)], Stroke::new(1.0_f32, ink_c.gamma_multiply(0.35)));
+    }
+    for (y, t) in &hands {
+        if !t.is_empty() {
+            p.text(Pos2::new(bx.left() + 3.0, bx.top() + y * bh), Align2::LEFT_CENTER, *t, FontId::proportional((9.0 * u).min(16.0)), ink_c.gamma_multiply(0.45));
+        }
+    }
+    let small = FontId::proportional((8.5 * u).clamp(8.0, 15.0));
+    for (i, s) in spots.iter().enumerate() {
+        let st = states.and_then(|v| v.get(i)).copied();
+        let c = pos(s);
+        let (w, h) = (s.w * bw, s.h * bw);
+        let on = st == Some(1);
+        let half = st == Some(2);
+        let fill = if on { ink_c } else { paper };
+        let stroke = Stroke::new((1.4 * u).min(2.5), ink_c);
+        match s.shape {
+            Shp::Hole | Shp::Valve | Shp::Dot => {
+                let rad = w.min(h) / 2.0;
+                if s.shape == Shp::Valve {
+                    // valve cap seen from above, finger button inside
+                    p.circle_filled(c, rad, if on { ink_c } else { paper });
+                    p.circle_stroke(c, rad, Stroke::new((2.0 * u).min(3.5), ink_c));
+                    p.circle_stroke(c, rad * 0.6, Stroke::new(1.0, if on { paper } else { ink_c.gamma_multiply(0.5) }));
+                    p.text(c + Vec2::new(0.0, rad + 4.0 * u), Align2::CENTER_TOP, s.label, FontId::proportional((11.0 * u).min(22.0)), ink.gamma_multiply(a));
+                    continue;
+                }
+                p.circle_filled(c, rad, fill);
+                if half {
+                    let pts: Vec<Pos2> = (0..=16).map(|k| { let t = std::f32::consts::FRAC_PI_2 + k as f32 / 16.0 * std::f32::consts::PI; c + Vec2::new(t.cos(), t.sin()) * rad }).collect();
+                    p.add(Shape::convex_polygon(pts, ink_c, Stroke::NONE));
+                }
+                p.circle_stroke(c, rad, stroke);
+            }
+            Shp::Double => {
+                let rad = w * 0.26;
+                for (k, dx) in [(0, -0.28f32), (1, 0.28)] {
+                    let cc = c + Vec2::new(dx * w, 0.0);
+                    let closed = on || (half && k == 0);
+                    p.circle_filled(cc, rad, if closed { ink_c } else { paper });
+                    p.circle_stroke(cc, rad, stroke);
                 }
             }
-            Hole::Key => {
-                let kc = Pos2::new(cx + body_w * 0.5 + 7.0 * u + (keys_here % 3) as f32 * 10.0 * u, last_y + (keys_here / 3) as f32 * 8.0 * u);
-                keys_here += 1;
-                let on = st == Some(1);
-                let kr = Rect::from_center_size(kc, Vec2::new(8.0, 6.0) * u);
-                p.rect_filled(kr, 2.0, if on { finger } else { IVORY.gamma_multiply(a) });
-                p.rect_stroke(kr, 2.0, Stroke::new(0.8_f32, closed), eframe::egui::StrokeKind::Inside);
-                if on {
-                    pressed.push(name);
-                }
+            Shp::Key | Shp::Lever | Shp::End => {
+                let rr = Rect::from_center_size(c, Vec2::new(w, h));
+                let round = w.min(h) / 2.0;
+                p.rect_filled(rr, round, fill);
+                p.rect_stroke(rr, round, stroke, eframe::egui::StrokeKind::Middle);
             }
-            Hole::End => {
-                let c = Pos2::new(cx, bot + 2.0);
-                let on = st == Some(1);
-                p.add(Shape::convex_polygon(
-                    (0..20)
-                        .map(|k| {
-                            let t = k as f32 / 20.0 * std::f32::consts::TAU;
-                            c + Vec2::new(t.cos() * body_w * 0.55, t.sin() * 4.0 * u)
-                        })
-                        .collect(),
-                    if on { finger } else { open_fill },
-                    Stroke::new(1.0_f32, closed),
-                ));
-                if on {
-                    p.text(c + Vec2::new(body_w * 0.6 + 3.0, 0.0), Align2::LEFT_CENTER, if name.contains('×') { "×" } else { "knee" }, FontId::proportional(10.0 * u.min(1.8)), finger);
-                }
+        }
+        if on && !matches!(s.shape, Shp::Hole | Shp::Double) {
+            // pressed side keys get the accent so they're spotted at a glance
+            let rr = Rect::from_center_size(c, Vec2::new(w, h)).expand(2.5);
+            p.rect_stroke(rr, w.min(h) / 2.0 + 2.5, Stroke::new((1.6 * u).min(3.0), accent), eframe::egui::StrokeKind::Outside);
+        }
+        if !s.label.is_empty() && s.shape != Shp::Valve && bw > 80.0 {
+            if s.shape == Shp::Lever && s.h > s.w {
+                // upright levers: name underneath
+                p.text(c + Vec2::new(0.0, h / 2.0 + 2.0), Align2::CENTER_TOP, s.label, small.clone(), ink_c.gamma_multiply(if on { 1.0 } else { 0.5 }));
+                continue;
+            }
+            // key names sit outside the key, on the side away from the main column
+            let left = s.x < 0.5;
+            let at = if left { c - Vec2::new(w / 2.0 + 3.0, 0.0) } else { c + Vec2::new(w / 2.0 + 3.0, 0.0) };
+            let at = if s.shape == Shp::Lever && s.w > s.h { c + Vec2::new(w / 2.0 + 3.0, 0.0) } else { at };
+            let al = if left && !(s.shape == Shp::Lever && s.w > s.h) { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
+            if s.label != "T" || true {
+                p.text(at, al, s.label, small.clone(), ink_c.gamma_multiply(if on { 1.0 } else { 0.5 }));
             }
         }
     }
-    let _ = pressed;
-    if let Some(g) = cap {
-        let sz = g.size();
-        p.galley(Pos2::new(r.center().x - sz.x / 2.0, r.bottom() - sz.y), g, finger);
-    }
-    if states.is_none() {
-        p.text(Pos2::new(cx, (top + bot) / 2.0), Align2::CENTER_CENTER, "—", FontId::proportional(20.0 * u.min(1.8)), ink.gamma_multiply(0.5));
+    if !caption.is_empty() {
+        p.text(Pos2::new(r.center().x, r.bottom() - cap_h / 2.0), Align2::CENTER_CENTER, caption, FontId::proportional((10.5 * u).min(18.0)), accent);
     }
 }

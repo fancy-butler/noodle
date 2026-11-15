@@ -426,6 +426,47 @@ pub const CHARTS: &[Chart] = &[
             f(89, "C O CCC O OO OOOO O OC OO OO"),
         ],
     },
+    Chart {
+        name: "Trumpet",
+        source: "TrumpetStudio trumpet fingering chart (Michael Droste), checked against theonlinemetronome.com's table",
+        holes: &[(Key, "valve 1"), (Key, "valve 2"), (Key, "valve 3")],
+        breaks: &[],
+        note: "Written pitch, F♯3–C6. Pick B♭ for a B♭ trumpet, cornet or flugelhorn so the keyboard's concert pitch maps to your written note.",
+        trans: &[("B♭ trumpet / cornet / flugelhorn", -2), ("C trumpet", 0)],
+        fings: &[
+            f(54, "CCC"),
+            f(55, "COC"),
+            f(56, "OCC"),
+            f(57, "CCO"),
+            f(58, "COO"),
+            f(59, "OCO"),
+            f(60, "OOO"),
+            f(61, "CCC"),
+            f(62, "COC"),
+            f(63, "OCC"),
+            f(64, "CCO"),
+            f(65, "COO"),
+            f(66, "OCO"),
+            f(67, "OOO"),
+            f(68, "OCC"),
+            f(69, "CCO"),
+            f(70, "COO"),
+            f(71, "OCO"),
+            f(72, "OOO"),
+            f(73, "CCO"),
+            f(74, "COO"),
+            f(75, "OCO"),
+            f(76, "OOO"),
+            f(77, "COO"),
+            f(78, "OCO"),
+            f(79, "OOO"),
+            f(80, "OCC"),
+            f(81, "CCO"),
+            f(82, "COO"),
+            f(83, "OCO"),
+            f(84, "OOO"),
+        ],
+    },
 ];
 
 /// Parsed states (0 open, 1 closed, 2 half) for a chart entry.
@@ -488,6 +529,11 @@ pub fn chart_for_sound(name: &str) -> Option<(usize, usize)> {
     if (n.contains("flute") || n.contains("piccolo")) && !n.contains("pan") && !n.contains("shakuhachi") {
         return find("Flute").map(|c| (c, 0));
     }
+    if n.contains("trumpet") || n.contains("cornet") || n.contains("flugel") {
+        let c = find("Trumpet")?;
+        let t = if n.contains(" c ") || n.ends_with(" c") { 1 } else { 0 };
+        return Some((c, t));
+    }
     if n.contains("sax") {
         let c = find("Saxophone")?;
         let t = ["alto", "tenor", "soprano", "bari"].iter().find(|w| n.contains(*w)).map(|w| trans(c, w)).unwrap_or(0);
@@ -536,6 +582,12 @@ mod tests {
         assert_eq!(chart_for_sound("Flute (vibrato)").map(|x| CHARTS[x.0].name), Some("Flute (Boehm, B foot)"));
         assert_eq!(chart_for_sound("Pan Flute"), None);
         assert_eq!(chart_for_sound("Yamaha Grand Piano"), None);
+        // trumpet: written C5 = open, written D4 = 1+3; B♭ trumpet sounds a tone lower
+        let tp = CHARTS.iter().find(|c| c.name == "Trumpet").unwrap();
+        assert_eq!(parse(lookup(tp, 72, false, 0).unwrap().0.states), vec![0, 0, 0]);
+        assert_eq!(parse(lookup(tp, 62, false, 0).unwrap().0.states), vec![1, 0, 1]);
+        assert_eq!(lookup(tp, 60, false, -2).unwrap().0.midi, 62);
+        assert_eq!(chart_for_sound("Trumpet (vibrato)").map(|x| CHARTS[x.0].name), Some("Trumpet"));
         assert_eq!(chart_for_sound("Bagpipe in G (with drones)").map(|x| x.0), Some(0));
     }
 }
