@@ -225,14 +225,21 @@ impl App {
 
     /// Keyboard in accordion mode. Returns true when it handled the input.
     pub(super) fn acc_keys(&mut self, ctx: &egui::Context) {
+        let mut events = std::mem::take(&mut self.acc_events);
         if !ctx.input(|i| i.focused) {
             self.acc_release_all();
             return;
         }
         if ctx.wants_keyboard_input() {
-            return;
+            // typing in a text box (e.g. tune search): let it have the keys
+            events.clear();
         }
-        let events = ctx.input(|i| i.events.clone());
+        // nothing on screen should hold keyboard focus in accordion mode
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            if !ctx.wants_keyboard_input() {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
         for ev in events {
             let egui::Event::Key { key, pressed, repeat, modifiers, .. } = ev else { continue };
             if repeat {

@@ -185,6 +185,7 @@ pub struct App {
     game_mode: bool,
     acc_mode: bool,
     acc: Option<acc_screen::AccState>,
+    acc_events: Vec<egui::Event>,
     game: Option<Game>,
     show_results: bool,
     drone_running: bool,
@@ -487,6 +488,7 @@ impl App {
             game_mode: std::env::var("NOODLE_GAME").is_ok(),
             acc_mode: false,
             acc: None,
+            acc_events: Vec::new(),
             game: None,
             show_results: false,
             drone_running: false,
@@ -1277,9 +1279,55 @@ impl App {
         }
     }
 
+    /// 0 keyboard, 1 accordion, 2 game
+    fn set_mode(&mut self, m: usize) {
+        if self.acc_mode && m != 1 {
+            self.exit_accordion();
+        }
+        if self.game_mode && m != 2 {
+            self.exit_game();
+        }
+        match m {
+            1 => self.enter_accordion(),
+            2 if !self.game_mode => {
+                self.game_mode = true;
+                self.scale_on = true;
+                self.rebuild_walk();
+                if self.s.view == 1 {
+                    self.s.view = 2;
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("NOODLE").size(24.0).strong().color(LIVE));
+            ui.add_space(8.0);
+            // the three ways to use Noodle, up front
+            let cur_mode = if self.acc_mode { 1 } else if self.game_mode { 2 } else { 0 };
+            let mut want = cur_mode;
+            egui::Frame::new().fill(card_bg()).corner_radius(8.0).inner_margin(egui::Margin::same(3)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (i, (n, tip)) in [
+                    ("Keyboard", "Play sounds from your keyboard: the normal Noodle"),
+                    ("Accordion", "Turn Noodle into a button accordion: Irish, Scottish, French, English diatonics, C-griff, B-griff, bayan, Finnish. Space is the bellows."),
+                    ("Game", "Rhythm-game training: notes fall, you hit them on time"),
+                ]
+                .iter()
+                .enumerate()
+                {
+                    let on = cur_mode == i;
+                    let b = egui::Button::new(RichText::new(*n).size(15.0).strong().color(if on { Color32::BLACK } else { fg() })).fill(if on { YOURS } else { Color32::TRANSPARENT }).min_size(Vec2::new(0.0, 28.0));
+                    if ui.add(b).on_hover_text(*tip).clicked() {
+                        want = i;
+                    }
+                }
+            });
+            if want != cur_mode {
+                self.set_mode(want);
+            }
             ui.add_space(8.0);
             if ui.add(egui::Button::new(RichText::new("◀").size(18.0))).on_hover_text("Previous sound (←)").clicked() {
                 self.step_preset(false, -1);
@@ -2649,29 +2697,6 @@ impl App {
                 }
             }).response.on_hover_text("Show the staff in written pitch for your instrument (sax, clarinet, whistle…)");
             ui.separator();
-            let mut am = self.acc_mode;
-            if ui.toggle_value(&mut am, RichText::new("Accordion").strong()).on_hover_text("Turn Noodle into a button accordion: Irish, Scottish, French and English diatonics, C-griff, B-griff, bayan, Finnish. Space is the bellows.").changed() {
-                if am {
-                    self.enter_accordion();
-                } else {
-                    self.exit_accordion();
-                }
-            }
-            if ui.toggle_value(&mut self.game_mode, RichText::new("🎮 Game").strong()).on_hover_text("Rhythm-game training: notes fall, you hit them on time").changed() {
-                if self.game_mode && self.acc_mode {
-                    self.exit_accordion();
-                }
-                if self.game_mode {
-                    self.scale_on = true;
-                    self.rebuild_walk();
-                    if self.s.view == 1 {
-                        self.s.view = 2;
-                    }
-                } else {
-                    let _ = self.tx.send(Cmd::SongPlay(false));
-                    self.game = None;
-                }
-            }
             let was = self.scale_on;
             ui.toggle_value(&mut self.scale_on, RichText::new("🎼 Scale").strong());
             if was != self.scale_on {
@@ -3938,6 +3963,23 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if !self.acc_mode || ctx.wants_keyboard_input() {
+            return;
+        }
+        // Tab would move focus, Space would press the focused button, arrows move focus:
+        // take every key away from egui and give it to the accordion
+        let mut keep = Vec::with_capacity(raw.events.len());
+        for e in raw.events.drain(..) {
+            match e {
+                egui::Event::Key { .. } => self.acc_events.push(e),
+                egui::Event::Text(_) => {}
+                other => keep.push(other),
+            }
+        }
+        raw.events = keep;
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let want_light = match self.s.theme {
             1 => true,
