@@ -65,6 +65,8 @@ pub struct Settings {
     /// fingering panel: 0 auto (follows the sound), 1 always, 2 off
     pub fing_mode: u8,
     pub fing_pane: bool,
+    /// 0 = colour whole keys by role, 1 = dots
+    pub scale_style: u8,
     pub fing_pane_w: f32,
     pub acc_inst: usize,
     pub acc_reg: usize,
@@ -172,6 +174,7 @@ impl Default for Settings {
             show_drone: true,
             fing_mode: 0,
             fing_pane: true,
+            scale_style: 0,
             fing_pane_w: 380.0,
             acc_inst: 0,
             acc_reg: 0,

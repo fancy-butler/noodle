@@ -2768,8 +2768,19 @@ impl App {
                     let _ = self.tx.send(Cmd::SongPlay(true));
                 }
                 let sp = self.speller();
-                let names: Vec<String> = SCALES[sidx].steps.iter().map(|s| sp.name((ROOTS[self.s.scale_root].1 + s) % 12)).collect();
-                ui.label(RichText::new(names.join(" ")).strong().color(pick(GOOD, Color32::from_rgb(0x1a, 0x8a, 0x3e))));
+                let alt = theory::character(SCALES[sidx].steps).altered;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    for st in SCALES[sidx].steps {
+                        let n = sp.name((ROOTS[self.s.scale_root].1 + st) % 12);
+                        let c = if *st == 0 { SC_ROOT } else if alt & (1 << st) != 0 { SC_CHAR } else { pick(GOOD, Color32::from_rgb(0x1a, 0x8a, 0x3e)) };
+                        ui.label(RichText::new(n).strong().size(15.0).color(c)).on_hover_text(theory::degree_name(SCALES[sidx].steps, *st));
+                    }
+                });
+                let mut keys = self.s.scale_style == 0;
+                if ui.toggle_value(&mut keys, "Colour keys").on_hover_text("On: whole keys coloured — red root, purple for the notes that give the scale its character, green for the rest, grey for notes outside the scale. Off: small dots.").changed() {
+                    self.s.scale_style = if keys { 0 } else { 1 };
+                }
                 if self.walk {
                     ui.label(RichText::new(format!("step {}/{} · laps {}", self.walk_pos + 1, self.walk_seq.len(), self.walk_laps)).color(YOURS));
                 }
@@ -2777,6 +2788,27 @@ impl App {
         });
         if self.scale_on {
             let sc = &SCALES[self.s.scale_idx.min(SCALES.len() - 1)];
+            let root_pc = ROOTS[self.s.scale_root].1;
+            let ch = theory::character(sc.steps);
+            let sp = self.speller();
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let chip = |ui: &mut egui::Ui, c: Color32, t: String| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(12.0, 12.0), Sense::hover());
+                    ui.painter().rect_filled(r, 3.0, c);
+                    ui.label(RichText::new(t).size(13.0).strong());
+                };
+                let short = sc.name.split(" (").next().unwrap_or(sc.name).trim_start_matches("Irish/Scottish: ");
+                ui.label(RichText::new(format!("{} {} =", sp.name(root_pc), short)).size(13.0));
+                ui.label(RichText::new(theory::describe(sc.steps)).size(13.0).strong().color(fg()));
+                ui.add_space(10.0);
+                chip(ui, SC_ROOT, format!("root {}", sp.name(root_pc)));
+                if ch.altered != 0 {
+                    let notes: Vec<String> = (0..12u8).filter(|i| ch.altered & (1 << i) != 0).map(|i| format!("{} ({})", sp.name((root_pc + i) % 12), theory::degree_name(sc.steps, i))).collect();
+                    chip(ui, SC_CHAR, format!("what makes it {}: {}", short, notes.join(", ")));
+                }
+                chip(ui, SC_WHITE, "rest of the scale".into());
+            });
             let mut line = String::new();
             if !sc.aka.is_empty() {
                 line.push_str(&format!("Also called: {}.  ", sc.aka));
@@ -3229,6 +3261,8 @@ impl App {
         let mask = self.scale_mask();
         let big = self.s.kb_size <= 37;
         let root_pc = ROOTS[self.s.scale_root].1;
+        let sc_steps = SCALES[self.s.scale_idx.min(SCALES.len() - 1)].steps;
+        let sc_char = theory::character(sc_steps).altered;
         let speller = self.speller();
         let walk_target = if self.scale_on && self.walk { self.walk_seq.get(self.walk_pos).copied() } else { None };
         let song_now: Vec<(u8, bool)> = match &self.song {
@@ -3258,8 +3292,28 @@ impl App {
                 }
                 let r = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(w, if b { bh } else { rect.height() }));
                 let base = if b { Color32::from_rgb(0x18, 0x19, 0x1c) } else { Color32::from_rgb(0xf4, 0xf1, 0xea) };
+                let in_scale = mask != 0 && mask & (1 << (k % 12)) != 0;
+                let iv = (k as i32 - root_pc as i32).rem_euclid(12) as u8;
+                let role = if !in_scale {
+                    None
+                } else if iv == 0 {
+                    Some(SC_ROOT)
+                } else if sc_char & (1 << iv) != 0 {
+                    Some(SC_CHAR)
+                } else {
+                    Some(if b { SC_BLACK } else { SC_WHITE })
+                };
+                let keys_style = self.s.scale_style == 0 && mask != 0;
                 let mut fill = base;
-                if let Some(c) = state_col(k) {
+                if keys_style {
+                    fill = match role {
+                        Some(c) => c,
+                        None if !b => SC_OFF_WHITE,
+                        None => Color32::from_rgb(0x0e, 0x0e, 0x10),
+                    };
+                }
+                let held = state_col(k);
+                if let Some(c) = held {
                     fill = c;
                 }
                 let wr = (now - self.wrong[k as usize]) as f32;
@@ -3267,16 +3321,33 @@ impl App {
                     fill = BAD.gamma_multiply(1.0 - wr / 0.45 * 0.5);
                 }
                 let shrink = if b { 1.0 } else { 0.7 };
-                painter.rect_filled(r.shrink2(Vec2::new(shrink, 0.0)), if b { 3.0 } else { 4.0 }, fill);
+                let kr = r.shrink2(Vec2::new(shrink, 0.0));
+                painter.rect_filled(kr, if b { 3.0 } else { 4.0 }, fill);
                 if !b {
-                    painter.rect_stroke(r.shrink2(Vec2::new(shrink, 0.0)), 4.0, Stroke::new(1.0_f32, gray(90)), StrokeKind::Inside);
+                    painter.rect_stroke(kr, 4.0, Stroke::new(1.0_f32, gray(90)), StrokeKind::Inside);
                 }
-                // scale dots + names
-                if mask != 0 && mask & (1 << (k % 12)) != 0 {
-                    let is_root = k % 12 == root_pc;
+                if keys_style && in_scale {
+                    // while a key is held its role still shows as a band at the bottom
+                    if held.is_some() {
+                        let band = Rect::from_min_max(Pos2::new(kr.left() + 2.0, kr.bottom() - 9.0), Pos2::new(kr.right() - 2.0, kr.bottom() - 3.0));
+                        painter.rect_filled(band, 2.0, role.unwrap_or(GOOD));
+                    }
+                    let strong = matches!(role, Some(c) if c == SC_ROOT || c == SC_CHAR) || b;
+                    let ink = if strong { Color32::WHITE } else { Color32::from_rgb(0x14, 0x40, 0x22) };
+                    let deg = theory::degree_name(sc_steps, iv);
+                    if b {
+                        painter.text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, deg, FontId::proportional(if big { 13.0 } else { 10.0 }), ink);
+                    } else {
+                        painter.text(Pos2::new(r.center().x, r.bottom() - 30.0), Align2::CENTER_CENTER, deg, FontId::proportional(if big { 15.0 } else { 12.0 }), ink);
+                        painter.text(Pos2::new(r.center().x, r.bottom() - 14.0), Align2::CENTER_CENTER, speller.name(k % 12), FontId::proportional(if big { 13.0 } else { 10.5 }), ink.gamma_multiply(0.85));
+                    }
+                } else if in_scale {
+                    // classic dots
+                    let is_root = iv == 0;
                     let cy = if b { r.bottom() - 10.0 } else { r.bottom() - 26.0 };
                     let c = Pos2::new(r.center().x, cy);
-                    painter.circle_filled(c, if is_root { 6.0 } else { 4.5 }, if is_root { Color32::from_rgb(0x1f, 0x9d, 0x4c) } else { GOOD });
+                    let dot = if is_root { SC_ROOT } else if sc_char & (1 << iv) != 0 { SC_CHAR } else { GOOD };
+                    painter.circle_filled(c, if is_root { 6.0 } else { 4.5 }, dot);
                     if !b {
                         painter.text(Pos2::new(r.center().x, r.bottom() - 12.0), Align2::CENTER_CENTER, speller.name(k % 12), FontId::proportional(10.5), Color32::from_rgb(0x1f, 0x7d, 0x3c));
                     }
@@ -3961,6 +4032,13 @@ impl App {
         });
     }
 }
+
+/// scale teaching colours: root, the notes that give the scale its character, the rest
+const SC_ROOT: Color32 = Color32::from_rgb(0xe8, 0x4a, 0x3c);
+const SC_CHAR: Color32 = Color32::from_rgb(0x9b, 0x5d, 0xe5);
+const SC_WHITE: Color32 = Color32::from_rgb(0xc4, 0xea, 0xce);
+const SC_BLACK: Color32 = Color32::from_rgb(0x2e, 0x7d, 0x4f);
+const SC_OFF_WHITE: Color32 = Color32::from_rgb(0xa9, 0xa6, 0x9f);
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {

@@ -384,3 +384,145 @@ mod tests {
         assert_eq!(name_chord(&[60, 67], &d).unwrap().0, "Perfect 5th");
     }
 }
+
+/// What a scale is, as a teacher would put it: the familiar scale it's closest
+/// to (major or natural minor) and the notes that differ from it.
+pub struct Character {
+    /// "major" or "natural minor"
+    pub reference: &'static str,
+    /// intervals (0..11 above the root) that aren't in the reference scale
+    pub altered: u16,
+    /// e.g. ["raised 6th"] or ["♭2", "raised 3rd"]
+    pub changes: Vec<String>,
+    /// reference notes the scale leaves out (pentatonics etc.), as degree names
+    pub missing: Vec<&'static str>,
+}
+
+const MAJOR: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
+const MINOR: [u8; 7] = [0, 2, 3, 5, 7, 8, 10];
+const ORD: [&str; 7] = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th"];
+
+/// Interval above the root as a degree: 1, ♭2, 2, ♭3 … spelled to suit the scale.
+pub fn degree_name(steps: &[u8], iv: u8) -> &'static str {
+    let has = |x: u8| steps.contains(&x);
+    match iv % 12 {
+        0 => "1",
+        1 => "♭2",
+        2 => "2",
+        3 => {
+            if has(4) && !has(2) {
+                "♯2"
+            } else {
+                "♭3"
+            }
+        }
+        4 => "3",
+        5 => "4",
+        6 => {
+            if has(5) {
+                "♭5"
+            } else {
+                "♯4"
+            }
+        }
+        7 => "5",
+        8 => {
+            if has(7) {
+                "♭6"
+            } else {
+                "♯5"
+            }
+        }
+        9 => "6",
+        10 => "♭7",
+        _ => "7",
+    }
+}
+
+pub fn character(steps: &[u8]) -> Character {
+    let mask = |s: &[u8]| s.iter().fold(0u16, |m, x| m | 1 << (x % 12));
+    let sm = mask(steps);
+    let alt = |r: &[u8]| (sm & !mask(r)).count_ones();
+    let (am, an) = (alt(&MAJOR), alt(&MINOR));
+    let use_major = am < an || (am == an && steps.contains(&4));
+    let (reference, rset) = if use_major { ("major", &MAJOR) } else { ("natural minor", &MINOR) };
+    let rm = mask(rset);
+    let altered = sm & !rm;
+    let mut changes = Vec::new();
+    for iv in 0..12u8 {
+        if altered & (1 << iv) == 0 {
+            continue;
+        }
+        let below = (iv + 11) % 12;
+        let above = (iv + 1) % 12;
+        let deg = |x: u8| rset.iter().position(|r| *r == x);
+        if rm & (1 << below) != 0 && sm & (1 << below) == 0 {
+            changes.push(format!("raised {}", ORD[deg(below).unwrap()]));
+        } else if rm & (1 << above) != 0 && sm & (1 << above) == 0 {
+            changes.push(format!("lowered {}", ORD[deg(above).unwrap()]));
+        } else {
+            changes.push(format!("added {}", degree_name(steps, iv)));
+        }
+    }
+    let mut missing = Vec::new();
+    if steps.len() < 7 {
+        for (i, r) in rset.iter().enumerate() {
+            let covered = sm & (1 << r) != 0 || (altered != 0 && changes.iter().any(|c| c.ends_with(ORD[i])));
+            if !covered {
+                missing.push(ORD[i]);
+            }
+        }
+    }
+    Character { reference, altered, changes, missing }
+}
+
+/// One line for learners: "natural minor with a raised 6th".
+pub fn describe(steps: &[u8]) -> String {
+    let c = character(steps);
+    let mut s = c.reference.to_string();
+    if !c.changes.is_empty() {
+        s.push_str(" with ");
+        let with_article: Vec<String> = c.changes.iter().enumerate().map(|(i, x)| if i == 0 { format!("{} {x}", if x.starts_with("added") { "an" } else { "a" }) } else { x.clone() }).collect();
+        s.push_str(&join_and(&with_article));
+    }
+    if !c.missing.is_empty() {
+        s.push_str(if c.changes.is_empty() { ", without the " } else { ", and no " });
+        s.push_str(&join_and(&c.missing.iter().map(|x| x.to_string()).collect::<Vec<_>>()));
+    }
+    s
+}
+
+fn join_and(v: &[String]) -> String {
+    match v.len() {
+        0 => String::new(),
+        1 => v[0].clone(),
+        _ => format!("{} and {}", v[..v.len() - 1].join(", "), v[v.len() - 1]),
+    }
+}
+
+#[cfg(test)]
+mod character_tests {
+    use super::*;
+    fn d(name: &str) -> String {
+        describe(SCALES.iter().find(|s| s.name == name).unwrap().steps)
+    }
+    #[test]
+    fn teaches_the_differences() {
+        assert_eq!(d("Major (Ionian)"), "major");
+        assert_eq!(d("Natural minor (Aeolian)"), "natural minor");
+        assert_eq!(d("Dorian"), "natural minor with a raised 6th");
+        assert_eq!(d("Harmonic minor"), "natural minor with a raised 7th");
+        assert_eq!(d("Melodic minor"), "major with a lowered 3rd");
+        assert_eq!(d("Mixolydian"), "major with a lowered 7th");
+        assert_eq!(d("Lydian"), "major with a raised 4th");
+        assert_eq!(d("Phrygian"), "natural minor with a lowered 2nd");
+        assert_eq!(d("Freygish (Ahava Rabboh)"), "natural minor with a lowered 2nd and raised 3rd");
+        assert_eq!(d("Mi Sheberach (Ukrainian Dorian)"), "natural minor with a raised 4th and raised 6th");
+        assert_eq!(d("Major pentatonic"), "major, without the 4th and 7th");
+        assert_eq!(d("Blues"), "natural minor with an added ♭5, and no 2nd and 6th");
+        let c = character(SCALES.iter().find(|s| s.name == "Dorian").unwrap().steps);
+        assert_eq!(c.altered, 1 << 9);
+        assert_eq!(degree_name(&[0, 2, 4, 6, 7, 9, 11], 6), "♯4");
+        assert_eq!(degree_name(&[0, 3, 5, 6, 7, 10], 6), "♭5");
+    }
+}
