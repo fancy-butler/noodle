@@ -11,6 +11,26 @@ use crate::fingering::{lookup, parse, CHARTS};
 pub const GLAZES: [(&str, [u8; 3]); 5] = [("Blue", [0x2f, 0x5f, 0xb0]), ("Terracotta", [0xb8, 0x5c, 0x38]), ("Celadon", [0x6f, 0xa8, 0x8c]), ("Black", [0x2a, 0x2a, 0x30]), ("Purple", [0x6a, 0x48, 0xa8])];
 
 impl App {
+    /// Lowest and highest sounding note of the chosen ocarina (alto C: A4–F6), in Ocarina mode.
+    pub(super) fn oc_range(&self) -> Option<(u8, u8)> {
+        if !self.oc_mode {
+            return None;
+        }
+        let c = &CHARTS[self.oc_chart()];
+        let tr = c.trans.get(self.s.fing_tr.min(c.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0) as i32;
+        let lo = c.fings.iter().map(|f| f.midi).min().unwrap_or(69) as i32 + tr;
+        let hi = c.fings.iter().map(|f| f.midi).max().unwrap_or(89) as i32 + tr;
+        Some((lo.clamp(0, 127) as u8, hi.clamp(0, 127) as u8))
+    }
+
+    /// Computer keys: put A (the first key) on the ocarina's C, the first C at or above its lowest note.
+    fn oc_place_keys(&mut self) {
+        if let Some((lo, _)) = self.oc_range() {
+            let c = (lo as i32 + 11) / 12 * 12;
+            self.s.kb_octave = (c / 12 - 1).clamp(0, 8);
+        }
+    }
+
     fn oc_chart(&self) -> usize {
         CHARTS.iter().position(|c| c.name.starts_with("Ocarina")).unwrap_or(0)
     }
@@ -21,6 +41,8 @@ impl App {
         }
         self.oc_mode = true;
         self.oc_prev = Some(self.s.main);
+        self.oc_prev_oct = self.s.kb_octave;
+        self.s.fing_any = true;
         // the recorded ocarina if it's there, otherwise the General MIDI one (the header offers the download)
         let rec = crate::packs::better_for_gm(79).filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
         match rec {
@@ -37,6 +59,8 @@ impl App {
             self.s.fing_idx = c;
             self.s.fing_tr = 0;
         }
+        self.oc_place_keys();
+        self.oc_tr_seen = self.s.fing_tr;
     }
 
     pub(super) fn exit_ocarina(&mut self) {
@@ -44,6 +68,7 @@ impl App {
             return;
         }
         self.oc_mode = false;
+        self.s.kb_octave = self.oc_prev_oct;
         if let Some(bp) = self.oc_prev.take() {
             self.set_preset(false, bp);
         }
@@ -65,6 +90,10 @@ impl App {
                     ui.selectable_value(&mut self.s.fing_tr, i, t.0);
                 }
             });
+            if let Some((lo, hi)) = self.oc_range() {
+                let base = ((self.s.kb_octave + 1) * 12) as u8;
+                ui.label(RichText::new(format!("Plays {}–{}  ·  lowest = every hole covered  ·  computer key A = {}", theory::note_name_oct(lo), theory::note_name_oct(hi), theory::note_name_oct(base))).size(12.5).color(fg()));
+            }
             ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the ocarina's range show the same note in its range");
             ui.separator();
             ui.label(RichText::new("Glaze").size(12.0).color(text_dim()));
@@ -75,9 +104,11 @@ impl App {
                     self.s.oc_glaze = i as u8;
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(chart.source).size(10.5).color(text_dim()));
-            });
+
+        }
+        if self.oc_tr_seen != self.s.fing_tr {
+            self.oc_tr_seen = self.s.fing_tr;
+            self.oc_place_keys();
         }
         let tr: i8 = chart.trans.get(self.s.fing_tr.min(chart.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0);
         let held = (0..128u8).rev().find(|k| self.held[0][*k as usize] > 0);
@@ -115,7 +146,8 @@ impl App {
         let pic = Rect::from_min_max(Pos2::new(big.left() + 30.0, big.top() + name_h + 20.0), Pos2::new(big.right() - 30.0, big.bottom() - 40.0));
         crate::pipe_art::draw_ocarina(&p, pic, now_st.as_deref(), 1.0, glaze);
         let foot = if now_q { "? = Pure Ocarinas' two charts disagree on this one — check it on yours" } else { "Subholes: slide the middle finger forward over both holes  ·  half-filled = half-cover  ·  small view = the underside, where your thumbs go" };
-        p.text(Pos2::new(big.center().x, big.bottom() - 16.0), Align2::CENTER_CENTER, foot, FontId::proportional(12.0), text_dim());
+        p.text(Pos2::new(big.center().x, big.bottom() - 26.0), Align2::CENTER_CENTER, foot, FontId::proportional(12.0), text_dim());
+        p.text(Pos2::new(big.center().x, big.bottom() - 10.0), Align2::CENTER_CENTER, format!("Fingerings: {}", chart.source), FontId::proportional(10.5), text_dim().gamma_multiply(0.7));
         // next
         if next_key.is_some() {
             p.text(Pos2::new(small.center().x, small.top() + 10.0), Align2::CENTER_TOP, format!("next  {next_name}"), FontId::proportional(20.0), text_dim());

@@ -188,6 +188,8 @@ pub struct App {
     acc_mode: bool,
     oc_mode: bool,
     oc_prev: Option<(i32, i32)>,
+    oc_prev_oct: i32,
+    oc_tr_seen: usize,
     acc: Option<acc_screen::AccState>,
     acc_events: Vec<egui::Event>,
     game: Option<Game>,
@@ -517,6 +519,8 @@ impl App {
             acc_mode: false,
             oc_mode: false,
             oc_prev: None,
+            oc_prev_oct: 4,
+            oc_tr_seen: 0,
             acc: None,
             acc_events: Vec::new(),
             game: None,
@@ -816,6 +820,9 @@ impl App {
                 }
                 return (lo.min(103), hi.min(127));
             }
+        }
+        if let Some((lo, hi)) = self.oc_range() {
+            return ((lo / 12) * 12, ((hi / 12) * 12 + 12).min(127));
         }
         let size = self.s.kb_size.clamp(12, 88);
         let lo = self.s.kb_lo.min(127 - size + 1);
@@ -3358,6 +3365,7 @@ impl App {
             None
         };
         let bh = rect.height() * 0.62;
+        let oc = self.oc_range();
         for black in [false, true] {
             for k in lo..=hi {
                 let (x, w, b) = key_x(rect, k, lo, hi);
@@ -3399,6 +3407,16 @@ impl App {
                 painter.rect_filled(kr, if b { 3.0 } else { 4.0 }, fill);
                 if !b {
                     painter.rect_stroke(kr, 4.0, Stroke::new(1.0_f32, gray(90)), StrokeKind::Inside);
+                }
+                if let Some((olo, ohi)) = oc {
+                    if k < olo || k > ohi {
+                        // the ocarina can't play this one
+                        painter.rect_filled(kr, if b { 3.0 } else { 4.0 }, Color32::from_black_alpha(170));
+                    } else if k == olo {
+                        let pill = Rect::from_center_size(Pos2::new(r.center().x, r.top() + if b { bh * 0.45 } else { rect.height() * 0.7 }), Vec2::new(r.width() - 2.0, 30.0));
+                        painter.rect_filled(pill, 6.0, Color32::from_black_alpha(215));
+                        painter.text(pill.center(), Align2::CENTER_CENTER, "lowest\nall holes", FontId::proportional(9.5), Color32::WHITE);
+                    }
                 }
                 if keys_style && in_scale {
                     // while a key is held its role still shows as a band at the bottom
