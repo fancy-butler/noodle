@@ -43,6 +43,12 @@ pub const PACKS: &[Pack] = &[
         credit: "S. Christian Collins · free licence (use without restriction)",
     },
     Pack { name: "Bagpipe in G (with drones)", group: "Pipes & whistles", src: Src::Sfz("freepats", "bagpipe", "main", "Bagpipe 20260806.sfz"), credit: "FreePats · Gilles Sadowski · CC0" },
+    vcsl("Harmonica, chromatic (Hohner Super 64)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz"),
+    vcsl("Harmonica, chromatic (vibrato)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Vib.sfz"),
+    vcsl("Harmonica in C (Hohner Special 20)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-C - Normal.sfz"),
+    vcsl("Harmonica in F (Special 20, hand vibrato)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Special20-F - HandVib.sfz"),
+    vcsl("Tenor saxophone (vibrato)", "Woodwinds", "Aerophones/Reed Aerophones/Tenor Saxophone - Vibrato.sfz"),
+    vcsl("Saxello (vibrato)", "Woodwinds", "Aerophones/Reed Aerophones/Saxello - Vibrato.sfz"),
     vcsl("Soprano recorder", "Pipes & whistles", "Aerophones/Edge-blown Aerophones/Baroque Soprano Recorder - Sustain.sfz"),
     vcsl("Alto recorder (vibrato)", "Pipes & whistles", "Aerophones/Edge-blown Aerophones/Baroque Alto Recorder - SusVib.sfz"),
     vcsl("Tenor recorder (vibrato)", "Pipes & whistles", "Aerophones/Edge-blown Aerophones/Baroque Tenor Recorder - SusVib.sfz"),
@@ -161,6 +167,49 @@ pub fn installed_path(p: &Pack) -> PathBuf {
         Src::Sfz(owner, repo, _, path) => root().join(format!("{owner}-{repo}")).join(path),
         Src::Sf2(_, file, _) => crate::sounds::user_dir().join("soundfonts").join(file),
     }
+}
+
+/// The pack the accordion's real reeds are made from.
+pub fn reed_pack() -> &'static Pack {
+    PACKS.iter().find(|p| p.name.starts_with("Harmonica, chromatic (Hohner Super 64)")).unwrap()
+}
+
+/// A recorded instrument that can stand in for a General MIDI program.
+pub fn better_for_gm(prog: i32) -> Option<&'static Pack> {
+    let name = match prog {
+        0 | 1 => "Grand piano, Steinway B",
+        4 | 5 => "Rhodes electric piano (jRhodes3d)",
+        6 => "Harpsichord, Flemish 8'",
+        8 | 9 => "Glockenspiel",
+        11 => "Vibraphone",
+        12 => "Marimba",
+        13 => "Xylophone",
+        14 => "Tubular bells",
+        19 | 20 => "Pipe organ",
+        22 => "Harmonica in C (Hohner Special 20)",
+        40 => "Solo violin",
+        42 => "Cello section",
+        43 => "Double bass",
+        45 => "Violin section, pizzicato",
+        46 => "Concert harp",
+        48 | 49 => "Violin section",
+        56 => "Trumpet (vibrato)",
+        57 => "Trombone",
+        58 => "Tuba",
+        59 => "Trumpet, harmon mute",
+        60 => "French horn",
+        66 | 67 => "Tenor saxophone (vibrato)",
+        68 => "Oboe (vibrato)",
+        70 => "Bassoon",
+        71 => "Clarinet",
+        72 => "Piccolo",
+        73 => "Flute (vibrato)",
+        74 => "Soprano recorder",
+        79 => "Ocarina (vibrato)",
+        109 => "Bagpipe in G (with drones)",
+        _ => return None,
+    };
+    PACKS.iter().find(|p| p.name == name)
 }
 
 pub fn installed(p: &Pack) -> bool {
@@ -426,6 +475,14 @@ mod tests {
         assert_eq!(normalize("a/b/../c/./d.wav"), "a/c/d.wav");
         assert_eq!(encode("Aerophones/Ocarina, Small - Sustain.sfz"), "Aerophones/Ocarina%2C%20Small%20-%20Sustain.sfz");
         assert_eq!(encode("C#5_31.flac"), "C%235_31.flac");
+    }
+
+    #[test]
+    fn gm_upgrades_exist() {
+        for prog in [0, 4, 6, 8, 11, 12, 13, 14, 19, 22, 40, 42, 43, 45, 46, 48, 56, 57, 58, 59, 60, 66, 68, 70, 71, 72, 73, 74, 79, 109] {
+            assert!(better_for_gm(prog).is_some(), "GM {prog}");
+        }
+        assert!(reed_pack().name.contains("Super 64"));
     }
 
     /// cargo test --release packs::tests::live -- --ignored --nocapture

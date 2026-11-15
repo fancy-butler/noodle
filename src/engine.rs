@@ -333,7 +333,7 @@ pub enum Cmd {
 
 pub enum AccMsg {
     /// load an accordion (None = put it away)
-    Setup(Option<(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning)>),
+    Setup(Option<(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning, Option<Arc<crate::sampler::Instrument>>)>),
     Register(crate::reed::Register),
     Treble { id: u16, note: u8, on: bool },
     Bass { id: u16, notes: [u8; 3], n: u8, chord: bool, on: bool },
@@ -871,8 +871,8 @@ impl Engine {
                 self.p.acc_on.store(false, Relaxed);
                 self.native[ACC_CH as usize] = None;
             }
-            AccMsg::Setup(Some((reg, bass, tuning))) => {
-                self.native[ACC_CH as usize] = Some(crate::native::Native::new(&crate::native::InstDef::Reed(reg, bass, tuning), self.sr));
+            AccMsg::Setup(Some((reg, bass, tuning, smp))) => {
+                self.native[ACC_CH as usize] = Some(crate::native::Native::new(&crate::native::InstDef::Reed(reg, bass, tuning, smp), self.sr));
                 self.p.acc_on.store(true, Relaxed);
             }
             AccMsg::Register(r) => {

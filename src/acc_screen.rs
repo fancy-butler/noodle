@@ -18,6 +18,9 @@ pub struct AccState {
     ext: f32,
     /// Stradella window centre (pitch class)
     pub center: u8,
+    /// the recorded reeds, loaded once
+    reeds: Option<Arc<crate::sampler::Instrument>>,
+    reeds_tried: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -29,7 +32,7 @@ enum Held {
 
 impl AccState {
     pub fn new() -> Self {
-        AccState { insts: acc::instruments(), down: HashMap::new(), mouse: None, push: false, ext: 0.5, center: 0 }
+        AccState { insts: acc::instruments(), down: HashMap::new(), mouse: None, push: false, ext: 0.5, center: 0, reeds: None, reeds_tried: false }
     }
 }
 
@@ -99,13 +102,36 @@ impl App {
         let _ = self.tx.send(Cmd::Acc(AccMsg::Setup(None)));
     }
 
+    /// The recorded reeds (Hohner Super 64 chromatic harmonica, VCSL, CC0), if downloaded.
+    fn acc_reeds(&mut self) -> Option<Arc<crate::sampler::Instrument>> {
+        if !self.s.acc_real {
+            return None;
+        }
+        let a = self.acc.as_mut()?;
+        if a.reeds.is_none() && !a.reeds_tried {
+            let path = crate::packs::installed_path(crate::packs::reed_pack());
+            if path.exists() {
+                a.reeds_tried = true;
+                match crate::sampler::load(&path) {
+                    Ok(mut inst) => {
+                        crate::sampler::loop_sustains(&mut inst);
+                        a.reeds = Some(Arc::new(inst));
+                    }
+                    Err(e) => eprintln!("accordion reeds: {e}"),
+                }
+            }
+        }
+        a.reeds.clone()
+    }
+
     fn acc_setup(&mut self) {
         let (reg, bass, tuning) = {
             let i = self.acc_inst();
             (i.registers[self.s.acc_reg.min(i.registers.len() - 1)], i.bass_ranks, i.tuning)
         };
         self.acc_release_all();
-        let _ = self.tx.send(Cmd::Acc(AccMsg::Setup(Some((reg, bass, tuning)))));
+        let reeds = self.acc_reeds();
+        let _ = self.tx.send(Cmd::Acc(AccMsg::Setup(Some((reg, bass, tuning, reeds)))));
         let push = self.acc.as_ref().map(|a| a.push).unwrap_or(false);
         let _ = self.tx.send(Cmd::Acc(AccMsg::Bellows(push)));
     }
@@ -487,6 +513,32 @@ impl App {
                 ui.label(RichText::new("✔").color(GOOD)).on_hover_text(format!("Layout: {source}"));
             } else {
                 ui.label(RichText::new("⚠ unverified").color(Color32::from_rgb(0xff, 0xb0, 0x40))).on_hover_text(source);
+            }
+            ui.separator();
+            ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
+            let pack = crate::packs::reed_pack();
+            let have = crate::packs::installed(pack);
+            let mut real = self.s.acc_real;
+            ui.selectable_value(&mut real, true, "Real reeds").on_hover_text("Recorded reeds: a Hohner Super 64 chromatic harmonica (VCSL, CC0), stacked and detuned into accordion registers");
+            ui.selectable_value(&mut real, false, "Synth reeds");
+            if real != self.s.acc_real {
+                self.s.acc_real = real;
+                self.acc_setup();
+            }
+            if self.s.acc_real && !have {
+                match self.dl.status(pack.name) {
+                    Some(crate::packs::Status::Working(n, t)) => {
+                        ui.add(egui::ProgressBar::new(n as f32 / t.max(1) as f32).desired_width(120.0).text(format!("{n}/{t}")));
+                    }
+                    _ => {
+                        if ui.add(egui::Button::new(RichText::new("⬇ Get real reeds (15 MB)").color(Color32::BLACK)).fill(YOURS)).on_hover_text("Downloads the Hohner harmonica recordings from VCSL (CC0). Until then you hear the synth.").clicked() {
+                            self.dl.start(*pack, ui.ctx().clone());
+                        }
+                    }
+                }
+            } else if self.s.acc_real && self.acc.as_ref().map(|a| a.reeds.is_none() && !a.reeds_tried).unwrap_or(false) {
+                // just finished downloading: switch to the recordings
+                self.acc_setup();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("✕ Leave (Esc)").clicked() {

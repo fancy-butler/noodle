@@ -705,6 +705,24 @@ pub fn load(path: &Path) -> Result<Instrument, String> {
     Ok(inst)
 }
 
+/// Hold notes past the end of the recordings: loop each sample's steady middle with a crossfade.
+pub fn loop_sustains(inst: &mut Instrument) {
+    for r in inst.regions.iter_mut() {
+        let len = r.sample.len();
+        let secs = len as f32 / r.sample.rate;
+        if r.loop_mode == LoopMode::Off && r.trigger == Trig::Attack && secs > 0.8 {
+            let ls = (len as f32 * 0.3) as usize;
+            let le = ((len as f32 * 0.85) as usize).min(r.end.saturating_sub(2));
+            if le > ls + 1000 {
+                r.loop_mode = LoopMode::Sustain;
+                r.loop_start = ls;
+                r.loop_end = le;
+                r.xfade = ((r.sample.rate * 0.25) as usize).min((le - ls) / 3);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- player
 
 #[derive(Clone, Copy, PartialEq)]
@@ -748,6 +766,8 @@ pub struct Player {
     vib_phase: f32,
     vib_amt: f32,
     expr: f32,
+    /// fixed tuning offset in semitones (accordion musette reeds)
+    pub fine: f32,
 }
 
 const MAX_VOICES: usize = 96;
@@ -761,7 +781,7 @@ impl Player {
         for &(n, v) in &inst.init_cc {
             cc[n as usize] = v;
         }
-        Player { inst, sr, voices: Vec::with_capacity(MAX_VOICES), held: Vec::with_capacity(16), cc, sustain: false, bend: 0.0, seq: 0, rng: 0x2545_f491, vib_phase: 0.0, vib_amt: 0.0, expr: 1.0 }
+        Player { inst, sr, voices: Vec::with_capacity(MAX_VOICES), held: Vec::with_capacity(16), cc, sustain: false, bend: 0.0, fine: 0.0, seq: 0, rng: 0x2545_f491, vib_phase: 0.0, vib_amt: 0.0, expr: 1.0 }
     }
 
     fn rand(&mut self) -> f32 {
@@ -956,7 +976,7 @@ impl Player {
         self.expr = e1;
         let inst = self.inst.clone();
         let sr = self.sr;
-        let bend = self.bend;
+        let bend = self.bend + self.fine;
         for v in self.voices.iter_mut() {
             let r = &inst.regions[v.r];
             let s = &r.sample;

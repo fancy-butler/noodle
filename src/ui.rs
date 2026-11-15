@@ -1333,6 +1333,33 @@ impl App {
                 self.step_preset(false, -1);
             }
             self.preset_combo(ui, false, 300.0);
+            // a recorded version of this General MIDI sound exists: offer it right here
+            if self.s.main.0 < sounds::SAMPLE_BANK {
+                if let Some(pk) = crate::packs::better_for_gm(self.s.main.1) {
+                    if crate::packs::installed(pk) {
+                        let b = egui::Button::new(RichText::new(format!("★ Use recorded {}", pk.name.split(" (").next().unwrap_or(pk.name).to_lowercase())).color(Color32::BLACK)).fill(GOOD);
+                        if ui.add(b).on_hover_text(pk.credit).clicked() {
+                            let bp = (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk)));
+                            if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+                                self.add_native_presets();
+                            }
+                            self.set_preset(false, bp);
+                        }
+                    } else {
+                        match self.dl.status(pk.name) {
+                            Some(crate::packs::Status::Working(n, t)) => {
+                                ui.add(egui::ProgressBar::new(n as f32 / t.max(1) as f32).desired_width(110.0).text("recording…"));
+                            }
+                            _ => {
+                                let b = egui::Button::new(RichText::new("⬇ Get the real recording").color(Color32::BLACK)).fill(YOURS);
+                                if ui.add(b).on_hover_text(format!("{} — a free recorded instrument ({}). The General MIDI sound you're hearing is a cheap stand-in.", pk.name, pk.credit)).clicked() {
+                                    self.dl.start(*pk, ui.ctx().clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if ui.add(egui::Button::new(RichText::new("▶").size(18.0))).on_hover_text("Next sound (→)").clicked() {
                 self.step_preset(false, 1);
             }

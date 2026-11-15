@@ -10,7 +10,7 @@ pub enum InstDef {
     Chip(crate::chip::Patch),
     ChipDrums(usize),
     Analog(crate::analog::Patch),
-    Reed(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning),
+    Reed(crate::reed::Register, &'static [crate::reed::Rank], crate::reed::Tuning, Option<Arc<crate::sampler::Instrument>>),
 }
 
 pub enum Native {
@@ -28,7 +28,13 @@ impl Native {
             InstDef::Chip(p) => Native::Chip(Box::new(crate::chip::Player::new(*p, sr))),
             InstDef::ChipDrums(k) => Native::Drums(crate::chip::DrumPlayer::new(*k, sr)),
             InstDef::Analog(p) => Native::Analog(Box::new(crate::analog::Player::new(*p, sr))),
-            InstDef::Reed(r, b, t) => Native::Reed(Box::new(crate::reed::Accordion::new(sr, *r, b, *t))),
+            InstDef::Reed(r, b, t, smp) => {
+                let a = crate::reed::Accordion::new(sr, *r, b, *t);
+                Native::Reed(Box::new(match smp {
+                    Some(i) => a.with_samples(i.clone()),
+                    None => a,
+                }))
+            }
         }
     }
 

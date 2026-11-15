@@ -420,7 +420,7 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
         let insts = accordion::instruments();
         let bc = &insts[0];
         render(0.5, "  (before accordion)", &mut eng);
-        tx.send(Cmd::Acc(AccMsg::Setup(Some((bc.registers[2], bc.bass_ranks, bc.tuning))))).unwrap();
+        tx.send(Cmd::Acc(AccMsg::Setup(Some((bc.registers[2], bc.bass_ranks, bc.tuning, None))))).unwrap();
         tx.send(Cmd::Acc(AccMsg::Bellows(true))).unwrap();
         let tune = [(1usize, 2usize, true), (1, 2, false), (1, 3, true), (1, 3, false), (1, 4, true), (1, 4, false), (1, 5, true)];
         let (bn, chord) = accordion::bass_notes(accordion::BassSnd::Major(0));
