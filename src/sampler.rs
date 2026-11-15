@@ -689,6 +689,7 @@ pub fn load(path: &Path) -> Result<Instrument, String> {
     if fixed > 0 {
         eprintln!("{}: {fixed} sample(s) mapped an octave off — corrected", inst.name);
     }
+    extend_range(&mut inst, 24);
     if inst.mono {
         // held wind notes outlast their recordings: loop the steadiest stretch, pitch-matched
         for r in inst.regions.iter_mut() {
@@ -764,6 +765,30 @@ fn rms(x: &[f32]) -> f32 {
 
 /// Some free libraries map samples an octave off (VSCO's piccolo, one of its oboe notes):
 /// listen to each recording and move its key centre by whole octaves when it plainly sounds elsewhere.
+/// Recordings only cover the instrument's real range (the VCSL ocarina: A4–D6), so keys
+/// outside it were silent. Stretch the lowest and highest samples `by` semitones further
+/// out. Only for pitched multisamples (several pitched notes): drum kits and one-shots
+/// keep their exact mapping.
+pub fn extend_range(inst: &mut Instrument, by: u8) {
+    let pitched: Vec<&Region> = inst.regions.iter().filter(|r| r.keytrack != 0.0).collect();
+    let mut centers: Vec<i32> = pitched.iter().map(|r| r.center.round() as i32).collect();
+    centers.sort();
+    centers.dedup();
+    if centers.len() < 4 || pitched.len() != inst.regions.len() {
+        return;
+    }
+    let lo = inst.regions.iter().map(|r| r.lokey).min().unwrap_or(0);
+    let hi = inst.regions.iter().map(|r| r.hikey).max().unwrap_or(127);
+    for r in inst.regions.iter_mut() {
+        if r.lokey == lo {
+            r.lokey = lo.saturating_sub(by);
+        }
+        if r.hikey == hi {
+            r.hikey = hi.saturating_add(by).min(127);
+        }
+    }
+}
+
 pub fn fix_octaves(inst: &mut Instrument) -> usize {
     let tune_too = inst.mono;
     let mut fixed = 0;
@@ -1330,6 +1355,27 @@ mod tests {
         b.extend_from_slice(&(data.len() as u32).to_le_bytes());
         b.extend_from_slice(&data);
         std::fs::write(path, b).unwrap();
+    }
+
+    #[test]
+    fn notes_outside_the_recordings_still_sound() {
+        let d = std::env::temp_dir().join("noodle_sfz_range");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut sfz = String::from("<global> ampeg_release=0.1\n");
+        for (k, hz) in [(69, 440.0), (72, 523.25), (76, 659.26), (81, 880.0)] {
+            wav(&d.join(format!("n{k}.wav")), hz, 0.5);
+            sfz += &format!("<region> sample=n{k}.wav pitch_keycenter={k} lokey={k} hikey={}\n", if k == 81 { 86 } else { k + 2 });
+        }
+        std::fs::write(d.join("Test Ocarina.sfz"), sfz).unwrap();
+        let inst = load(&d.join("Test Ocarina.sfz")).unwrap();
+        let lo = inst.regions.iter().map(|r| r.lokey).min().unwrap();
+        let hi = inst.regions.iter().map(|r| r.hikey).max().unwrap();
+        assert_eq!((lo, hi), (45, 110));
+        let mut p = Player::new(Arc::new(inst), 48000.0);
+        p.note_on(60, 100); // C4, under the lowest recording (A4)
+        let (mut l, mut r) = (vec![0.0; 4800], vec![0.0; 4800]);
+        p.render(&mut l, &mut r);
+        assert!(l.iter().fold(0f32, |a, b| a.max(b.abs())) > 0.02, "C4 sounds");
     }
 
     #[test]
