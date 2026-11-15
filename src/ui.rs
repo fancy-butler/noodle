@@ -4251,6 +4251,9 @@ fn setup_fonts(ctx: &egui::Context) -> bool {
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
         "C:\\Windows\\Fonts\\seguisym.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Apple Symbols.ttf",
     ];
     let mut added = false;
     for c in candidates {

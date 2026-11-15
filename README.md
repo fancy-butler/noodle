@@ -64,7 +64,9 @@ sudo dnf install fluid-soundfont-gm     # Fedora
 
 **Windows**: unzip and run `noodle.exe`. The FluidR3 GM bank is bundled in `soundfonts/`.
 
-Extra sound banks go in `~/.local/share/noodle/soundfonts` (Windows: `%APPDATA%\noodle\soundfonts`), and songs go in `…/noodle/songs`. Noodle also looks in your Music, Downloads and MuseScore score folders.
+**macOS** (11 Big Sur or later, Apple silicon and Intel): open the `.dmg` and drag Noodle into Applications. The FluidR3 GM bank is bundled. The app isn't signed with an Apple developer ID, so the first time, right-click Noodle → Open → Open (or System Settings → Privacy & Security → Open Anyway). On Mac keyboards the F-keys are media keys by default: hold `fn` for accordion registers, or turn on "Use F1, F2, etc. keys as standard function keys" in Keyboard settings.
+
+Extra sound banks go in `~/.local/share/noodle/soundfonts` (Windows: `%APPDATA%\noodle\soundfonts`, macOS: `~/Library/Application Support/noodle/soundfonts`), and songs go in `…/noodle/songs`. Noodle also looks in your Music, Downloads and MuseScore score folders.
 
 ## Build
 

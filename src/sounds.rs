@@ -123,6 +123,8 @@ pub fn soundfont_dirs() -> Vec<PathBuf> {
     let mut v = vec![user_dir().join("soundfonts")];
     if let Some(e) = exe_dir() {
         v.push(e.join("soundfonts"));
+        // macOS: Noodle.app/Contents/MacOS/noodle → Contents/Resources/soundfonts
+        v.push(e.join("../Resources/soundfonts"));
         v.push(e.clone());
     }
     if let Some(h) = dirs::home_dir() {
