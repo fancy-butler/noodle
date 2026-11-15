@@ -492,6 +492,10 @@ impl App {
                 if ui.button("✕ Leave (Esc)").clicked() {
                     leave = true;
                 }
+                ui.selectable_value(&mut self.s.acc_round, false, "Keys");
+                ui.selectable_value(&mut self.s.acc_round, true, "Buttons");
+                ui.label(RichText::new("Look").size(12.0).color(text_dim()));
+                ui.separator();
                 ui.toggle_value(&mut self.s.acc_space_pull, "Space = pull").on_hover_text("Off: hold Space to push, let go to pull. On: the other way round.");
             });
         }
@@ -530,12 +534,55 @@ impl App {
         let dead_col = card_bg();
         let ink = fg();
         let key_rect = |x: f32, row_y: f32, w: f32, h: f32| Rect::from_min_size(Pos2::new(ox + x * u, oy + row_y * u), Vec2::new(w * u - u * 0.08, h * u - u * 0.08));
+        let round = self.s.acc_round;
+        let look = self.acc_inst().look;
         let dead = |r: Rect, label: &str| {
-            p.rect_filled(r, u * 0.12, dead_col);
-            if !label.is_empty() {
+            if !round {
+                p.rect_filled(r, u * 0.12, dead_col);
+            }
+            if !label.is_empty() && !round {
                 p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(u * 0.17), text_dim());
             }
         };
+        // a button: round with a shadow and a sheen on the accordion look, a key cap otherwise
+        let cap = |r: Rect, fill: Color32| {
+            if round {
+                let rad = r.width().min(r.height()) * 0.47;
+                let c = r.center();
+                p.circle_filled(c + Vec2::new(0.0, rad * 0.1), rad, Color32::from_black_alpha(110));
+                p.circle_filled(c, rad, fill);
+                p.circle_stroke(c, rad, Stroke::new(1.2, Color32::from_black_alpha(90)));
+                p.circle_filled(c - Vec2::new(rad * 0.3, rad * 0.35), rad * 0.22, Color32::from_white_alpha(28));
+            } else {
+                p.rect_filled(r, u * 0.12, fill);
+            }
+        };
+        let ring = |r: Rect, grow: f32, w: f32, col: Color32| {
+            if round {
+                p.circle_stroke(r.center(), r.width().min(r.height()) * 0.47 + grow, Stroke::new(w, col));
+            } else {
+                p.rect_stroke(r.expand(grow), u * 0.15, Stroke::new(w, col), egui::StrokeKind::Outside);
+            }
+        };
+        // where the labels sit on a button: big note, the other-direction note, the computer key
+        let spots = |kr: Rect| -> (Pos2, Pos2, Pos2, Align2, Align2) {
+            if round {
+                (kr.center() - Vec2::new(0.0, u * 0.02), kr.center() + Vec2::new(0.0, u * 0.27), kr.center() - Vec2::new(0.0, u * 0.3), Align2::CENTER_CENTER, Align2::CENTER_CENTER)
+            } else {
+                (kr.center() + Vec2::new(0.0, u * 0.04), kr.right_top() + Vec2::new(-u * 0.1, u * 0.12), kr.left_bottom() + Vec2::new(u * 0.1, -u * 0.12), Align2::RIGHT_CENTER, Align2::LEFT_CENTER)
+            }
+        };
+        if round {
+            // the cases: treble board behind the treble rows, bass board behind the Z row
+            let nrows = self.acc_inst().rows.len();
+            let (top_y, left_x) = if nrows >= 3 { (0.86, 0.9) } else { (1.86, 1.4) };
+            let treble = Rect::from_min_max(Pos2::new(ox + left_x * u, oy + top_y * u), Pos2::new(ox + 13.6 * u, oy + 3.96 * u));
+            p.rect_filled(treble, u * 0.25, rgb(look.body));
+            p.rect_stroke(treble, u * 0.25, Stroke::new(3.0, rgb(look.accent)), egui::StrokeKind::Inside);
+            let bass = Rect::from_min_max(Pos2::new(ox + 2.08 * u, oy + 3.92 * u), Pos2::new(ox + 12.28 * u, oy + 4.96 * u));
+            p.rect_filled(bass, u * 0.25, rgb(look.body2).linear_multiply(0.85));
+            p.rect_stroke(bass, u * 0.25, Stroke::new(3.0, rgb(look.accent)), egui::StrokeKind::Inside);
+        }
         // helper keys (Esc, Tab, Shift, Ctrl) say what they do here
         let fy = 0.0;
         dead(key_rect(0.0, fy, 1.0, 0.75), "Esc\nexit");
@@ -608,20 +655,23 @@ impl App {
                     } else {
                         Color32::from_rgb(0xf2, 0xee, 0xe4)
                     };
-                    p.rect_filled(kr, u * 0.12, fill);
+                    let fill = if round && !held && !sharp { rgb(look.button) } else { fill };
+                    cap(kr, fill);
                     let ink3 = if held || !sharp { Color32::from_rgb(0x18, 0x18, 0x18) } else { Color32::WHITE };
                     if bisonoric {
                         let (big, small) = if push { (b.push, b.pull) } else { (b.pull, b.push) };
-                        p.text(kr.center() + Vec2::new(0.0, u * 0.04), Align2::CENTER_CENTER, spell(big, home), FontId::proportional(u * 0.42), ink3);
-                        p.text(kr.right_top() + Vec2::new(-u * 0.1, u * 0.12), Align2::RIGHT_CENTER, spell(small, home), FontId::proportional(u * 0.2), ink3.linear_multiply(0.5));
+                        let (m, sm, _, sa, _) = spots(kr);
+                        p.text(m, Align2::CENTER_CENTER, spell(big, home), FontId::proportional(u * if round { 0.36 } else { 0.42 }), ink3);
+                        p.text(sm, sa, spell(small, home), FontId::proportional(u * if round { 0.17 } else { 0.2 }), ink3.linear_multiply(0.5));
                     } else {
-                        p.text(kr.center() + Vec2::new(0.0, u * 0.04), Align2::CENTER_CENTER, spell(b.push, 0), FontId::proportional(u * 0.42), ink3);
+                        p.text(spots(kr).0, Align2::CENTER_CENTER, spell(b.push, 0), FontId::proportional(u * if round { 0.38 } else { 0.42 }), ink3);
                         if b.push % 12 == 0 {
-                            p.rect_stroke(kr.shrink(u * 0.06), u * 0.1, Stroke::new(2.0, Color32::from_rgb(0xd0, 0x40, 0x40)), egui::StrokeKind::Inside);
+                            ring(kr, -u * 0.06, 2.0, Color32::from_rgb(0xd0, 0x40, 0x40));
                         }
                     }
-                    p.text(kr.left_bottom() + Vec2::new(u * 0.1, -u * 0.12), Align2::LEFT_CENTER, acc::key_label(k), FontId::monospace(u * 0.16), ink3.linear_multiply(0.45));
-                    if matches!(k, Key::F | Key::J) {
+                    let (_, _, kp, _, ka) = spots(kr);
+                    p.text(kp, ka, acc::key_label(k), FontId::monospace(u * if round { 0.13 } else { 0.16 }), ink3.linear_multiply(0.45));
+                    if matches!(k, Key::F | Key::J) && !round {
                         p.line_segment([kr.center_bottom() + Vec2::new(-u * 0.12, -u * 0.1), kr.center_bottom() + Vec2::new(u * 0.12, -u * 0.1)], Stroke::new(2.0, ink3.linear_multiply(0.6)));
                     }
                     // hints: song / MIDI notes now (solid ring), next note (dashed)
@@ -636,14 +686,21 @@ impl App {
                     };
                     for &n in hint_now.iter().chain(live.iter()) {
                         if let Some(d) = wants(n) {
-                            p.rect_stroke(kr.expand(u * 0.05), u * 0.15, Stroke::new(3.0, if d { PUSH_COL } else { PULL_COL }), egui::StrokeKind::Outside);
+                            ring(kr, u * 0.05, 3.0, if d { PUSH_COL } else { PULL_COL });
                         }
                     }
                     if let Some(n) = hint_next {
                         if let Some(d) = wants(n) {
                             let col = if d { PUSH_COL } else { PULL_COL };
                             let e = kr.expand(u * 0.09);
-                            for t in 0..8 {
+                            if round {
+                                let rr = kr.width().min(kr.height()) * 0.47 + u * 0.1;
+                                for t in 0..12 {
+                                    let a0 = t as f32 / 12.0 * std::f32::consts::TAU;
+                                    p.line_segment([kr.center() + Vec2::angled(a0) * rr, kr.center() + Vec2::angled(a0 + 0.28) * rr], Stroke::new(2.5, col));
+                                }
+                            }
+                            for t in 0..(if round { 0 } else { 8 }) {
                                 let f0 = t as f32 / 8.0;
                                 let f1 = f0 + 0.06;
                                 for (a0, a1) in [(e.left_top(), e.right_top()), (e.left_bottom(), e.right_bottom())] {
@@ -682,7 +739,7 @@ impl App {
                     _ => *x == h,
                 });
                 let base = Color32::from_rgb(0xd9, 0xc8, 0xa6);
-                p.rect_filled(kr, u * 0.12, if held { dir_col } else { base });
+                cap(kr, if held { dir_col } else if round { rgb(look.button) } else { base });
                 let ink3 = Color32::from_rgb(0x18, 0x18, 0x18);
                 let lab = |s: acc::BassSnd| match s {
                     acc::BassSnd::Note(pc) => acc::NAMES[pc as usize].to_string(),
@@ -693,23 +750,26 @@ impl App {
                     (Held::DiaBass { r, i }, Bass::Diatonic(rows)) => {
                         let (pu, pl) = rows[r][i];
                         let (big, small) = if push { (pu, pl) } else { (pl, pu) };
-                        p.text(kr.center() + Vec2::new(0.0, u * 0.04), Align2::CENTER_CENTER, lab(big), FontId::proportional(u * if matches!(big, acc::BassSnd::Note(_)) { 0.4 } else { 0.27 }), ink3);
-                        p.text(kr.right_top() + Vec2::new(-u * 0.1, u * 0.12), Align2::RIGHT_CENTER, lab(small), FontId::proportional(u * 0.18), ink3.linear_multiply(0.5));
+                        let (m, sm, _, sa, _) = spots(kr);
+                        p.text(m, Align2::CENTER_CENTER, lab(big), FontId::proportional(u * if matches!(big, acc::BassSnd::Note(_)) { 0.38 } else { 0.24 }), ink3);
+                        p.text(sm, sa, lab(small), FontId::proportional(u * if round { 0.14 } else { 0.18 }), ink3.linear_multiply(0.5));
                     }
                     (Held::Strad { col, row }, _) => {
-                        p.text(kr.center() + Vec2::new(0.0, u * 0.04), Align2::CENTER_CENTER, acc::stradella_label(col, row), FontId::proportional(u * if row <= 1 { 0.4 } else { 0.27 }), ink3);
-                        p.text(kr.right_top() + Vec2::new(-u * 0.1, u * 0.12), Align2::RIGHT_CENTER, acc::STRADELLA_ROWS[row].to_lowercase(), FontId::proportional(u * 0.13), ink3.linear_multiply(0.5));
+                        let (m, sm, _, sa, _) = spots(kr);
+                        p.text(m, Align2::CENTER_CENTER, acc::stradella_label(col, row), FontId::proportional(u * if row <= 1 { 0.38 } else { 0.24 }), ink3);
+                        p.text(sm, sa, acc::STRADELLA_ROWS[row].to_lowercase(), FontId::proportional(u * 0.13), ink3.linear_multiply(0.5));
                     }
                     _ => {}
                 }
-                p.text(kr.left_bottom() + Vec2::new(u * 0.1, -u * 0.12), Align2::LEFT_CENTER, acc::key_label(*key), FontId::monospace(u * 0.16), ink3.linear_multiply(0.45));
+                let (_, _, kp, _, ka) = spots(kr);
+                p.text(kp, ka, acc::key_label(*key), FontId::monospace(u * if round { 0.13 } else { 0.16 }), ink3.linear_multiply(0.45));
                 if let Some(pp) = pointer {
                     if down && kr.contains(pp) {
                         press = Some(h);
                     }
                 }
             }
-            if strad {
+            if strad && !round {
                 let r = key_rect(12.25, rows_y[3], 2.75, 1.0);
                 p.text(r.center(), Align2::CENTER_CENTER, format!("← → move basses\n(centre {})", acc::NAMES[center as usize]), FontId::proportional(u * 0.15), text_dim());
             }
@@ -717,8 +777,24 @@ impl App {
         // the space bar is the bellows
         {
             let r = key_rect(3.6, 4.95, 7.2, 1.0);
-            p.rect_filled(r, u * 0.14, dir_col);
+            if round {
+                // bellows: folds in the case colour, edged in the direction colour
+                p.rect_filled(r, u * 0.08, rgb(look.bellows));
+                let folds = 16;
+                for k in 1..folds {
+                    let x = r.left() + r.width() * k as f32 / folds as f32;
+                    p.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(if k % 2 == 0 { 2.0 } else { 1.0 }, mix(rgb(look.bellows), Color32::WHITE, if k % 2 == 0 { 0.35 } else { 0.12 })));
+                }
+                p.rect_stroke(r, u * 0.08, Stroke::new(4.0, dir_col), egui::StrokeKind::Inside);
+                p.rect_filled(Rect::from_center_size(r.center(), Vec2::new(u * 2.6, u * 0.8)), u * 0.12, dir_col);
+            } else {
+                p.rect_filled(r, u * 0.14, dir_col);
+            }
             p.text(r.center(), Align2::CENTER_CENTER, if push { "◀ PUSH ▶" } else { "◀ PULL ▶" }, FontId::proportional(u * 0.4), Color32::from_rgb(0x10, 0x10, 0x10));
+            if round {
+                let extra = if strad { "   ·   Shift: counterbass / minor   ·   Ctrl: 7th   ·   both: dim   ·   ← → move basses" } else { "" };
+                p.text(r.center_bottom() + Vec2::new(0.0, u * 0.3), Align2::CENTER_CENTER, format!("` drone   ·   Tab: next register   ·   Esc: leave{extra}"), FontId::proportional((u * 0.16).max(11.0)), text_dim());
+            }
             let hint = if self.s.acc_space_pull { "hold = pull · let go = push" } else { "hold = push · let go = pull" };
             p.text(r.center_bottom() - Vec2::new(0.0, u * 0.14), Align2::CENTER_CENTER, hint, FontId::proportional(u * 0.14), Color32::from_rgb(0x10, 0x10, 0x10));
         }
