@@ -162,6 +162,40 @@ fn level_survey(args: &[String]) -> Result<(), String> {
         let key = inst.regions.iter().map(|r| (r.lokey as u16 + r.hikey as u16) / 2).nth(inst.regions.len() / 2).unwrap_or(60) as u8;
         measure(&mut eng, &format!("sample {}", inst.name), Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }, &[key], &mut reference);
     }
+    // accordion mode (first instrument, its first register), synth and recorded reeds:
+    // one treble button, then treble + a bass chord, bellows pushing
+    {
+        let insts = accordion::instruments();
+        let i = &insts[0];
+        let reeds = {
+            let path = packs::installed_path(packs::reed_pack());
+            path.exists().then(|| sampler::load(&path).ok()).flatten().map(|mut inst| {
+                sampler::loop_sustains(&mut inst);
+                Arc::new(inst)
+            })
+        };
+        for (label, smp) in [("synth reeds", None), ("real reeds", reeds)] {
+            if label == "real reeds" && smp.is_none() {
+                println!("accordion real reeds: pack not installed, skipped");
+                continue;
+            }
+            for (what, chord) in [("1 button", false), ("button + bass chord", true)] {
+                tx.send(Cmd::Acc(engine::AccMsg::Setup(Some((i.registers[0], i.bass_ranks, i.tuning, smp.clone()))))).unwrap();
+                tx.send(Cmd::Acc(engine::AccMsg::Bellows(true))).unwrap();
+                run(&mut eng, 0.2);
+                tx.send(Cmd::Acc(engine::AccMsg::Treble { id: 1, note: 72, on: true })).unwrap();
+                if chord {
+                    let notes = [48u8, 52, 55];
+                    tx.send(Cmd::Acc(engine::AccMsg::Bass { id: 2, notes, n: 3, chord: true, on: true })).unwrap();
+                }
+                run(&mut eng, 0.1);
+                let (pk, rms) = run(&mut eng, 0.8);
+                tx.send(Cmd::Acc(engine::AccMsg::Setup(None))).unwrap();
+                run(&mut eng, 0.6);
+                println!("{:<40} rms {:>7.4}  peak {:>6.3}  {:>+6.1} dB vs piano", format!("accordion {label}, {what}"), rms, pk, 20.0 * (rms / reference.unwrap()).log10());
+            }
+        }
+    }
     // the SoundFont drum kit: one kick + snare, peak against the piano note's peak
     tx.send(sf2(0)).unwrap();
     run(&mut eng, 0.2);

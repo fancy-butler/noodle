@@ -343,12 +343,19 @@ impl Accordion {
             let y = out - self.dc[0] + 0.995 * self.dc[1];
             self.dc[0] = out;
             self.dc[1] = y;
-            let s = y * amp * self.level;
+            let s = y * amp * self.level * SYNTH_TRIM;
             l[i] += s;
             r[i] += s;
         }
     }
 }
+
+/// Level matching, measured with `--level-survey` (one button, bellows pushing, against a
+/// GM piano middle C): recorded reeds were −9.9 dB and synth reeds +5.4 dB after the
+/// sampler's normalising changed in 0.14. Both now land about +3.5 dB against FluidR3's
+/// piano, level with the recorded ocarina.
+const REAL_GAIN: f32 = 34.0;
+const SYNTH_TRIM: f32 = 1.07;
 
 impl Accordion {
     fn render_sampled(&mut self, l: &mut [f32], r: &mut [f32]) {
@@ -356,7 +363,7 @@ impl Accordion {
         let sr = self.sr;
         let p_s = 1.0 - (-1.0 / (0.03 * sr)).exp();
         let dip_d = (-1.0 / (0.03 * sr)).exp();
-        let level = self.level * 5.5;
+        let level = self.level * REAL_GAIN;
         let sm = self.sampled.as_mut().unwrap();
         if sm.bl.len() < n {
             sm.bl.resize(n, 0.0);
