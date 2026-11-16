@@ -56,6 +56,11 @@ pub struct Settings {
     pub kb_follow: bool,
     /// true: play only the notes the instrument (its fingering chart) really has
     pub real_range: bool,
+    /// Keyboard mode "Play as": None = free play, Some(chart name) = play that real instrument
+    pub kb_inst: Option<String>,
+    pub kb_inst_tr: usize,
+    /// "Play as" leaves the sound alone instead of switching to the instrument's
+    pub keep_sound: bool,
     pub layout: u8,     // 0 classic, 1 MiniLab 3
     pub controller: u8, // 0 auto-detect, 1 off, 2 MiniLab 3
     pub score_dark: bool,
@@ -173,6 +178,9 @@ impl Default for Settings {
             kb_lo: 21,
             kb_follow: true,
             real_range: false,
+            kb_inst: None,
+            kb_inst_tr: 0,
+            keep_sound: false,
             layout: 0,
             controller: 0,
             score_dark: false,

@@ -190,6 +190,10 @@ pub struct App {
     oc_prev: Option<(i32, i32)>,
     oc_prev_oct: i32,
     oc_tr_seen: usize,
+    /// Play as: the sound before we switched it, the one we switched to, the chart/key last applied
+    play_prev: Option<(i32, i32)>,
+    play_set: Option<(i32, i32)>,
+    play_seen: (usize, usize),
     /// the instrument's real range (sounding), when it's shown/enforced
     inst_range: Option<(u8, u8)>,
     range_chart: Option<usize>,
@@ -456,6 +460,14 @@ impl App {
                 s.fing_tr = 0;
             }
         }
+        if let Some(i) = s.kb_inst.as_deref().and_then(|n| crate::fingering::CHARTS.iter().position(|c| c.name == n)) {
+            s.fing_idx = i;
+            s.fing_tr = s.kb_inst_tr;
+            s.fing_any = false;
+        } else {
+            s.kb_inst = None;
+        }
+        let play_seen = (s.fing_idx, s.fing_tr); // the saved sound stays as you left it
         s.push_to(&h.p);
         let (load_tx, load_rx) = crossbeam_channel::unbounded();
         let sf_paths = sounds::find_soundfonts();
@@ -526,6 +538,9 @@ impl App {
             oc_prev: None,
             oc_prev_oct: 4,
             oc_tr_seen: 0,
+            play_prev: None,
+            play_set: None,
+            play_seen,
             inst_range: None,
             range_chart: None,
             meter: 0.0,
@@ -2221,6 +2236,9 @@ impl App {
 
     /// Fingering panel: follows the sound (auto), always shown, or off.
     fn fingering_visible(&mut self) -> bool {
+        if self.s.kb_inst.is_some() && !self.acc_mode && !self.oc_mode && !self.game_mode {
+            return true;
+        }
         match self.s.fing_mode {
             1 => true,
             2 => false,
@@ -4080,12 +4098,13 @@ impl App {
     /// Free play vs real range: which instrument range to show on the keys and refuse outside of.
     fn apply_range(&mut self) {
         let chart = if self.oc_mode || (!self.acc_mode && !self.game_mode && self.fingering_visible()) { Some(self.s.fing_idx) } else { None };
+        let real = if self.oc_mode { self.s.real_range } else { self.s.kb_inst.is_some() };
         self.inst_range = match chart {
-            Some(c) if self.oc_mode || self.s.real_range => Some(self.chart_range(c)),
+            Some(c) if self.oc_mode || real => Some(self.chart_range(c)),
             _ => None,
         };
         let (lo, hi) = match self.inst_range {
-            Some(r) if self.s.real_range => r,
+            Some(r) if real => r,
             _ => (0, 127),
         };
         self.p.range_lo.store(lo, Relaxed);
@@ -4107,6 +4126,159 @@ impl App {
         }
     }
 
+    /// The best sound we have for a General MIDI program: the recorded pack if it's installed.
+    pub(super) fn best_sound(&mut self, gm: i32) -> (i32, i32) {
+        let rec = crate::packs::better_for_gm(gm).filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
+        match rec {
+            Some(bp) => {
+                if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+                    self.add_native_presets();
+                }
+                bp
+            }
+            None => (0, gm),
+        }
+    }
+
+    /// Keyboard mode: free play (None) or play a real instrument (chart, transposition).
+    fn play_as(&mut self, pick: Option<(usize, usize)>) {
+        use crate::fingering::CHARTS;
+        match pick {
+            Some((c, t)) => {
+                let c = c.min(CHARTS.len() - 1);
+                if self.s.kb_inst.is_none() {
+                    self.play_prev = Some(self.s.main);
+                }
+                self.s.kb_inst = Some(CHARTS[c].name.to_string());
+                self.s.kb_inst_tr = t;
+                self.s.fing_idx = c;
+                self.s.fing_tr = t;
+                self.s.fing_any = false;
+                self.s.fing_pane = true;
+                self.play_seen = (c, t);
+                self.play_sound();
+            }
+            None => {
+                self.s.kb_inst = None;
+                self.s.fing_any = true;
+                self.fing_auto_key.clear();
+                // put back the sound you had, unless you've picked another since
+                if let (Some(prev), Some(set)) = (self.play_prev, self.play_set) {
+                    if self.s.main == set {
+                        self.set_preset(false, prev);
+                    }
+                }
+                self.play_prev = None;
+                self.play_set = None;
+            }
+        }
+    }
+
+    /// Switch to the instrument's own sound (unless "keep my sound", or the bagpipe module is playing).
+    fn play_sound(&mut self) {
+        if self.s.keep_sound || self.s.drone_mode == 1 {
+            return;
+        }
+        let (c, t) = self.play_seen;
+        let bp = self.best_sound(crate::fingering::gm_for_chart(c, t));
+        // already on a sound for this very instrument and key (e.g. a recorded flute you chose)? keep it
+        let same = crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) == Some((c, t));
+        if !same && bp != self.s.main {
+            self.set_preset(false, bp);
+        }
+        self.play_set = Some(self.s.main);
+    }
+
+    /// The chart or its key changed somewhere else (fingering pane, bagpipe module): follow it.
+    fn sync_play_as(&mut self) {
+        if self.s.kb_inst.is_none() {
+            return;
+        }
+        let now = (self.s.fing_idx.min(crate::fingering::CHARTS.len() - 1), self.s.fing_tr);
+        if now != self.play_seen {
+            let sound_changes = crate::fingering::gm_for_chart(now.0, now.1) != crate::fingering::gm_for_chart(self.play_seen.0, self.play_seen.1);
+            self.play_seen = now;
+            self.s.kb_inst = Some(crate::fingering::CHARTS[now.0].name.to_string());
+            self.s.kb_inst_tr = now.1;
+            if sound_changes {
+                self.play_sound();
+            }
+        }
+    }
+
+    /// One place to choose: free play like a synth, or a real instrument's range with live fingerings.
+    fn play_as_row(&mut self, ui: &mut egui::Ui) {
+        use crate::fingering::CHARTS;
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("PLAY AS").size(13.0).strong().color(text_dim()));
+            let inst = self.s.kb_inst.is_some();
+            let mut want = inst;
+            egui::Frame::new().fill(card_bg()).corner_radius(8.0).inner_margin(egui::Margin::same(3)).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (v, n, tip) in [
+                    (false, "Free play", "Every key sounds, any sound you like: a regular synth"),
+                    (true, "Real instrument", "Only the notes a real instrument has; its fingering shows live as you play, and the sound switches to it"),
+                ] {
+                    let on = inst == v;
+                    let b = egui::Button::new(RichText::new(n).size(14.0).strong().color(if on { Color32::BLACK } else { fg() })).fill(if on { YOURS } else { Color32::TRANSPARENT }).min_size(Vec2::new(0.0, 24.0));
+                    if ui.add(b).on_hover_text(tip).clicked() {
+                        want = v;
+                    }
+                }
+            });
+            if want != inst {
+                if want {
+                    // start from what the sound already is, if it has a chart
+                    let guess = crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).unwrap_or((self.s.fing_idx.min(CHARTS.len() - 1), 0));
+                    self.play_as(Some(guess));
+                } else {
+                    self.play_as(None);
+                }
+            }
+            if let Some(_) = self.s.kb_inst {
+                let (c, t) = self.play_seen;
+                let mut pick = (c, t);
+                egui::ComboBox::from_id_salt("play_as").selected_text(CHARTS[c].name).width(230.0).show_ui(ui, |ui| {
+                    for (i, ch) in CHARTS.iter().enumerate() {
+                        if ui.selectable_label(i == c, ch.name).on_hover_text(format!("From: {}", ch.source)).clicked() {
+                            pick = (i, 0);
+                        }
+                    }
+                });
+                let tr = CHARTS[c].trans;
+                if !tr.is_empty() {
+                    let ti = t.min(tr.len() - 1);
+                    egui::ComboBox::from_id_salt("play_as_tr").selected_text(tr[ti].0).width(150.0).show_ui(ui, |ui| {
+                        for (i, x) in tr.iter().enumerate() {
+                            if ui.selectable_label(i == ti, x.0).clicked() {
+                                pick = (c, i);
+                            }
+                        }
+                    });
+                }
+                if pick != (c, t) {
+                    self.play_as(Some(pick));
+                }
+                let (lo, hi) = self.chart_range(c);
+                ui.label(RichText::new(format!("{}–{} · fingering live on the right · other keys flash red", theory::note_name_oct(lo), theory::note_name_oct(hi))).size(12.5).color(fg()));
+                let mut keep = self.s.keep_sound;
+                if ui.checkbox(&mut keep, "Keep my own sound").on_hover_text("Leave the sound alone when you pick an instrument (off: it switches to the instrument's sound, the recorded one if you have it)").changed() {
+                    self.s.keep_sound = keep;
+                    if !keep {
+                        self.play_sound();
+                    }
+                }
+            } else {
+                let hint = match crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) {
+                    Some((c, _)) => format!("Every key sounds. This sound has a {} chart: fingerings show, an octave in where needed.", CHARTS[c].name.split(" (").next().unwrap_or("").to_lowercase()),
+                    None => "Every key sounds, any sound: a regular synth. Pick Real instrument for a whistle, sax, flute… range with live fingerings.".into(),
+                };
+                ui.label(RichText::new(hint).size(12.5).color(text_dim()));
+            }
+        });
+    }
+
     fn kb_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Keys").color(text_dim()));
@@ -4125,10 +4297,6 @@ impl App {
                 ui.toggle_value(&mut self.s.kb_follow, "Follow").on_hover_text("Slide along when you play outside the visible keys (e.g. after Oct +/−)");
                 let (lo, hi) = self.range();
                 ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(text_dim()));
-            }
-            if self.range_chart.is_some() {
-                ui.separator();
-                self.range_switch(ui);
             }
             ui.separator();
             ui.label(RichText::new("Layout").color(text_dim()));
@@ -4280,6 +4448,10 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("header").frame(egui::Frame::new().fill(panel()).inner_margin(egui::Margin::symmetric(10, 8))).show(ctx, |ui| {
             self.header(ui);
+            if !self.acc_mode && !self.oc_mode && !self.game_mode {
+                self.sync_play_as();
+                self.play_as_row(ui);
+            }
             if let Some(e) = &self.load_err {
                 ui.label(RichText::new(e).color(BAD));
             }

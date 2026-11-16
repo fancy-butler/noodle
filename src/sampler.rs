@@ -680,7 +680,9 @@ pub fn load(path: &Path) -> Result<Instrument, String> {
         .collect();
     levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
     if let Some(&m) = levels.get(levels.len() / 2) {
-        inst.norm = (0.55 / m).clamp(0.25, 12.0);
+        // 0.12: a held note lands about level with the SoundFont's own winds (it was 0.55, ~13 dB hotter,
+        // which put recorded instruments on the output limiter whenever they were played firmly)
+        inst.norm = (0.12 / m).clamp(0.05, 12.0);
     }
     if inst.mono && (n.contains("bagpipe") || n.contains("drone")) {
         inst.mono_from = 60;
@@ -1399,7 +1401,7 @@ mod tests {
         let (mut l, mut r) = (vec![0.0; 4800], vec![0.0; 4800]);
         p.render(&mut l, &mut r);
         let peak = l.iter().fold(0f32, |a, b| a.max(b.abs()));
-        assert!(peak > 0.05, "sound comes out ({peak})");
+        assert!(peak > 0.01, "sound comes out ({peak})"); // samples are normalised quiet (see norm) and the limiter evens the rest
         // legato: second note replaces the first without a second attack voice lingering
         p.note_on(71, 100);
         let (mut l2, mut r2) = (vec![0.0; 4800], vec![0.0; 4800]);

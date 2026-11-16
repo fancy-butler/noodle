@@ -442,6 +442,9 @@ pub struct Engine {
     native: [Option<crate::native::Native>; 16],
     nl: Vec<f32>,
     nr: Vec<f32>,
+    /// one native instrument's block, before its loudness trim
+    tl: Vec<f32>,
+    tr: Vec<f32>,
     verb: crate::native::Reverb,
     click: (f32, f32, f32), // phase, freq, remaining gain
     // clock
@@ -501,13 +504,34 @@ pub struct Engine {
     pipe_n: usize,
     /// output limiter gain (1 = untouched)
     lim_g: f32,
+    /// limiter look-ahead: the last few samples (delayed output) and the gain each one needs
+    lim_buf: Vec<[f32; 2]>,
+    lim_req: Vec<f32>,
+    lim_pos: usize,
+    /// samples left before the limiter may let the gain back up
+    lim_hold: u32,
     /// subsonic high-pass state per channel (x1, x2, y1, y2)
     hp: [[f32; 4]; 2],
     chord_of: [[i16; 4]; 128],
 }
 
+/// SoundFont drum kits hit far harder than a held instrument note: the synthpop pattern peaked ~9 dB
+/// over a piano chord at the same fader. This trims the drum channel so equal faders sound about equal.
+const DRUM_TRIM: f32 = 0.71;
+
 /// Output ceiling for the limiter (just under the soft clipper's knee).
 const LIM_CEIL: f32 = 0.84;
+
+/// Limiter look-ahead (1.5 ms): the gain starts coming down before a loud peak reaches the output,
+/// smoothly, instead of jumping on the peak itself.
+fn lim_lookahead(sr: f32) -> usize {
+    ((sr * 0.0015) as usize).max(8)
+}
+
+/// How long the limiter holds its gain after the last peak that needed it (30 ms, longer than one
+/// cycle of the lowest note): without the hold it rose between the peaks of a held low note and
+/// came down again on the next one — gain wobbling at the note's own pitch, which is distortion.
+const LIM_HOLD_S: f32 = 0.03;
 
 #[inline]
 fn soft_clip(x: f32) -> f32 {
@@ -552,6 +576,8 @@ impl Engine {
             native: std::array::from_fn(|_| None),
             nl: vec![0.0; mb],
             nr: vec![0.0; mb],
+            tl: vec![0.0; mb],
+            tr: vec![0.0; mb],
             verb: crate::native::Reverb::new(sr),
             click: (0.0, 0.0, 0.0),
             beat: 0.0,
@@ -604,6 +630,10 @@ impl Engine {
             pipe_held: [0; 16],
             pipe_n: 0,
             lim_g: 1.0,
+            lim_buf: vec![[0.0; 2]; lim_lookahead(sr) + 1],
+            lim_req: vec![1.0; lim_lookahead(sr) + 1],
+            lim_pos: 0,
+            lim_hold: 0,
             hp: [[0.0; 4]; 2],
             chord_of: [[-1; 4]; 128],
         }
@@ -708,7 +738,7 @@ impl Engine {
         let dv = self.p.drum_vol.get();
         if (dv - self.applied[3]).abs() > 0.004 {
             self.applied[3] = dv;
-            self.msg(DRUM_CH, 0xB0, 7, (dv * 127.0) as i32);
+            self.msg(DRUM_CH, 0xB0, 7, (dv * 127.0 * DRUM_TRIM) as i32);
         }
         let kit = self.p.drum_kit.load(Relaxed) as i32;
         if kit != self.applied_kit {
@@ -2032,9 +2062,19 @@ impl Engine {
                 self.nl[..len].fill(0.0);
                 self.nr[..len].fill(0.0);
                 let (mut nl, mut nr) = (std::mem::take(&mut self.nl), std::mem::take(&mut self.nr));
+                let (mut tl, mut tr) = (std::mem::take(&mut self.tl), std::mem::take(&mut self.tr));
                 for n in self.native.iter_mut().flatten() {
-                    n.render(&mut nl[..len], &mut nr[..len]);
+                    tl[..len].fill(0.0);
+                    tr[..len].fill(0.0);
+                    n.render(&mut tl[..len], &mut tr[..len]);
+                    let g = n.loudness_trim();
+                    for i in 0..len {
+                        nl[i] += tl[i] * g;
+                        nr[i] += tr[i] * g;
+                    }
                 }
+                self.tl = tl;
+                self.tr = tr;
                 self.verb.process(&mut nl[..len], &mut nr[..len], self.p.reverb.get());
                 for i in 0..len {
                     self.bl[i] += nl[i];
@@ -2089,6 +2129,8 @@ impl Engine {
             let dsamp = ((dbeats / bps) as usize).clamp(1, dlen - 1);
             let mut blk_peak = 0f32;
             let lim_rel = 1.0 - (-1.0 / (0.15 * sr)).exp();
+            let lim_att = 1.0 - (-5.0 / self.lim_buf.len() as f32).exp();
+            let lim_hold = (LIM_HOLD_S * sr) as u32;
             // 2nd-order Butterworth high-pass at 22 Hz: takes out DC (pulse waves, drive) and
             // sub-bass the speakers can't play but still pump their cones over
             let (hb0, hb1, hb2, ha1, ha2) = {
@@ -2140,13 +2182,24 @@ impl Engine {
                 let pre_r = hpf(1, (x[1] + rr * dmix) * master * 1.6);
                 let a = pre_l.abs().max(pre_r.abs());
                 blk_peak = blk_peak.max(a);
-                if a * self.lim_g > LIM_CEIL {
-                    self.lim_g = LIM_CEIL / a;
+                // look-ahead limiter: store this sample and the gain it will need, output the one
+                // from 1.5 ms ago with a gain that has already eased down to the quietest need ahead
+                let n = self.lim_buf.len();
+                self.lim_buf[self.lim_pos] = [pre_l, pre_r];
+                self.lim_req[self.lim_pos] = if a > LIM_CEIL { LIM_CEIL / a } else { 1.0 };
+                self.lim_pos = (self.lim_pos + 1) % n;
+                let need = self.lim_req.iter().copied().fold(1.0f32, f32::min);
+                if need < self.lim_g {
+                    self.lim_g += (need - self.lim_g) * lim_att;
+                    self.lim_hold = lim_hold;
+                } else if self.lim_hold > 0 {
+                    self.lim_hold -= 1;
                 } else {
-                    self.lim_g += (1.0 - self.lim_g) * lim_rel;
+                    self.lim_g += (need - self.lim_g) * lim_rel;
                 }
-                let l = soft_clip(pre_l * self.lim_g);
-                let r = soft_clip(pre_r * self.lim_g);
+                let [dl_, dr_] = self.lim_buf[self.lim_pos];
+                let l = soft_clip(dl_ * self.lim_g);
+                let r = soft_clip(dr_ * self.lim_g);
                 out_l[done + i] = l;
                 out_r[done + i] = r;
             }

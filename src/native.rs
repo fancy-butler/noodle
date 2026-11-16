@@ -98,6 +98,20 @@ impl Native {
         }
     }
 
+    /// Brings each engine to about the level of a General MIDI wind instrument for the same note
+    /// (measured with `noodle --level-survey`): chip voices came out ~24 dB over the SoundFont piano,
+    /// the analog synths ~9 dB, the accordion reeds ~14 dB — enough to sit on the limiter all the time,
+    /// which is what made loud notes sound distorted. Sample instruments set their own level (`norm`).
+    pub fn loudness_trim(&self) -> f32 {
+        match self {
+            Native::Sampler(_) => 1.0,
+            Native::Chip(_) => 0.13,
+            Native::Drums(_) => 0.6,
+            Native::Analog(_) => 0.6,
+            Native::Reed(_) => 0.35,
+        }
+    }
+
     pub fn render(&mut self, l: &mut [f32], r: &mut [f32]) {
         match self {
             Native::Sampler(p) => p.render(l, r),

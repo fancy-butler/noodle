@@ -44,16 +44,8 @@ impl App {
         self.oc_prev_oct = self.s.kb_octave;
         self.s.fing_any = !self.s.real_range;
         // the recorded ocarina if it's there, otherwise the General MIDI one (the header offers the download)
-        let rec = crate::packs::better_for_gm(79).filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
-        match rec {
-            Some(bp) => {
-                if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
-                    self.add_native_presets();
-                }
-                self.set_preset(false, bp);
-            }
-            None => self.set_preset(false, (0, 79)),
-        }
+        let bp = self.best_sound(79);
+        self.set_preset(false, bp);
         let c = self.oc_chart();
         if self.s.fing_idx != c {
             self.s.fing_idx = c;
@@ -72,6 +64,13 @@ impl App {
         if let Some(bp) = self.oc_prev.take() {
             self.set_preset(false, bp);
         }
+        // back to the keyboard's own Play as choice
+        if let Some(i) = self.s.kb_inst.as_deref().and_then(|n| CHARTS.iter().position(|c| c.name == n)) {
+            self.s.fing_idx = i;
+            self.s.fing_tr = self.s.kb_inst_tr;
+            self.play_seen = (i, self.s.kb_inst_tr);
+        }
+        self.s.fing_any = self.s.kb_inst.is_none();
     }
 
     pub(super) fn oc_screen(&mut self, ui: &mut egui::Ui, rect: Rect) {

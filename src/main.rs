@@ -49,6 +49,13 @@ fn main() {
         }
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--level-survey") {
+        if let Err(e) = level_survey(&args[i + 1..]) {
+            eprintln!("level survey failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("noodle {VERSION}");
         return;
@@ -93,6 +100,80 @@ fn main() {
         eprintln!("noodle: {e}");
         std::process::exit(1);
     }
+}
+
+/// How loud each kind of sound comes out for the same played note (C4-ish, velocity 100), relative to
+/// the General MIDI piano. `noodle --level-survey bank.sf2 [instrument.sfz ...]`
+fn level_survey(args: &[String]) -> Result<(), String> {
+    let sr = 48000u32;
+    let sf = args.first().ok_or("give a .sf2")?;
+    let loaded = sounds::load_soundfont(std::path::Path::new(sf), sr)?;
+    let p = Arc::new(Params::new());
+    p.master.set(0.2); // stay under the limiter: we want the levels, not the limiter's work
+    let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
+    let (utx, _urx) = crossbeam_channel::bounded::<UiEvt>(1 << 20);
+    let mut eng = Engine::new(p.clone(), rx, utx, sr as f32, 8192);
+    tx.send(Cmd::Synths(loaded.synths)).unwrap();
+    let block = 256usize;
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut run = |eng: &mut Engine, secs: f32| -> (f32, f64) {
+        let n = (secs * sr as f32) as usize / block;
+        let (mut pk, mut sum, mut cnt) = (0f32, 0f64, 0usize);
+        for _ in 0..n {
+            eng.process(&mut l, &mut r);
+            for i in 0..block {
+                pk = pk.max(l[i].abs()).max(r[i].abs());
+                sum += ((l[i] * l[i] + r[i] * r[i]) * 0.5) as f64;
+                cnt += 1;
+            }
+        }
+        (pk, (sum / cnt.max(1) as f64).sqrt())
+    };
+    let note = |k: u8, on: bool| Cmd::Midi(if on { [0x90, k, 100] } else { [0x80, k, 0] });
+    let mut measure = |eng: &mut Engine, label: &str, prog: Cmd, keys: &[u8], reference: &mut Option<f64>| {
+        tx.send(prog).unwrap();
+        run(eng, 0.2);
+        for &k in keys {
+            tx.send(note(k, true)).unwrap();
+        }
+        run(eng, 0.1);
+        let (pk, rms) = run(eng, 0.8);
+        for &k in keys {
+            tx.send(note(k, false)).unwrap();
+        }
+        tx.send(Cmd::Panic).unwrap();
+        run(eng, 0.6);
+        let refv = *reference.get_or_insert(rms);
+        println!("{label:<40} rms {:>7.4}  peak {:>6.3}  {:>+6.1} dB vs piano", rms, pk, 20.0 * (rms / refv).log10());
+    };
+    let mut reference = None;
+    let sf2 = |prog: i32| Cmd::Program { layer: false, bank: 0, prog, inst: None };
+    for (prog, name) in [(0, "GM piano"), (21, "GM accordion"), (40, "GM violin"), (48, "GM strings"), (56, "GM trumpet"), (65, "GM alto sax"), (73, "GM flute"), (74, "GM recorder"), (78, "GM whistle"), (79, "GM ocarina"), (109, "GM bagpipe"), (81, "GM saw lead")] {
+        measure(&mut eng, name, sf2(prog), &[60], &mut reference);
+    }
+    for pt in chip::PATCHES.iter().take(6) {
+        measure(&mut eng, &format!("chip {}", pt.name), Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(Arc::new(native::InstDef::Chip(*pt))) }, &[60], &mut reference);
+    }
+    for pt in analog::BANKS.iter().flat_map(|b| b.iter()).take(8) {
+        measure(&mut eng, &format!("synthwave {}", pt.name), Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(Arc::new(native::InstDef::Analog(*pt))) }, &[60], &mut reference);
+    }
+    for f in args.iter().skip(1) {
+        let inst = sampler::load(std::path::Path::new(f))?;
+        let key = inst.regions.iter().map(|r| (r.lokey as u16 + r.hikey as u16) / 2).nth(inst.regions.len() / 2).unwrap_or(60) as u8;
+        measure(&mut eng, &format!("sample {}", inst.name), Cmd::Program { layer: false, bank: 0, prog: 0, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }, &[key], &mut reference);
+    }
+    // the SoundFont drum kit: one kick + snare, peak against the piano note's peak
+    tx.send(sf2(0)).unwrap();
+    run(&mut eng, 0.2);
+    p.drums_on.store(false, Relaxed);
+    for (k, name) in [(36u8, "SF2 kick"), (38, "SF2 snare")] {
+        tx.send(Cmd::Midi([0x99, k, 100])).unwrap();
+        let (pk, rms) = run(&mut eng, 0.25);
+        tx.send(Cmd::Midi([0x89, k, 0])).unwrap();
+        run(&mut eng, 0.4);
+        println!("{name:<40} rms {:>7.4}  peak {:>6.3}  {:>+6.1} dB vs piano (rms over 0.25 s)", rms, pk, 20.0 * (rms / reference.unwrap()).log10());
+    }
+    Ok(())
 }
 
 /// Offline smoke test: drives the real engine with scripted input and writes a WAV,

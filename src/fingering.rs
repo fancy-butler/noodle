@@ -868,3 +868,57 @@ mod tests {
         assert_eq!(chart_for_sound("Bagpipe in G (with drones)").map(|x| x.0), Some(0));
     }
 }
+
+/// The General MIDI program that sounds like this chart's instrument (and transposition):
+/// what "Play as" switches the sound to, unless you keep your own.
+pub fn gm_for_chart(idx: usize, tr: usize) -> i32 {
+    let c = &CHARTS[idx.min(CHARTS.len() - 1)];
+    let t = c.trans.get(tr).map(|t| t.0.to_lowercase()).unwrap_or_default();
+    let n = c.name;
+    if n.contains("chanter") || n.contains("smallpipes") {
+        109 // bagpipe
+    } else if n.starts_with("Recorder") || n.starts_with("Sopilka") {
+        74
+    } else if n.starts_with("Tin whistle") {
+        78
+    } else if n.starts_with("Flute") {
+        73
+    } else if n.starts_with("Saxophone") {
+        if t.starts_with("tenor") {
+            66
+        } else if t.starts_with("soprano") {
+            64
+        } else if t.starts_with("bari") {
+            67
+        } else {
+            65
+        }
+    } else if n.starts_with("Trumpet") {
+        56
+    } else if n.starts_with("Clarinet") {
+        71
+    } else if n.starts_with("Oboe") {
+        68
+    } else if n.starts_with("Bassoon") {
+        70
+    } else if n.starts_with("Ocarina") {
+        79
+    } else {
+        73
+    }
+}
+
+#[cfg(test)]
+mod gm_tests {
+    use super::*;
+    #[test]
+    fn every_chart_has_a_sound() {
+        for (i, c) in CHARTS.iter().enumerate() {
+            let g = gm_for_chart(i, 0);
+            assert!((0..128).contains(&g), "{}", c.name);
+        }
+        let sax = CHARTS.iter().position(|c| c.name == "Saxophone").unwrap();
+        assert_eq!(gm_for_chart(sax, 1), 66);
+        assert_eq!(gm_for_chart(sax, 3), 67);
+    }
+}
