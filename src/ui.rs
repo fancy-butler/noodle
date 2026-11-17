@@ -135,6 +135,9 @@ pub struct App {
     set_find_q: String,
     /// practising: (set, item) now loaded
     set_play: Option<(usize, usize)>,
+    /// files picked in the "Add files…" dialog (it runs on its own thread)
+    pick_rx: Option<crossbeam_channel::Receiver<Vec<PathBuf>>>,
+    song_note: Option<String>,
     /// a MuseScore/MusicXML score converting in the background (result, file name)
     score_pending: Option<(crossbeam_channel::Receiver<Result<Song, String>>, String)>,
     search_focused: bool,
@@ -508,6 +511,8 @@ impl App {
             set_find: None,
             set_find_q: String::new(),
             set_play: None,
+            pick_rx: None,
+            song_note: None,
             score_pending: None,
             search_focused: false,
             blocked: h.blocked,
@@ -1041,6 +1046,42 @@ impl App {
         match song::load(path) {
             Ok(s) => self.set_song(Some(Arc::new(s)), 0),
             Err(e) => self.song_err = Some(e),
+        }
+    }
+
+    /// Files chosen in "Add files…": zips unpack into the songs folder, other files are copied
+    /// there; a single tune opens straight away.
+    fn poll_pick(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.pick_rx else { return };
+        let picked = match rx.try_recv() {
+            Ok(v) => v,
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                return;
+            }
+            Err(_) => Vec::new(),
+        };
+        self.pick_rx = None;
+        let dir = sounds::user_dir().join("songs");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut tunes = Vec::new();
+        for p in picked {
+            if p.extension().map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false) {
+                self.import_zip(&p);
+            } else if let Some(name) = p.file_name() {
+                let dest = dir.join(name);
+                if dest != p && std::fs::copy(&p, &dest).is_ok() {
+                    tunes.push(dest);
+                } else {
+                    tunes.push(p.clone());
+                }
+            }
+        }
+        self.song_files = sounds::find_songs();
+        if tunes.len() == 1 {
+            self.load_song_path(&tunes[0].clone());
+        } else if !tunes.is_empty() {
+            self.song_note = Some(format!("✓ Added {} tunes to My files", tunes.len()));
         }
     }
 
@@ -3124,6 +3165,9 @@ impl App {
             if let Some(e) = &self.song_err {
                 ui.label(RichText::new(e).color(BAD));
             }
+            if let Some(n) = &self.song_note {
+                ui.label(RichText::new(n).color(GOOD));
+            }
             let Some(song) = self.song.clone() else { return };
             let playing = self.p.song_playing.load(Relaxed);
             if ui.button("⏮").clicked() {
@@ -3751,7 +3795,7 @@ impl App {
         match res {
             Ok(n) => {
                 self.song_files = sounds::find_songs();
-                self.song_err = Some(format!("Added {n} tunes to My files › {name}"));
+                self.song_note = Some(format!("✓ Added {n} tunes to My files › {name}"));
                 self.tune_tab = 4;
                 self.tunes_open = true;
             }
@@ -3923,7 +3967,7 @@ impl App {
             }
         });
         if found < total {
-            ui.label(RichText::new("Not found yet? Drop the chart (PDF, MuseScore, MIDI) on the window, then 🔍 next to the tune.").size(11.5).color(text_dim()));
+            ui.label(RichText::new("Not found yet? My files › ➕ Add files… (the chart: PDF, MuseScore, MIDI), then 🔍 next to the tune.").size(11.5).color(text_dim()));
         }
         let mut changed = false;
         let mut remove = None;
@@ -4025,6 +4069,18 @@ impl App {
         let mut pick = None;
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.file_search).hint_text("🔍 Search your files").desired_width(220.0));
+            if ui.add(egui::Button::new(RichText::new("➕ Add files…").strong().color(Color32::BLACK)).fill(YOURS)).on_hover_text("Charts (PDF), MuseScore, MusicXML, MIDI or ABC files, or a .zip of them").clicked() && self.pick_rx.is_none() {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                std::thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .set_title("Add tunes to Noodle")
+                        .add_filter("Tunes and charts", &["pdf", "mscz", "mscx", "musicxml", "mxl", "xml", "mid", "midi", "kar", "abc", "zip"])
+                        .pick_files()
+                        .unwrap_or_default();
+                    let _ = tx.send(picked);
+                });
+                self.pick_rx = Some(rx);
+            }
             if ui.button("📂 Open the songs folder").on_hover_text("Put .mid, .mscz, .musicxml or .abc files in here").clicked() {
                 let dir = sounds::user_dir().join("songs");
                 let _ = std::fs::create_dir_all(&dir);
@@ -5073,6 +5129,7 @@ impl eframe::App for App {
         self.apply_drones();
         self.apply_range();
         self.poll_score(ctx);
+        self.poll_pick(ctx);
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop

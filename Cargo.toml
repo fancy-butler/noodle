@@ -1,6 +1,6 @@
 [package]
 name = "noodle"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Fancy Butler"]
@@ -21,6 +21,7 @@ ureq = "3"
 claxon = "0.4"
 roxmltree = "0.20"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rfd = "0.15"
 
 [profile.release]
 opt-level = 3
