@@ -149,6 +149,8 @@ pub struct Params {
     pub midi_out: AtomicBool,
     /// accordion mode volume (gain on the accordion channel)
     pub acc_vol: AF32,
+    /// MIDI learn: the next CC is reported, not used
+    pub learn: AtomicBool,
     pub arp_gate: AF32,
     // drums
     pub drums_on: AtomicBool,
@@ -261,6 +263,7 @@ impl Params {
             arp_notes: AtomicU8::new(0),
             midi_out: AtomicBool::new(false),
             acc_vol: AF32::new(1.6),
+            learn: AtomicBool::new(false),
             arp_gate: AF32::new(0.6),
             drums_on: AtomicBool::new(false),
             drum_bank: Default::default(),
@@ -374,6 +377,8 @@ pub enum UiEvt {
     Category(i8),
     /// a live note the instrument can't play (real range mode)
     OutOfRange(u8),
+    /// MIDI learn: this CC moved while Noodle was listening for one
+    Learned(u8),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1028,6 +1033,12 @@ impl Engine {
                 }
                 return;
             }
+        }
+        if st == 0xB0 && ch != 9 && self.p.learn.load(Relaxed) && !matches!(m[1], 64 | 120..=127) {
+            // MIDI learn: the first knob that moves (not the sustain pedal) is the answer
+            self.p.learn.store(false, Relaxed);
+            let _ = self.tx.try_send(UiEvt::Learned(m[1] & 0x7F));
+            return;
         }
         if st == 0xB0 && ch != 9 {
             // mapped controller knobs work in every mode (accordion included)

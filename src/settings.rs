@@ -42,6 +42,8 @@ pub struct Settings {
     pub acc_spell: u8,
     /// look for a new Noodle once a day
     pub check_updates: bool,
+    /// knobs taught with MIDI learn: (cc, target); these win over a ready-made mapping
+    pub learned: Vec<(u8, u8)>,
     /// when it last looked (unix seconds)
     pub update_checked: u64,
     pub drum_rows: [u16; DRUM_ROWS],
@@ -174,6 +176,7 @@ impl Default for Settings {
             acc_vol: 1.6,
             acc_spell: 0,
             check_updates: true,
+            learned: Vec::new(),
             update_checked: 0,
             drum_rows: crate::drums::PATTERNS[1].1,
             drum_slots: Vec::new(),

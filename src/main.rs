@@ -13,6 +13,7 @@ mod accordion;
 mod analog;
 mod chip;
 mod collections;
+mod controllers;
 mod audio;
 mod drums;
 mod game;

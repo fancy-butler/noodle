@@ -139,6 +139,12 @@ pub struct App {
     pick_rx: Option<crossbeam_channel::Receiver<Vec<PathBuf>>>,
     song_note: Option<String>,
     updater: crate::update::Updater,
+    /// which mapping is loaded (so it's only rebuilt when something changes)
+    ctl_key: String,
+    /// the ready-made mapping in use, if any (index into controllers::PRESETS)
+    ctl_preset: Option<usize>,
+    /// MIDI learn: waiting for a knob for this target
+    learning: Option<u8>,
     update_open: bool,
     /// a MuseScore/MusicXML score converting in the background (result, file name)
     score_pending: Option<(crossbeam_channel::Receiver<Result<Song, String>>, String)>,
@@ -357,6 +363,12 @@ fn knob(ui: &mut egui::Ui, label: &str, v: &mut f32, default: f32, col: Color32,
         *v = default;
         changed = true;
     }
+    if crate::controllers::target_for_label(label).is_some() {
+        if resp.secondary_clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("learn_req"), label.to_string()));
+        }
+        resp.clone().on_hover_text("Drag or scroll · double-click resets · right-click: learn a knob on your controller");
+    }
     let p = ui.painter();
     let c = Pos2::new(rect.center().x, rect.top() + 24.0);
     let r = 17.0;
@@ -516,6 +528,9 @@ impl App {
             pick_rx: None,
             song_note: None,
             updater: Default::default(),
+            ctl_key: String::new(),
+            ctl_preset: None,
+            learning: None,
             update_open: false,
             score_pending: None,
             search_focused: false,
@@ -922,29 +937,73 @@ impl App {
         self.s.kb_lo = lo;
     }
 
-    fn apply_controller(&mut self) {
+    fn apply_controller(&mut self, ctx: &egui::Context) {
         let devs: Vec<String> = self.devices.lock().map(|d| d.iter().filter(|n| !n.starts_with('-')).cloned().collect()).unwrap_or_default();
         let ml3 = devs.iter().any(|d| {
             let l = d.to_lowercase().replace(' ', "");
             l.contains("minilab3") || l.contains("minilabmk3")
         });
-        let want = match self.s.controller {
-            1 => false,
-            2 => true,
-            _ => ml3,
+        // which mapping: MiniLab 3 (its own, with the card), a ready-made one, or none
+        let detected = devs.iter().find_map(|d| crate::controllers::detect(d));
+        let (want_ml3, preset) = match self.s.controller {
+            1 => (false, None),
+            2 => (true, None),
+            c if c >= 3 => (false, Some((c - 3) as usize).filter(|i| *i < crate::controllers::PRESETS.len())),
+            _ => (ml3, if ml3 { None } else { detected }),
         };
-        if want != self.ml3_active {
-            self.ml3_active = want;
+        let key = format!("{want_ml3}{preset:?}{:?}", self.s.learned);
+        if key != self.ctl_key {
+            self.ctl_key = key;
+            self.ml3_active = want_ml3;
+            self.ctl_preset = preset;
             for a in self.p.cc_map.iter() {
                 a.store(target::NONE, Relaxed);
             }
-            if want {
+            if want_ml3 {
                 for (cc, t) in MINILAB3_MAP.iter().chain(MINILAB3_DAW_MAP.iter()) {
                     self.p.cc_map[*cc as usize].store(*t, Relaxed);
                 }
                 for i in 0..8u8 {
                     self.p.cc_map[(102 + i) as usize].store(target::PAD0 + i, Relaxed);
                 }
+            }
+            if let Some(i) = preset {
+                for (cc, t) in crate::controllers::map(&crate::controllers::PRESETS[i]) {
+                    self.p.cc_map[cc as usize].store(t, Relaxed);
+                }
+            }
+            // what you taught it wins
+            for (cc, t) in &self.s.learned {
+                for a in self.p.cc_map.iter() {
+                    if a.load(Relaxed) == *t {
+                        a.store(target::NONE, Relaxed);
+                    }
+                }
+                self.p.cc_map[*cc as usize].store(*t, Relaxed);
+            }
+        }
+        // a knob was right-clicked: listen for the controller
+        if let Some(label) = ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("learn_req"))) {
+            if let Some(t) = crate::controllers::target_for_label(&label) {
+                self.learning = Some(t);
+                self.p.learn.store(true, Relaxed);
+            }
+        }
+        if let Some(t) = self.learning {
+            let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            egui::Area::new(egui::Id::new("learn_banner")).anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 90.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+                egui::Frame::new().fill(YOURS).corner_radius(10.0).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Turn the knob or fader on your controller that should work {}…", target::name(t))).size(15.0).strong().color(Color32::BLACK));
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            });
+            if cancel {
+                self.learning = None;
+                self.p.learn.store(false, Relaxed);
             }
         }
         // wind controllers
@@ -1244,6 +1303,15 @@ impl App {
                 }
                 UiEvt::Bend(v) => self.bend = v,
                 UiEvt::OutOfRange(k) => self.wrong[k as usize] = now,
+                UiEvt::Learned(cc) => {
+                    if let Some(t) = self.learning.take() {
+                        // one knob per job: drop older bindings of this CC or this target
+                        self.s.learned.retain(|(c, tt)| *c != cc && *tt != t);
+                        self.s.learned.push((cc, t));
+                        self.ctl_key.clear();
+                        self.song_note = Some(format!("✓ {} is on CC {cc}", target::name(t)));
+                    }
+                }
                 UiEvt::Pad { note, vel } => {
                     if vel > 0 && (36..44).contains(&note) {
                         self.pad_hit[(note - 36) as usize] = now;
@@ -4023,7 +4091,11 @@ impl App {
             ui.label(RichText::new("Paste the setlist (the tune names, one per line). Noodle looks each one up in your files (charts, MuseScore, MIDI), the klezmer collection and The Session.").size(12.0).color(text_dim()));
             ui.add(egui::TextEdit::multiline(&mut self.set_paste).desired_rows(8).desired_width(f32::INFINITY).hint_text("Setlist for Nov. 18th!\nFirst Set:\nGoldenshteyn Freylekhs No. 17\nAi Raci Ku Ne Draci\n…"));
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Make the set").strong()).clicked() && !self.set_paste.trim().is_empty() {
+                let make = ui.add(egui::Button::new(RichText::new("Make the set").strong().color(Color32::BLACK)).fill(GOOD)).clicked();
+                if make && self.set_paste.trim().is_empty() {
+                    self.song_err = Some("The setlist box is empty: click in it and paste (Ctrl+V), then Make the set".into());
+                }
+                if make && !self.set_paste.trim().is_empty() {
                     let (mut name, items) = sets::parse_setlist(&self.set_paste);
                     if name.is_empty() {
                         name = format!("Set {}", self.sets.len() + 1);
@@ -4034,9 +4106,14 @@ impl App {
                     self.set_match_all(c);
                     self.set_paste.clear();
                     self.set_pasting = false;
+                    self.song_err = None;
+                    self.song_note = Some(format!("✓ Set made: {}", self.sets[c].name));
                 }
                 if ui.button("Cancel").clicked() {
                     self.set_pasting = false;
+                }
+                if let Some(e) = &self.song_err {
+                    ui.label(RichText::new(e).color(BAD));
                 }
             });
             if self.sets.is_empty() {
@@ -5101,14 +5178,34 @@ impl App {
             }
             ui.separator();
             ui.label(RichText::new("Controller").color(text_dim()));
-            let names = ["Auto-detect", "Off (raw MIDI)", "MiniLab 3"];
-            egui::ComboBox::from_id_salt("ctrl").selected_text(names[self.s.controller.min(2) as usize]).width(120.0).show_ui(ui, |ui| {
+            let mut names: Vec<&str> = vec!["Auto-detect", "Off (raw MIDI)", "Arturia MiniLab 3"];
+            names.extend(crate::controllers::PRESETS.iter().map(|p| p.name));
+            egui::ComboBox::from_id_salt("ctrl").selected_text(names[(self.s.controller as usize).min(names.len() - 1)]).width(150.0).show_ui(ui, |ui| {
                 for (i, n) in names.iter().enumerate() {
                     ui.selectable_value(&mut self.s.controller, i as u8, *n);
                 }
+                ui.separator();
+                ui.label(RichText::new("Not listed? Right-click any knob in Noodle and turn one on your controller.").size(11.0).color(text_dim()));
             });
             if self.ml3_active {
                 ui.label(RichText::new("● MiniLab 3 mapped").size(11.5).color(GOOD)).on_hover_text("Knobs, faders, pads and the main encoder are mapped 1:1");
+            } else if let Some(i) = self.ctl_preset {
+                let p = &crate::controllers::PRESETS[i];
+                let mut tip = String::new();
+                for (n, (cc, t)) in crate::controllers::map(p).into_iter().enumerate() {
+                    let what = if n < p.knobs.len() { format!("Knob {}", n + 1) } else { format!("Fader {}", n - p.knobs.len() + 1) };
+                    tip += &format!("{what} (CC {cc}) → {}\n", target::name(t));
+                }
+                if !p.note.is_empty() {
+                    tip += &format!("\nOn the controller: {}", p.note);
+                }
+                ui.label(RichText::new(format!("● {} mapped", p.name.split(" (").next().unwrap_or(p.name))).size(11.5).color(GOOD)).on_hover_text(tip);
+            }
+            if !self.s.learned.is_empty() {
+                let tip: String = self.s.learned.iter().map(|(c, t)| format!("CC {c} → {}\n", target::name(*t))).collect();
+                if ui.small_button(format!("{} learned ✕", self.s.learned.len())).on_hover_text(format!("{tip}\nClick to forget them")).clicked() {
+                    self.s.learned.clear();
+                }
             }
             ui.separator();
             ui.label(RichText::new("Wind").color(text_dim()));
@@ -5215,7 +5312,7 @@ impl eframe::App for App {
                 }
             });
         }
-        self.apply_controller();
+        self.apply_controller(ctx);
         self.apply_drones();
         self.apply_range();
         self.poll_score(ctx);
