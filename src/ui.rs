@@ -1034,6 +1034,8 @@ impl App {
             Ok(Ok(s)) => {
                 self.score_pending = None;
                 self.set_song(Some(Arc::new(s)), 0);
+                // a PDF leaves its MusicXML reading next to it: list it
+                self.song_files = sounds::find_songs();
             }
             Ok(Err(e)) => {
                 self.score_pending = None;
@@ -3095,7 +3097,8 @@ impl App {
             }
             if let Some((_, n)) = &self.score_pending {
                 ui.add(egui::Spinner::new());
-                ui.label(RichText::new(format!("Opening {n}…")).color(text_dim()));
+                let what = if n.to_lowercase().ends_with(".pdf") { format!("Reading the sheet music in {n} (Audiveris, about half a minute)…") } else { format!("Opening {n}…") };
+                ui.label(RichText::new(what).color(text_dim()));
             } else if let Some(song) = &self.song {
                 ui.label(RichText::new(&song.name).strong().size(14.0));
             } else {
@@ -3705,6 +3708,7 @@ impl App {
             }
         });
         let has_ms = crate::score::musescore().is_some();
+        let has_omr = crate::score::audiveris().is_some();
         ui.label(
             RichText::new(if has_ms {
                 "MIDI · MuseScore (.mscz) · MusicXML · ABC. Drag files onto the window to add them. MuseScore is installed, so its files open exactly as written."
@@ -3714,12 +3718,24 @@ impl App {
             .size(11.5)
             .color(text_dim()),
         );
+        ui.label(
+            RichText::new(if has_omr {
+                "Sheet music PDFs: Audiveris reads them into notes (half a minute or so; check the result against the page — triplets and repeat endings are where it slips)."
+            } else if cfg!(target_os = "linux") {
+                "Sheet music PDFs need Audiveris, a free music reader: flatpak install flathub org.audiveris.audiveris"
+            } else {
+                "Sheet music PDFs need Audiveris, a free music reader: audiveris.github.io"
+            })
+            .size(11.5)
+            .color(if has_omr { text_dim() } else { YOURS }),
+        );
         ui.add_space(4.0);
         let q = self.file_search.to_lowercase();
         let kind = |p: &PathBuf| -> u8 {
             match p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
                 "mid" | "midi" | "kar" => 0,
                 "abc" => 2,
+                "pdf" => 3,
                 _ => 1,
             }
         };
@@ -3727,7 +3743,7 @@ impl App {
             if self.song_files.is_empty() {
                 ui.label(RichText::new(format!("No files yet. Drop some in {}", sounds::user_dir().join("songs").display())).color(text_dim()));
             }
-            for (k, head) in [(0u8, "🎹  MIDI"), (1, "🎼  MuseScore & MusicXML"), (2, "📜  ABC")] {
+            for (k, head) in [(0u8, "🎹  MIDI"), (1, "🎼  MuseScore & MusicXML"), (3, "📄  Sheet music (PDF): read by Audiveris"), (2, "📜  ABC")] {
                 let files: Vec<&PathBuf> = self.song_files.iter().filter(|p| kind(p) == k).filter(|p| q.is_empty() || p.file_name().map(|n| n.to_string_lossy().to_lowercase().contains(&q)).unwrap_or(false)).collect();
                 if files.is_empty() {
                     continue;
@@ -4727,7 +4743,7 @@ impl eframe::App for App {
                         let id = sounds::inst_id(&p);
                         self.set_preset(false, (sounds::SAMPLE_BANK, id));
                     }
-                    "mid" | "midi" | "kar" | "abc" | "mscz" | "mscx" | "musicxml" | "mxl" | "xml" => {
+                    "mid" | "midi" | "kar" | "abc" | "mscz" | "mscx" | "musicxml" | "mxl" | "xml" | "pdf" => {
                         self.load_song_path(&p);
                         if !self.song_files.contains(&p) {
                             self.song_files.insert(0, p);

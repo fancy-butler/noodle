@@ -222,7 +222,7 @@ pub fn bank_blurb(path: &Path) -> &'static str {
 }
 
 pub fn find_songs() -> Vec<PathBuf> {
-    let mut v = scan(&song_dirs(), &["mid", "midi", "kar", "abc", "mscz", "mscx", "musicxml", "mxl"], 1);
+    let mut v = scan(&song_dirs(), &["mid", "midi", "kar", "abc", "mscz", "mscx", "musicxml", "mxl", "pdf"], 1);
     v.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
     v
 }

@@ -8,10 +8,96 @@
 use crate::song::{self, Song, SongEv, SongNote};
 use std::path::{Path, PathBuf};
 
-pub const EXTS: [&str; 5] = ["mscz", "mscx", "musicxml", "xml", "mxl"];
+pub const EXTS: [&str; 6] = ["mscz", "mscx", "musicxml", "xml", "mxl", "pdf"];
 
 pub fn is_score(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).map(|e| EXTS.iter().any(|x| e.eq_ignore_ascii_case(x))).unwrap_or(false)
+}
+
+/// A scratch folder both Noodle and flatpak'd helpers can see (flatpak hides /tmp).
+fn work_dir(tag: &str) -> PathBuf {
+    let d = crate::sounds::user_dir().join("cache").join(format!("{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Audiveris (free optical music recognition: reads printed sheet music), if installed.
+pub fn audiveris() -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            for n in ["audiveris", "Audiveris", "Audiveris.exe"] {
+                let p = dir.join(n);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let fixed = [
+        "/opt/audiveris/bin/Audiveris".to_string(),
+        "/opt/audiveris/bin/audiveris".to_string(),
+        "/Applications/Audiveris.app/Contents/MacOS/Audiveris".to_string(),
+        "C:\\Program Files\\Audiveris\\Audiveris.exe".to_string(),
+        "/var/lib/flatpak/exports/bin/org.audiveris.audiveris".to_string(),
+        format!("{home}/.local/share/flatpak/exports/bin/org.audiveris.audiveris"),
+    ];
+    fixed.iter().map(PathBuf::from).find(|p| p.is_file())
+}
+
+/// Printed sheet music (PDF) → song: Audiveris reads it into MusicXML, which is kept next to
+/// the PDF in the songs folder (opens instantly next time, and MuseScore can open it too).
+fn from_pdf(path: &Path, name: String) -> Result<Song, String> {
+    let Some(aud) = audiveris() else {
+        let how = if cfg!(target_os = "linux") {
+            "flatpak install flathub org.audiveris.audiveris"
+        } else {
+            "get it from audiveris.github.io"
+        };
+        return Err(format!("Reading sheet music needs Audiveris (free): {how}. Or ask for the MuseScore/MusicXML file instead of the PDF."));
+    };
+    let out = work_dir("omr");
+    let flat = aud.to_string_lossy().contains("org.audiveris.audiveris");
+    let mut cmd = if flat {
+        let mut c = std::process::Command::new("flatpak");
+        c.args(["run", "--filesystem=host", "org.audiveris.audiveris"]);
+        c
+    } else {
+        std::process::Command::new(&aud)
+    };
+    cmd.args(["-batch", "-export", "-output"]).arg(&out).arg("--").arg(path);
+    let res = cmd.output().map_err(|e| format!("Couldn't run Audiveris: {e}"))?;
+    // one .mxl per movement: stem.mxl, or stem.mvt1.mxl, stem.mvt2.mxl…
+    let mut mxls: Vec<PathBuf> = walk(&out).into_iter().filter(|p| p.extension().map(|e| e == "mxl").unwrap_or(false)).collect();
+    mxls.sort();
+    let Some(first) = mxls.first() else {
+        let err = String::from_utf8_lossy(&res.stdout).to_string() + &String::from_utf8_lossy(&res.stderr);
+        let last = err.lines().rev().find(|l| l.contains("WARN") || l.contains("ERROR")).unwrap_or("it found no music");
+        let _ = std::fs::remove_dir_all(&out);
+        return Err(format!("Audiveris couldn't read that sheet ({})", last.trim()));
+    };
+    let keep = path.with_extension("mxl");
+    let keep = if keep.exists() { path.with_file_name(format!("{name} (read).mxl")) } else { keep };
+    let _ = std::fs::copy(first, &keep);
+    let xml = mxl_text(first)?;
+    let _ = std::fs::remove_dir_all(&out);
+    from_musicxml(&xml, name)
+}
+
+fn walk(d: &Path) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(d) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                v.extend(walk(&p));
+            } else {
+                v.push(p);
+            }
+        }
+    }
+    v
 }
 
 /// MuseScore's command-line program, if it's installed.
@@ -42,6 +128,9 @@ pub fn musescore() -> Option<PathBuf> {
 pub fn load(path: &Path) -> Result<Song, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    if ext == "pdf" {
+        return from_pdf(path, name);
+    }
     if let Some(ms) = musescore() {
         match via_musescore(&ms, path) {
             Ok(mut s) => {
@@ -66,8 +155,8 @@ pub fn load(path: &Path) -> Result<Song, String> {
 }
 
 fn via_musescore(ms: &Path, path: &Path) -> Result<Song, String> {
-    let out = std::env::temp_dir().join(format!("noodle-score-{}.mid", std::process::id()));
-    let _ = std::fs::remove_file(&out);
+    let dir = work_dir("mscore");
+    let out = dir.join("score.mid");
     let mut cmd = if ms.to_string_lossy().ends_with("org.musescore.MuseScore") {
         let mut c = std::process::Command::new("flatpak");
         c.args(["run", "--filesystem=host", "org.musescore.MuseScore"]);
@@ -82,10 +171,11 @@ fn via_musescore(ms: &Path, path: &Path) -> Result<Song, String> {
     if !out.exists() {
         let err = String::from_utf8_lossy(&res.stderr);
         let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no output");
+        let _ = std::fs::remove_dir_all(&dir);
         return Err(format!("MuseScore couldn't convert it ({last})"));
     }
     let s = song::load(&out);
-    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&dir);
     s
 }
 

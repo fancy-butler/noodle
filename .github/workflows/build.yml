@@ -96,7 +96,9 @@ jobs:
   # yet becomes release v<version> with the Linux, Windows and Mac builds attached.
   # Also runs for pushed tags and for "Run workflow" with a release_tag.
   release:
-    if: github.event_name != 'pull_request'
+    # GitHub's Mac machines are sometimes all busy ("not acquired by runner"): release Linux and
+    # Windows anyway, and the Mac file joins when "Run workflow" is run with the tag later
+    if: ${{ always() && github.event_name != 'pull_request' && needs.linux.result == 'success' && needs.windows.result == 'success' }}
     needs: [linux, windows, macos]
     runs-on: ubuntu-latest
     permissions: { contents: write }
@@ -132,6 +134,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           generate_release_notes: true
           make_latest: true
+          fail_on_unmatched_files: false
           files: |
             noodle-linux-x86_64/noodle-linux-x86_64.tar.gz
             noodle-windows-x86_64/noodle-windows-x86_64.zip
