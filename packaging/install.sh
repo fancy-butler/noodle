@@ -4,10 +4,21 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 bin="$here/noodle"; [ -f "$bin" ] || bin="$here/../target/release/noodle"
 install -Dm755 "$bin" "$HOME/.local/bin/noodle"
-install -Dm644 "$here/noodle.desktop" "$HOME/.local/share/applications/noodle.desktop"
-icon="$here/noodle-icon.png"; [ -f "$icon" ] || icon="$here/../assets/noodle-icon.png"
-install -Dm644 "$icon" "$HOME/.local/share/icons/hicolor/256x256/apps/noodle.png"
-gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+# icons in every size docks and menus ask for (Cairo-Dock, Plank, KDE, GNOME…), plus the SVG
+icons="$here/icons"; [ -d "$icons" ] || icons="$here/../assets/icons"
+for f in "$icons"/noodle-*.png; do
+  s="$(basename "$f" .png)"; s="${s#noodle-}"
+  install -Dm644 "$f" "$HOME/.local/share/icons/hicolor/${s}x${s}/apps/noodle.png"
+done
+svg="$here/noodle-icon.svg"; [ -f "$svg" ] || svg="$here/../assets/noodle-icon.svg"
+if [ -f "$svg" ]; then install -Dm644 "$svg" "$HOME/.local/share/icons/hicolor/scalable/apps/noodle.svg"; fi
+install -Dm644 "$icons/noodle-256.png" "$HOME/.local/share/pixmaps/noodle.png"
+mkdir -p "$HOME/.local/share/applications"
+# the menu entry points at the icon file directly too, so docks that don't look in the
+# user's icon theme still find it
+sed -e "s|^Icon=.*|Icon=$HOME/.local/share/icons/hicolor/256x256/apps/noodle.png|" -e "s|^Exec=noodle|Exec=$HOME/.local/bin/noodle|" "$here/noodle.desktop" > "$HOME/.local/share/applications/noodle.desktop"
+chmod 644 "$HOME/.local/share/applications/noodle.desktop"
+gtk-update-icon-cache -q -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 update-desktop-database -q "$HOME/.local/share/applications" 2>/dev/null || true
 mkdir -p "$HOME/.local/share/noodle/soundfonts" "$HOME/.local/share/noodle/songs"
 echo "Installed → ~/.local/bin/noodle (and an app-menu entry)."

@@ -143,6 +143,8 @@ pub struct Params {
     pub arp_rate: AtomicU8,
     pub arp_oct: AtomicU8,
     pub arp_latch: AtomicBool,
+    /// what the arp plays: 0 held keys, 1 the scale's chord on each held key, 2 a scale run
+    pub arp_notes: AtomicU8,
     pub arp_gate: AF32,
     // drums
     pub drums_on: AtomicBool,
@@ -252,6 +254,7 @@ impl Params {
             arp_rate: AtomicU8::new(3),
             arp_oct: AtomicU8::new(1),
             arp_latch: AtomicBool::new(false),
+            arp_notes: AtomicU8::new(0),
             arp_gate: AF32::new(0.6),
             drums_on: AtomicBool::new(false),
             drum_bank: Default::default(),
@@ -1418,6 +1421,48 @@ impl Engine {
         }
     }
 
+    /// The notes the arp walks: the held keys, or (with a scale picked) the mode's chord
+    /// stacked on each held key, or a one-octave run up the mode from each held key.
+    /// Sorted, no repeats. Without a scale the mode options fall back to the held keys.
+    fn arp_pool(&self) -> ([(u8, u8); 64], usize) {
+        let mut out = [(0u8, 0u8); 64];
+        let mut n = 0;
+        let mask = self.p.scale_mask.load(Relaxed);
+        let how = self.p.arp_notes.load(Relaxed);
+        let mut push = |k: i32, v: u8, out: &mut [(u8, u8); 64], n: &mut usize| {
+            if !(0..128).contains(&k) || *n >= out.len() || out[..*n].iter().any(|x| x.0 == k as u8) {
+                return;
+            }
+            out[*n] = (k as u8, v);
+            *n += 1;
+        };
+        for &(k, v) in &self.arp_keys[..self.arp_n] {
+            if mask == 0 || how == 0 {
+                push(k as i32, v, &mut out, &mut n);
+                continue;
+            }
+            let in_scale = |x: i32| mask & (1 << x.rem_euclid(12)) != 0;
+            // a held key outside the mode counts as its nearest mode note below
+            let mut root = k as i32;
+            while !in_scale(root) && root > 0 {
+                root -= 1;
+            }
+            if how == 1 {
+                for c in crate::pipes::chord_for(root as u8, mask, self.p.chord_kind.load(Relaxed).min(1)) {
+                    push(c as i32, v, &mut out, &mut n);
+                }
+            } else {
+                for x in root..root + 12 {
+                    if in_scale(x) {
+                        push(x, v, &mut out, &mut n);
+                    }
+                }
+            }
+        }
+        out[..n].sort_by_key(|x| x.0);
+        (out, n)
+    }
+
     fn arp_release(&mut self) {
         for i in 0..self.arp_cur_n {
             let k = self.arp_cur[i];
@@ -1467,7 +1512,10 @@ impl Engine {
         }
         while self.arp_next < b1 {
             self.arp_release();
-            let n = self.arp_n;
+            let (pool, n) = self.arp_pool();
+            if n == 0 {
+                break;
+            }
             let oct = (self.p.arp_oct.load(Relaxed) as usize).clamp(1, 4);
             let len = n * oct;
             let mode = self.p.arp_mode.load(Relaxed);
@@ -1476,8 +1524,8 @@ impl Engine {
             if mode == 4 {
                 // chord: whole chord, octave cycling
                 let o = self.arp_i % oct;
-                for i in 0..n {
-                    let (k, v) = self.arp_keys[i];
+                for i in 0..n.min(picks.len()) {
+                    let (k, v) = pool[i];
                     picks[np] = ((k as usize + 12 * o).min(127) as u8, v);
                     np += 1;
                 }
@@ -1496,7 +1544,7 @@ impl Engine {
                     3 => (self.rand() as usize) % len,
                     _ => self.arp_i % len,
                 };
-                let (k, v) = self.arp_keys[idx % n];
+                let (k, v) = pool[idx % n];
                 picks[0] = ((k as usize + 12 * (idx / n)).min(127) as u8, v);
                 np = 1;
             }

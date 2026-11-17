@@ -2302,13 +2302,18 @@ impl App {
                 });
             });
             ui.horizontal_wrapped(|ui| {
+                let mut picked_chart = false;
                 egui::ComboBox::from_id_salt("fing").selected_text(CHARTS[idx].name).width(200.0).show_ui(ui, |ui| {
                     for (i, c) in CHARTS.iter().enumerate() {
                         if ui.selectable_value(&mut self.s.fing_idx, i, c.name).on_hover_text(format!("From: {}", c.source)).clicked() {
                             self.s.fing_tr = 0;
+                            picked_chart = true;
                         }
                     }
                 });
+                if picked_chart {
+                    self.chart_picked();
+                }
                 if !CHARTS[idx].trans.is_empty() {
                     let tr = CHARTS[idx].trans;
                     let ti = self.s.fing_tr.min(tr.len() - 1);
@@ -2320,6 +2325,9 @@ impl App {
                 }
                 ui.toggle_value(&mut self.s.fing_any, "any 8va").on_hover_text("Notes outside the instrument's range show the same note in its range");
             });
+            if !self.acc_mode && !self.oc_mode {
+                self.chart_sound_row(ui, idx);
+            }
             let chart = &CHARTS[idx];
             let tr: i8 = chart.trans.get(self.s.fing_tr.min(chart.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0);
             let held = (0..128u8).rev().find(|k| self.held[0][*k as usize] > 0);
@@ -2445,6 +2453,25 @@ impl App {
                     }
                 }
                 p.arp_mode.store(m as u8, Relaxed);
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
+                let mut how = p.arp_notes.load(Relaxed);
+                let sc = SCALES[self.s.scale_idx.min(SCALES.len() - 1)].name;
+                let mode_name = if self.scale_on { format!("{} {}", ROOTS[self.s.scale_root].0, sc) } else { "a scale".to_string() };
+                for (i, n, tip) in [
+                    (0u8, "Keys held", "Plays exactly the keys you hold: the classic arp".to_string()),
+                    (1, "Mode chord", format!("Each key you hold becomes its chord in {mode_name} (1-3-5, the scale's own 3rd and 5th)")),
+                    (2, "Mode run", format!("Each key you hold runs up {mode_name} for an octave")),
+                ] {
+                    if ui.selectable_label(how == i, RichText::new(n).size(11.5)).on_hover_text(tip).clicked() {
+                        how = i;
+                    }
+                }
+                p.arp_notes.store(how, Relaxed);
+                if how != 0 && !self.scale_on {
+                    ui.label(RichText::new("← turn Scale on (View bar) to pick the mode").size(10.5).color(YOURS));
+                }
             });
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(3.0, 3.0);
@@ -4137,6 +4164,69 @@ impl App {
                 bp
             }
             None => (0, gm),
+        }
+    }
+
+    /// A chart was picked in the fingering pane: the sound follows (that instrument's sound,
+    /// the recorded one if downloaded) unless "Keep my own sound". In Real instrument mode
+    /// sync_play_as already does this.
+    fn chart_picked(&mut self) {
+        if self.s.kb_inst.is_some() || self.acc_mode || self.oc_mode || self.game_mode {
+            return;
+        }
+        let c = self.s.fing_idx.min(crate::fingering::CHARTS.len() - 1);
+        if !self.s.keep_sound && self.s.drone_mode != 1 {
+            let bp = self.best_sound(crate::fingering::gm_for_chart(c, self.s.fing_tr));
+            if crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).map(|x| x.0) != Some(c) {
+                self.set_preset(false, bp);
+            }
+        }
+        // the chart stays what you picked even if the sound's own name points elsewhere
+        // (a sopilka chart on the GM recorder sound, say); with a sound that has no chart
+        // at all (kept your piano) the pane switches to always-on so it doesn't vanish
+        if crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).is_none() && self.s.fing_mode == 0 {
+            self.s.fing_mode = 1;
+        }
+        self.fing_auto_key = format!("{:?}{:?}", self.s.main, crate::fingering::chart_for_sound(&self.preset_name(self.s.main)));
+    }
+
+    /// Under the chart: the sounds for this instrument, one click each, plus "keep my own sound".
+    fn chart_sound_row(&mut self, ui: &mut egui::Ui, idx: usize) {
+        use crate::fingering::{chart_for_sound, gm_for_chart, CHARTS};
+        let gm = gm_for_chart(idx, self.s.fing_tr);
+        let mut opts: Vec<(i32, i32)> = self.presets.iter().filter(|p| chart_for_sound(&p.name).map(|x| x.0) == Some(idx)).map(|p| (p.bank, p.prog)).collect();
+        if !opts.contains(&(0, gm)) && self.presets.iter().any(|p| (p.bank, p.prog) == (0, gm)) {
+            opts.insert(0, (0, gm));
+        }
+        let cur = self.s.main;
+        let mut pick = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
+            let on_inst = opts.contains(&cur);
+            let label = if on_inst { self.preset_name(cur) } else { format!("{} (your own)", self.preset_name(cur)) };
+            egui::ComboBox::from_id_salt("chart_sound").selected_text(label).width(190.0).show_ui(ui, |ui| {
+                for bp in &opts {
+                    let rec = bp.0 >= sounds::SAMPLE_BANK;
+                    let name = format!("{}{}", if rec { "★ " } else { "" }, self.preset_name(*bp));
+                    if ui.selectable_label(*bp == cur, name).on_hover_text(if rec { "Recorded instrument" } else { "From the sound bank" }).clicked() {
+                        pick = Some(*bp);
+                    }
+                }
+                if opts.is_empty() {
+                    ui.label(RichText::new("No sound named for this instrument").color(text_dim()));
+                }
+                ui.separator();
+                ui.label(RichText::new("Any other sound: pick it in the sound box at the top").size(11.5).color(text_dim()));
+            });
+            let mut keep = self.s.keep_sound;
+            if ui.checkbox(&mut keep, "Keep my own sound").on_hover_text("Picking a chart leaves the sound alone").changed() {
+                self.s.keep_sound = keep;
+            }
+            let _ = CHARTS.len();
+        });
+        if let Some(bp) = pick {
+            self.set_preset(false, bp);
+            self.fing_auto_key = format!("{:?}{:?}", self.s.main, chart_for_sound(&self.preset_name(self.s.main)));
         }
     }
 

@@ -31,6 +31,8 @@ pub struct Settings {
     pub arp_oct: u8,
     pub arp_gate: f32,
     pub arp_latch: bool,
+    /// 0 the keys you hold, 1 the mode's chord on each held key, 2 a run up the mode
+    pub arp_notes: u8,
     pub drum_rows: [u16; DRUM_ROWS],
     /// pattern slots A–H: (rows, steps)
     pub drum_slots: Vec<([u16; DRUM_ROWS], u8)>,
@@ -156,6 +158,7 @@ impl Default for Settings {
             arp_oct: 1,
             arp_gate: 0.6,
             arp_latch: false,
+            arp_notes: 0,
             drum_rows: crate::drums::PATTERNS[1].1,
             drum_slots: Vec::new(),
             drum_slot_names: Vec::new(),
@@ -313,6 +316,7 @@ impl Settings {
         p.arp_oct.store(self.arp_oct, Relaxed);
         p.arp_gate.set(self.arp_gate);
         p.arp_latch.store(self.arp_latch, Relaxed);
+        p.arp_notes.store(self.arp_notes, Relaxed);
         for (k, (rows, len)) in self.drum_slots.iter().enumerate() {
             for i in 0..DRUM_ROWS {
                 p.drum_bank[k][i].store(rows[i], Relaxed);
@@ -353,6 +357,7 @@ impl Settings {
         self.arp_oct = p.arp_oct.load(Relaxed);
         self.arp_gate = p.arp_gate.get();
         self.arp_latch = p.arp_latch.load(Relaxed);
+        self.arp_notes = p.arp_notes.load(Relaxed);
         for (k, slot) in self.drum_slots.iter_mut().enumerate() {
             for i in 0..DRUM_ROWS {
                 slot.0[i] = p.drum_bank[k][i].load(Relaxed);

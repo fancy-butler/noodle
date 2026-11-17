@@ -85,10 +85,15 @@ fn main() {
     let sample_rate = audio.as_ref().map(|a| a.sample_rate).unwrap_or(p.sample_rate.load(Relaxed));
     audio::spawn_watchdog(engine.clone(), p.clone(), sample_rate);
 
+    let mut vp = eframe::egui::ViewportBuilder::default().with_title(format!("Noodle {VERSION}"));
+    // Wayland needs the app id to match noodle.desktop. On X11, egui would turn the app id
+    // into WM_CLASS ("", "noodle") with an empty instance, and docks like Cairo-Dock then
+    // can't match the window to its launcher; leaving it unset gives ("noodle", "noodle").
+    if std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false) || !cfg!(target_os = "linux") {
+        vp = vp.with_app_id("noodle");
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title(format!("Noodle {VERSION}"))
-            .with_app_id("noodle")
+        viewport: vp
             .with_icon(std::sync::Arc::new(eframe::egui::IconData { rgba: include_bytes!("../assets/noodle-icon.rgba").to_vec(), width: 256, height: 256 }))
             .with_inner_size(if std::env::var("NOODLE_WIDE").is_ok() { [2500.0, 1250.0] } else { [1420.0, 900.0] })
             .with_min_inner_size([980.0, 640.0]),
@@ -447,6 +452,36 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
         fails.push("limiter let peaks into the clipper".into());
     }
     p.master.set(0.8);
+    // mode arp: D freygish (D E♭ F♯ G A B♭ C), hold D4, "Mode run" walks the mode
+    {
+        let mask: u16 = [2, 3, 6, 7, 9, 10, 0].iter().fold(0, |m, pc| m | (1 << pc));
+        p.scale_mask.store(mask, Relaxed);
+        p.arp_notes.store(2, Relaxed);
+        p.arp_mode.store(0, Relaxed);
+        p.arp_oct.store(1, Relaxed);
+        p.arp_rate.store(3, Relaxed);
+        p.arp_on.store(true, Relaxed);
+        while urx.try_recv().is_ok() {}
+        tx.send(Cmd::Midi([0x90, 62, 100])).unwrap();
+        render(3.0, "arp: D freygish run", &mut eng);
+        tx.send(Cmd::Midi([0x80, 62, 0])).unwrap();
+        p.arp_on.store(false, Relaxed);
+        render(0.3, "arp off", &mut eng);
+        let mut got = Vec::new();
+        while let Ok(e) = urx.try_recv() {
+            if let UiEvt::Note { key, vel, src, .. } = e {
+                if src == engine::src::ARP && vel > 0 && got.len() < 8 {
+                    got.push(key);
+                }
+            }
+        }
+        println!("  mode arp notes: {got:?}");
+        if got.len() < 8 || got[..7] != [62, 63, 66, 67, 69, 70, 72] {
+            fails.push("mode arp didn't walk D freygish".into());
+        }
+        p.scale_mask.store(0, Relaxed);
+        p.arp_notes.store(0, Relaxed);
+    }
     // real range mode: an ocarina-range instrument refuses C4 and plays C5
     p.range_lo.store(69, Relaxed);
     p.range_hi.store(89, Relaxed);
