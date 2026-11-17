@@ -1627,6 +1627,12 @@ impl App {
 
     /// 0 keyboard, 1 accordion, 2 game, 3 ocarina
     fn set_mode(&mut self, m: usize) {
+        // nothing you were holding carries over into the next mode's waterfall
+        let now = now_s(&self.t0);
+        for b in self.bars.iter_mut().filter(|b| b.src == src::LIVE && b.end.is_none()) {
+            b.end = Some(now);
+        }
+        self.held[0] = [0; 128];
         if self.acc_mode && m != 1 {
             self.exit_accordion();
         }

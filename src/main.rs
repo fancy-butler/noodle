@@ -531,6 +531,29 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if !refused || played60 || !played72 {
         fails.push("real range mode".into());
     }
+    // accordion: a button's off ends the note it started even if the bellows changed the note
+    {
+        while urx.try_recv().is_ok() {}
+        tx.send(Cmd::Acc(engine::AccMsg::Treble { id: 7, note: 60, on: true })).unwrap();
+        tx.send(Cmd::Acc(engine::AccMsg::Treble { id: 7, note: 62, on: false })).unwrap();
+        render(0.02, "acc off after bellows flip", &mut eng);
+        let mut open = std::collections::HashSet::new();
+        while let Ok(e) = urx.try_recv() {
+            if let UiEvt::Note { key, vel, src, .. } = e {
+                if src == engine::src::LIVE {
+                    if vel > 0 {
+                        open.insert(key);
+                    } else {
+                        open.remove(&key);
+                    }
+                }
+            }
+        }
+        println!("  accordion bars left open: {open:?}");
+        if !open.is_empty() {
+            fails.push("accordion note left stuck in the waterfall".into());
+        }
+    }
     // the same knob must still work in accordion mode
     p.acc_on.store(true, Relaxed);
     tx.send(Cmd::Midi([0xB0, 74, 100])).unwrap();

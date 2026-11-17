@@ -191,22 +191,27 @@ impl App {
         if a.push == push {
             return;
         }
-        a.push = push;
-        let _ = self.tx.send(Cmd::Acc(AccMsg::Bellows(push)));
-        // bisonoric buttons change note with the bellows
-        let diatonic = self.acc_inst().kind == Kind::Diatonic;
-        let a = self.acc.as_ref().unwrap();
+        // bisonoric buttons change note with the bellows: stop each in the old direction
+        // (so the right note ends), then start it in the new one
         let held: Vec<Held> = a.down.values().copied().chain(a.mouse).collect();
-        for h in held {
-            let flips = match h {
+        let diatonic = self.acc_inst().kind == Kind::Diatonic;
+        let flips: Vec<Held> = held
+            .into_iter()
+            .filter(|h| match h {
                 Held::Treble { .. } => diatonic,
                 Held::DiaBass { .. } => true,
                 Held::Strad { .. } => false,
-            };
-            if flips {
-                self.acc_play(h, false);
-                self.acc_play(h, true);
-            }
+            })
+            .collect();
+        for h in &flips {
+            self.acc_play(*h, false);
+        }
+        if let Some(a) = self.acc.as_mut() {
+            a.push = push;
+        }
+        let _ = self.tx.send(Cmd::Acc(AccMsg::Bellows(push)));
+        for h in flips {
+            self.acc_play(h, true);
         }
     }
 

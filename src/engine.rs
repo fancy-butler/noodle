@@ -520,6 +520,8 @@ pub struct Engine {
     pipe_n: usize,
     /// output limiter gain (1 = untouched)
     lim_g: f32,
+    /// accordion treble buttons sounding: button id → note shown in the waterfall
+    acc_vis: [i16; 320],
     /// limiter look-ahead: the last few samples (delayed output) and the gain each one needs
     lim_buf: Vec<[f32; 2]>,
     lim_req: Vec<f32>,
@@ -647,6 +649,7 @@ impl Engine {
             pipe_held: [0; 16],
             pipe_n: 0,
             lim_g: 1.0,
+            acc_vis: [-1; 320],
             lim_buf: vec![[0.0; 2]; lim_lookahead(sr) + 1],
             lim_req: vec![1.0; lim_lookahead(sr) + 1],
             lim_pos: 0,
@@ -948,6 +951,12 @@ impl Engine {
     fn acc(&mut self, m: AccMsg) {
         match m {
             AccMsg::Setup(None) => {
+                for i in 0..self.acc_vis.len() {
+                    if self.acc_vis[i] >= 0 {
+                        self.vis(self.acc_vis[i] as u8, 0, src::LIVE);
+                        self.acc_vis[i] = -1;
+                    }
+                }
                 self.p.acc_on.store(false, Relaxed);
                 self.native[ACC_CH as usize] = None;
             }
@@ -961,10 +970,16 @@ impl Engine {
                 }
             }
             AccMsg::Treble { id, note, on } => {
+                // the waterfall ends the note that button actually started, whatever the
+                // bellows did in between
+                let slot = (id as usize).min(319);
+                let old = self.acc_vis[slot];
+                if old >= 0 {
+                    self.vis(old as u8, 0, src::LIVE);
+                }
+                self.acc_vis[slot] = if on { note as i16 } else { -1 };
                 if on {
                     self.vis(note, 100, src::LIVE);
-                } else {
-                    self.vis(note, 0, src::LIVE);
                 }
                 if let Some(a) = self.acc_player() {
                     if on {
