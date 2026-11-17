@@ -25,6 +25,7 @@ mod pipe_art;
 mod pipes;
 mod reed;
 mod sampler;
+mod score;
 mod session;
 mod settings;
 mod song;
@@ -70,7 +71,12 @@ fn main() {
 
     let rate = audio::default_rate();
     p.sample_rate.store(rate, Relaxed);
-    let engine = Arc::new(Mutex::new(Engine::new(p.clone(), rx, utx, rate as f32, 8192)));
+    let mut eng = Engine::new(p.clone(), rx, utx, rate as f32, 8192);
+    let (mtx, mrx) = crossbeam_channel::bounded::<[u8; 3]>(1024);
+    eng.set_midi_out(mtx);
+    let midi_out_status = Arc::new(Mutex::new(String::new()));
+    midi::spawn_out(mrx, midi_out_status.clone());
+    let engine = Arc::new(Mutex::new(eng));
     let latency = settings::Settings::load().latency;
     let (audio, audio_info) = match audio::start(engine.clone(), p.clone(), latency) {
         Ok(a) => {
@@ -99,7 +105,7 @@ fn main() {
             .with_min_inner_size([980.0, 640.0]),
         ..Default::default()
     };
-    let handles = ui::Handles { p, tx, rx: urx, devices, blocked, sample_rate, audio_info, engine: engine.clone(), audio };
+    let handles = ui::Handles { p, tx, rx: urx, devices, blocked, sample_rate, audio_info, engine: engine.clone(), audio, midi_out_status };
     let res = eframe::run_native("Noodle", options, Box::new(move |cc| Ok(Box::new(ui::App::new(cc, handles)))));
     if let Err(e) = res {
         eprintln!("noodle: {e}");

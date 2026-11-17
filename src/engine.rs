@@ -145,6 +145,8 @@ pub struct Params {
     pub arp_latch: AtomicBool,
     /// what the arp plays: 0 held keys, 1 the scale's chord on each held key, 2 a scale run
     pub arp_notes: AtomicU8,
+    /// send what you play out of the "Noodle" MIDI port
+    pub midi_out: AtomicBool,
     pub arp_gate: AF32,
     // drums
     pub drums_on: AtomicBool,
@@ -255,6 +257,7 @@ impl Params {
             arp_oct: AtomicU8::new(1),
             arp_latch: AtomicBool::new(false),
             arp_notes: AtomicU8::new(0),
+            midi_out: AtomicBool::new(false),
             arp_gate: AF32::new(0.6),
             drums_on: AtomicBool::new(false),
             drum_bank: Default::default(),
@@ -423,6 +426,8 @@ pub struct Engine {
     p: Arc<Params>,
     rx: Receiver<Cmd>,
     tx: Sender<UiEvt>,
+    /// live notes out to other programs (MuseScore note input…), when Params.midi_out is on
+    midi_out: Option<Sender<[u8; 3]>>,
     synths: Option<Box<SynthPair>>,
     sr: f32,
     bl: Vec<f32>,
@@ -559,6 +564,7 @@ impl Engine {
             p,
             rx,
             tx,
+            midi_out: None,
             synths: None,
             sr,
             bl: vec![0.0; mb],
@@ -670,6 +676,15 @@ impl Engine {
 
     fn vis(&self, key: u8, vel: u8, src: u8) {
         let _ = self.tx.try_send(UiEvt::Note { key, vel, src, pos: self.song_pos });
+        if src == src::LIVE && self.p.midi_out.load(Relaxed) {
+            if let Some(o) = &self.midi_out {
+                let _ = o.try_send(if vel > 0 { [0x90, key, vel] } else { [0x80, key, 0] });
+            }
+        }
+    }
+
+    pub fn set_midi_out(&mut self, tx: Sender<[u8; 3]>) {
+        self.midi_out = Some(tx);
     }
 
     fn samples_per_beat(&self) -> f64 {

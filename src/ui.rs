@@ -114,6 +114,7 @@ pub struct Handles {
     pub audio_info: Result<String, String>,
     pub engine: crate::audio::SharedEngine,
     pub audio: Option<crate::audio::Audio>,
+    pub midi_out_status: Arc<Mutex<String>>,
 }
 
 pub struct App {
@@ -121,6 +122,12 @@ pub struct App {
     tx: Sender<Cmd>,
     rx: Receiver<UiEvt>,
     devices: Arc<Mutex<Vec<String>>>,
+    midi_out_status: Arc<Mutex<String>>,
+    sound_search: String,
+    file_search: String,
+    /// a MuseScore/MusicXML score converting in the background (result, file name)
+    score_pending: Option<(crossbeam_channel::Receiver<Result<Song, String>>, String)>,
+    search_focused: bool,
     blocked: Arc<Mutex<Vec<String>>>,
     sample_rate: u32,
     audio_info: Result<String, String>,
@@ -145,6 +152,10 @@ pub struct App {
     fing_auto_key: String,
     dl: crate::packs::Downloads,
     dl_seen: std::collections::HashSet<&'static str>,
+    /// "Download all": packs waiting their turn (two download at a time)
+    dl_queue: std::collections::VecDeque<&'static crate::packs::Pack>,
+    /// packs fetched by Download all: don't switch the sound to each one as it lands
+    dl_bulk: std::collections::HashSet<&'static str>,
     inst_cache: std::collections::HashMap<i32, Arc<crate::native::InstDef>>,
     inst_tx: crossbeam_channel::Sender<(bool, i32, Result<Arc<crate::native::InstDef>, String>)>,
     inst_rx: crossbeam_channel::Receiver<(bool, i32, Result<Arc<crate::native::InstDef>, String>)>,
@@ -477,6 +488,11 @@ impl App {
             tx: h.tx,
             rx: h.rx,
             devices: h.devices,
+            midi_out_status: h.midi_out_status,
+            sound_search: String::new(),
+            file_search: String::new(),
+            score_pending: None,
+            search_focused: false,
             blocked: h.blocked,
             sample_rate: h.sample_rate,
             audio_info: h.audio_info,
@@ -498,6 +514,8 @@ impl App {
             fing_auto_key: String::new(),
             dl: Default::default(),
             dl_seen: Default::default(),
+            dl_queue: Default::default(),
+            dl_bulk: Default::default(),
             inst_cache: Default::default(),
             inst_tx: itx,
             inst_rx: irx,
@@ -992,9 +1010,36 @@ impl App {
             }
             return;
         }
+        if crate::score::is_score(path) {
+            // MuseScore can take a few seconds to convert: do it in the background
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let p = path.to_path_buf();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::score::load(&p));
+            });
+            self.score_pending = Some((rx, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+            self.song_err = None;
+            return;
+        }
         match song::load(path) {
             Ok(s) => self.set_song(Some(Arc::new(s)), 0),
             Err(e) => self.song_err = Some(e),
+        }
+    }
+
+    /// A score being converted in the background has finished?
+    fn poll_score(&mut self, ctx: &egui::Context) {
+        let Some((rx, _)) = &self.score_pending else { return };
+        match rx.try_recv() {
+            Ok(Ok(s)) => {
+                self.score_pending = None;
+                self.set_song(Some(Arc::new(s)), 0);
+            }
+            Ok(Err(e)) => {
+                self.score_pending = None;
+                self.song_err = Some(e);
+            }
+            Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(200)),
         }
     }
 
@@ -1290,6 +1335,8 @@ impl App {
         let name = self.preset_name(cur);
         let list = self.filtered();
         let mut pick = None;
+        let search_id = egui::Id::new(if layer { "layer_search" } else { "main_search" });
+        let mut open_now = false;
         let size = if layer { 14.0 } else { 19.0 };
         // the chosen sound wears its category's colour
         let cur_style = self.presets.iter().find(|p| (p.bank, p.prog) == cur).and_then(|p| Self::family_style(sounds::family(p)));
@@ -1301,13 +1348,49 @@ impl App {
             .selected_text(RichText::new(name).size(size).strong().color(name_col))
             .width(width)
             .height(520.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show_ui(ui, |ui| {
+                open_now = true;
+                // type to search: the box has the focus as soon as the list opens
+                let te = egui::TextEdit::singleline(&mut self.sound_search).id(search_id).hint_text("🔍 Type to search all sounds…").desired_width(f32::INFINITY);
+                let resp = ui.add(te);
+                if !resp.has_focus() && !self.search_focused {
+                    resp.request_focus();
+                    self.search_focused = true;
+                }
+                let q: Vec<String> = self.sound_search.to_lowercase().split_whitespace().map(|w| w.to_string()).collect();
+                let list: Vec<usize> = if q.is_empty() {
+                    list
+                } else {
+                    self.presets
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.bank < 128 || p.bank >= sounds::SAMPLE_BANK)
+                        .filter(|(_, p)| {
+                            let n = format!("{} {}", p.name.to_lowercase(), GM_FAMILIES.get(sounds::family(p)).copied().unwrap_or("").to_lowercase());
+                            q.iter().all(|w| n.contains(w.as_str()))
+                        })
+                        .map(|(i, _)| i)
+                        .collect()
+                };
+                if !q.is_empty() {
+                    if list.is_empty() {
+                        ui.label(RichText::new("Nothing called that. Get sounds has more recorded instruments.").size(11.5).color(text_dim()));
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if let Some(&i) = list.first() {
+                            pick = Some((self.presets[i].bank, self.presets[i].prog));
+                            ui.close();
+                        }
+                    }
+                }
+                let searching = !q.is_empty();
                 let mut fam = usize::MAX;
                 for i in list {
                     let pr = &self.presets[i];
                     let f = sounds::family(pr);
                     let style = Self::family_style(f);
-                    if self.category.is_none() && f != fam && (pr.bank == 0 || style.is_some()) {
+                    if self.category.is_none() && !searching && f != fam && (pr.bank == 0 || style.is_some()) {
                         fam = f;
                         match style {
                             Some((a, b, txt)) => {
@@ -1333,10 +1416,17 @@ impl App {
                     };
                     if clicked {
                         pick = Some((pr.bank, pr.prog));
+                        ui.close();
                     }
                 }
             });
+        // list closed: next time it opens, start with an empty search box that has the focus
+        if !open_now {
+            self.search_focused = false;
+            self.sound_search.clear();
+        }
         if let Some(bp) = pick {
+            self.sound_search.clear();
             self.set_preset(layer, bp);
         }
     }
@@ -1581,12 +1671,16 @@ impl App {
             let txt = self.loading.clone().map(|l| format!("Loading {l}…")).or(cur).unwrap_or_else(|| "none".into());
             let mut pick = None;
             egui::ComboBox::from_id_salt("sf").selected_text(txt).width(170.0).show_ui(ui, |ui| {
+                ui.label(RichText::new("The bank plays the 128 standard sounds (piano, strings, GM flute…).\nOne at a time; switching changes all of those at once.\nRecorded instruments from Get sounds work with any bank.").size(11.0).color(text_dim()));
+                ui.separator();
                 for p in &self.sf_paths {
                     let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                     let mb = std::fs::metadata(p).map(|m| m.len() / 1_000_000).unwrap_or(0);
-                    if ui.selectable_label(Some(p) == self.sf_current.as_ref(), format!("{n}  ({mb} MB)")).on_hover_text(p.display().to_string()).clicked() {
+                    let sel = Some(p) == self.sf_current.as_ref();
+                    if ui.selectable_label(sel, RichText::new(format!("{n}  ({mb} MB)")).strong()).on_hover_text(p.display().to_string()).clicked() {
                         pick = Some(p.clone());
                     }
+                    ui.label(RichText::new(format!("   {}", sounds::bank_blurb(p))).size(11.0).color(text_dim()));
                 }
                 ui.separator();
                 ui.label(RichText::new("Drop any .sf2 on the window to add it").size(11.0).color(text_dim()));
@@ -1702,6 +1796,17 @@ impl App {
                         if ui.checkbox(&mut enabled, &name).changed() {
                             toggled = Some((name, enabled));
                         }
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("MIDI out").size(11.0).color(text_dim()));
+                    let mut out = self.s.midi_out;
+                    if ui.checkbox(&mut out, "Send what I play to other apps").on_hover_text("Everything you play in Noodle (MIDI keyboard, computer keys, accordion buttons) goes out of a MIDI port called \"Noodle\". In MuseScore: Preferences → I/O → MIDI input: Noodle, then press N and play to enter notes.").changed() {
+                        self.s.midi_out = out;
+                        self.p.midi_out.store(out, Relaxed);
+                    }
+                    let st = self.midi_out_status.lock().map(|s| s.clone()).unwrap_or_default();
+                    if self.s.midi_out && !st.is_empty() {
+                        ui.label(RichText::new(st).size(11.0).color(text_dim()));
                     }
                 });
                 if let Some((name, enabled)) = toggled {
@@ -2977,33 +3082,24 @@ impl App {
 
         // song bar
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Song").color(text_dim()));
-            let name = self.song.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "Open a MIDI file…".into());
-            let mut pick = None;
-            egui::ComboBox::from_id_salt("songs").selected_text(name).width(220.0).height(400.0).show_ui(ui, |ui| {
-                if self.song_files.is_empty() {
-                    ui.label(RichText::new("No .mid or .abc files found yet").color(text_dim()));
+            // one obvious way in: every tune and song lives in Tunes & songs
+            if ui
+                .add(egui::Button::new(RichText::new("🎵 Tunes & songs").strong().size(14.0).color(Color32::BLACK)).fill(YOURS).corner_radius(8.0))
+                .on_hover_text("Your MIDI, MuseScore and ABC files, The Session's trad tunes, the klezmer collection, or paste a tune")
+                .clicked()
+            {
+                if !self.tunes_open && self.song.is_none() && !self.song_files.is_empty() {
+                    self.tune_tab = 4;
                 }
-                for f in &self.song_files {
-                    let n = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    if ui.selectable_label(false, n).on_hover_text(f.display().to_string()).clicked() {
-                        pick = Some(f.clone());
-                    }
-                }
-                ui.separator();
-                ui.label(RichText::new(format!(
-                    "Drag a .mid or .abc onto the window, or drop files in\n{}\n(MuseScore: File › Export › MIDI)",
-                    sounds::user_dir().join("songs").display()
-                )).size(11.0).color(text_dim()));
-                if ui.small_button("↻ Rescan").clicked() {
-                    self.song_files = sounds::find_songs();
-                }
-            });
-            if let Some(f) = pick {
-                self.load_song_path(&f);
-            }
-            if ui.button("🎻 Tunes").on_hover_text("The Session's 11,000+ trad tunes, or any ABC tune (klezmer, balfolk, Swedish…)").clicked() {
                 self.tunes_open = !self.tunes_open;
+            }
+            if let Some((_, n)) = &self.score_pending {
+                ui.add(egui::Spinner::new());
+                ui.label(RichText::new(format!("Opening {n}…")).color(text_dim()));
+            } else if let Some(song) = &self.song {
+                ui.label(RichText::new(&song.name).strong().size(14.0));
+            } else {
+                ui.label(RichText::new("No tune loaded: pick one to play along, Walk it, or play it as a Game").color(text_dim()));
             }
             if let Some(e) = &self.song_err {
                 ui.label(RichText::new(e).color(BAD));
@@ -3593,6 +3689,64 @@ impl App {
         }
     }
 
+    /// Tunes & songs › My files: everything in the songs folders, by kind, with a search box.
+    fn my_files_tab(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+        let mut pick = None;
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.file_search).hint_text("🔍 Search your files").desired_width(220.0));
+            if ui.button("📂 Open the songs folder").on_hover_text("Put .mid, .mscz, .musicxml or .abc files in here").clicked() {
+                let dir = sounds::user_dir().join("songs");
+                let _ = std::fs::create_dir_all(&dir);
+                let opener = if cfg!(target_os = "macos") { "open" } else if cfg!(windows) { "explorer" } else { "xdg-open" };
+                let _ = std::process::Command::new(opener).arg(&dir).spawn();
+            }
+            if ui.button("↻ Rescan").clicked() {
+                self.song_files = sounds::find_songs();
+            }
+        });
+        let has_ms = crate::score::musescore().is_some();
+        ui.label(
+            RichText::new(if has_ms {
+                "MIDI · MuseScore (.mscz) · MusicXML · ABC. Drag files onto the window to add them. MuseScore is installed, so its files open exactly as written."
+            } else {
+                "MIDI · MusicXML · ABC. Drag files onto the window to add them. MuseScore files (.mscz) open once MuseScore is installed (musescore.org)."
+            })
+            .size(11.5)
+            .color(text_dim()),
+        );
+        ui.add_space(4.0);
+        let q = self.file_search.to_lowercase();
+        let kind = |p: &PathBuf| -> u8 {
+            match p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+                "mid" | "midi" | "kar" => 0,
+                "abc" => 2,
+                _ => 1,
+            }
+        };
+        egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+            if self.song_files.is_empty() {
+                ui.label(RichText::new(format!("No files yet. Drop some in {}", sounds::user_dir().join("songs").display())).color(text_dim()));
+            }
+            for (k, head) in [(0u8, "🎹  MIDI"), (1, "🎼  MuseScore & MusicXML"), (2, "📜  ABC")] {
+                let files: Vec<&PathBuf> = self.song_files.iter().filter(|p| kind(p) == k).filter(|p| q.is_empty() || p.file_name().map(|n| n.to_string_lossy().to_lowercase().contains(&q)).unwrap_or(false)).collect();
+                if files.is_empty() {
+                    continue;
+                }
+                ui.label(RichText::new(head).size(12.5).strong().color(text_dim()));
+                for f in files {
+                    let n = f.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let cur = self.song.as_ref().map(|s| s.name == n).unwrap_or(false);
+                    let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    if ui.selectable_label(cur, RichText::new(format!("   {n}   ·{ext}")).size(13.5)).on_hover_text(f.display().to_string()).clicked() {
+                        pick = Some(f.clone());
+                    }
+                }
+                ui.add_space(4.0);
+            }
+        });
+        pick
+    }
+
     fn tunes_window(&mut self, ctx: &egui::Context) {
         use crate::session::{self, Status};
         if !self.tunes_open {
@@ -3603,9 +3757,9 @@ impl App {
         }
         let mut open = true;
         let mut load: Option<String> = None;
-        egui::Window::new("🎻 Tunes").open(&mut open).collapsible(false).resizable(true).default_size([860.0, 560.0]).max_height(640.0).show(ctx, |ui| {
-            // how tunes play back
-            ui.horizontal(|ui| {
+        egui::Window::new("🎵 Tunes & songs").open(&mut open).collapsible(false).resizable(true).default_size([860.0, 560.0]).max_height(640.0).show(ctx, |ui| {
+            // how ABC tunes play back (not for your MIDI/MuseScore files)
+            if self.tune_tab != 4 { ui.horizontal(|ui| {
                 let mut changed = false;
                 changed |= ui.toggle_value(&mut self.s.abc_feel, "♩ Feel").on_hover_text("Accents and swing that fit the tune type: jig lilt, reel drive, hornpipe swing, waltz one, mazurka two").changed();
                 changed |= ui.toggle_value(&mut self.s.abc_backing, "🎸 Backing").on_hover_text("Play the tune's chord symbols as an accompaniment, in the style of its time signature").changed();
@@ -3632,17 +3786,25 @@ impl App {
                         load = Some(t);
                     }
                 }
-            });
+            }); }
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tune_tab, 0, "The Session");
-                ui.selectable_value(&mut self.tune_tab, 3, crate::collections::SOURCES[0].tab);
-                ui.selectable_value(&mut self.tune_tab, 1, "Paste ABC");
+                for (t, n) in [(4u8, "📁 My files".to_string()), (0, "☘ The Session".to_string()), (3, format!("🎻 {}", crate::collections::SOURCES[0].tab)), (1, "✎ Paste ABC".to_string())] {
+                    if ui.selectable_label(self.tune_tab == t, RichText::new(n).size(14.0)).clicked() {
+                        self.tune_tab = t;
+                    }
+                }
                 if !self.abc_file.is_empty() {
-                    ui.selectable_value(&mut self.tune_tab, 2, format!("ABC file ({})", self.abc_file.len()));
+                    ui.selectable_value(&mut self.tune_tab, 2, RichText::new(format!("ABC file ({})", self.abc_file.len())).size(14.0));
                 }
             });
+            ui.label(RichText::new("Pick a tune → it loads in the song bar → press ▶, turn on Walk it, or play it in Game mode.").size(11.5).color(text_dim()));
             ui.separator();
             match self.tune_tab {
+                4 => {
+                    if let Some(f) = self.my_files_tab(ui) {
+                        self.load_song_path(&f);
+                    }
+                }
                 1 => {
                     ui.label(RichText::new("Paste a tune in ABC notation — from abcnotation.com, Norbeck's, FolkWiki, John Chambers' klezmer collection, a tune book, anywhere. Several tunes at once is fine.").size(12.0).color(text_dim()));
                     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
@@ -3909,17 +4071,34 @@ impl App {
     fn packs_window(&mut self, ctx: &egui::Context) {
         use crate::packs::{self, Status, PACKS};
         // finished downloads: list them and switch to the new sound
+        // Download all: keep two going until the queue is empty
+        let busy = PACKS.iter().filter(|p| matches!(self.dl.status(p.name), Some(Status::Working(..)))).count();
+        for _ in busy..2 {
+            match self.dl_queue.pop_front() {
+                Some(p) if !packs::installed(p) => self.dl.start(*p, ctx.clone()),
+                Some(_) => {}
+                None => break,
+            }
+        }
         for p in PACKS {
             if let Some(Status::Done(path)) = self.dl.status(p.name) {
-                if self.dl_seen.insert(p.name) {
+                if !self.dl_seen.insert(p.name) {
+                    continue;
+                }
+                if self.dl_bulk.contains(p.name) {
+                    // part of Download all: just make it available
                     if matches!(p.src, packs::Src::Sf2(..)) {
-                        self.s.soundfont = Some(path.clone());
-                        self.load_sf(path);
+                        self.sf_paths = sounds::find_soundfonts();
                     } else {
                         self.add_native_presets();
-                        self.category = Some(16);
-                        self.set_preset(false, (sounds::SAMPLE_BANK, sounds::inst_id(&path)));
                     }
+                } else if matches!(p.src, packs::Src::Sf2(..)) {
+                    self.s.soundfont = Some(path.clone());
+                    self.load_sf(path);
+                } else {
+                    self.add_native_presets();
+                    self.category = Some(16);
+                    self.set_preset(false, (sounds::SAMPLE_BANK, sounds::inst_id(&path)));
                 }
             }
         }
@@ -3932,6 +4111,29 @@ impl App {
         egui::Window::new("🎷 Get sounds").open(&mut open).collapsible(false).resizable(true).default_size([620.0, 600.0]).max_height(700.0).show(ctx, |ui| {
             ui.label(RichText::new("Real recorded instruments, free to download and use. Each one downloads on its own (5–150 MB each; pianos and basses are the big ones), straight from its makers. They appear under Samples in the sound list.").size(12.5).color(text_dim()));
             ui.label(RichText::new(format!("Saved in {}", packs::root().display())).size(11.0).color(text_dim()));
+            ui.horizontal(|ui| {
+                let missing: Vec<&'static packs::Pack> = PACKS.iter().filter(|p| !packs::installed(p)).collect();
+                let queued = self.dl_queue.len();
+                let busy = PACKS.iter().filter(|p| matches!(self.dl.status(p.name), Some(Status::Working(..)))).count();
+                if queued + busy > 0 {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new(format!("Downloading: {busy} now, {queued} waiting")).size(12.5));
+                    if ui.button("Stop the rest").on_hover_text("Lets the current ones finish, cancels the waiting ones").clicked() {
+                        self.dl_queue.clear();
+                    }
+                } else if missing.is_empty() {
+                    ui.label(RichText::new("✓ You have every sound").color(GOOD));
+                } else if ui
+                    .add(egui::Button::new(RichText::new(format!("⬇ Download all ({} sounds)", missing.len())).strong().color(Color32::BLACK)).fill(YOURS))
+                    .on_hover_text("Fetches every sound you don't have yet, two at a time. Several GB in total: on a fast connection, plan on a while.")
+                    .clicked()
+                {
+                    for p in missing {
+                        self.dl_bulk.insert(p.name);
+                        self.dl_queue.push_back(p);
+                    }
+                }
+            });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut group = "";
@@ -4507,6 +4709,7 @@ impl eframe::App for App {
         self.apply_controller();
         self.apply_drones();
         self.apply_range();
+        self.poll_score(ctx);
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop
@@ -4524,7 +4727,7 @@ impl eframe::App for App {
                         let id = sounds::inst_id(&p);
                         self.set_preset(false, (sounds::SAMPLE_BANK, id));
                     }
-                    "mid" | "midi" | "kar" | "abc" => {
+                    "mid" | "midi" | "kar" | "abc" | "mscz" | "mscx" | "musicxml" | "mxl" | "xml" => {
                         self.load_song_path(&p);
                         if !self.song_files.contains(&p) {
                             self.song_files.insert(0, p);

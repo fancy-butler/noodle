@@ -148,3 +148,63 @@ mod tests {
         assert!(!bridge_copy(&all[0], &all));
     }
 }
+
+/// Noodle's MIDI out: what you play (keys, computer keys, accordion buttons) goes out to other
+/// programs — MuseScore's note input, a DAW. Linux and macOS: a virtual port called "Noodle"
+/// that shows up in their MIDI input lists. Windows has no virtual ports: make one with
+/// loopMIDI named "Noodle" and Noodle sends to it.
+pub fn spawn_out(rx: crossbeam_channel::Receiver<[u8; 3]>, status: Arc<Mutex<String>>) {
+    std::thread::Builder::new()
+        .name("noodle-midi-out".into())
+        .spawn(move || {
+            let set = |s: &str| {
+                if let Ok(mut st) = status.lock() {
+                    *st = s.to_string();
+                }
+            };
+            #[cfg(unix)]
+            let mut conn = {
+                use midir::os::unix::VirtualOutput;
+                match midir::MidiOutput::new("Noodle").map_err(|e| e.to_string()).and_then(|o| o.create_virtual("Noodle").map_err(|e| e.to_string())) {
+                    Ok(c) => {
+                        set("Sending to the \"Noodle\" MIDI port");
+                        Some(c)
+                    }
+                    Err(e) => {
+                        set(&format!("No MIDI out: {e}"));
+                        None
+                    }
+                }
+            };
+            #[cfg(not(unix))]
+            let mut conn: Option<midir::MidiOutputConnection> = None;
+            loop {
+                #[cfg(not(unix))]
+                if conn.is_none() {
+                    if let Ok(o) = midir::MidiOutput::new("Noodle") {
+                        let port = o.ports().into_iter().find(|p| o.port_name(p).map(|n| n.to_lowercase().contains("noodle")).unwrap_or(false));
+                        match port {
+                            Some(p) => match o.connect(&p, "noodle-out") {
+                                Ok(c) => {
+                                    set("Sending to the loopMIDI port \"Noodle\"");
+                                    conn = Some(c);
+                                }
+                                Err(e) => set(&format!("No MIDI out: {e}")),
+                            },
+                            None => set("Windows: make a loopMIDI port named Noodle"),
+                        }
+                    }
+                }
+                match rx.recv_timeout(Duration::from_millis(2000)) {
+                    Ok(m) => {
+                        if let Some(c) = conn.as_mut() {
+                            let _ = c.send(&m);
+                        }
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(_) => return,
+                }
+            }
+        })
+        .expect("spawn midi out thread");
+}

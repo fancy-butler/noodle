@@ -185,13 +185,44 @@ fn scan(dirs: &[PathBuf], exts: &[&str], depth: usize) -> Vec<PathBuf> {
 
 pub fn find_soundfonts() -> Vec<PathBuf> {
     let mut v = scan(&soundfont_dirs(), &["sf2"], 1);
+    // the same bank reached twice (default.sf2 → FluidR3_GM.sf2 links, a copy in Noodle's
+    // own folder) is one bank
+    let mut seen: Vec<(PathBuf, String, u64)> = Vec::new();
+    v.retain(|p| {
+        let real = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        let name = real.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let len = std::fs::metadata(&real).map(|m| m.len()).unwrap_or(0);
+        if seen.iter().any(|(r, n, l)| *r == real || (*n == name && *l == len)) {
+            return false;
+        }
+        seen.push((real, name, len));
+        true
+    });
     // biggest first — usually the best-sounding one
     v.sort_by_key(|p| std::cmp::Reverse(std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)));
     v
 }
 
+/// What a sound bank is, in a line, for the Bank list.
+pub fn bank_blurb(path: &Path) -> &'static str {
+    let n = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if n.contains("generaluser") || n == "gu.sf2" {
+        "GeneralUser GS: smaller, more even, often nicer. Recommended"
+    } else if n.contains("fluidr3_gs") || n.contains("fluidr3gs") {
+        "FluidR3 GS: FluidR3 plus extra Roland GS variation sounds"
+    } else if n.contains("fluidr3") {
+        "FluidR3 GM: the standard free General MIDI set"
+    } else if n.contains("timgm") || n.contains("timidity") {
+        "TimGM6mb: tiny and old; use another if you have one"
+    } else if n.contains("musescore_general") || n.contains("musescore general") || n.contains("mscore") {
+        "MuseScore General: MuseScore's own bank"
+    } else {
+        "A sound bank you added"
+    }
+}
+
 pub fn find_songs() -> Vec<PathBuf> {
-    let mut v = scan(&song_dirs(), &["mid", "midi", "kar", "abc"], 1);
+    let mut v = scan(&song_dirs(), &["mid", "midi", "kar", "abc", "mscz", "mscx", "musicxml", "mxl"], 1);
     v.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
     v
 }
