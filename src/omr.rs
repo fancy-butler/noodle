@@ -252,15 +252,23 @@ fn unpack(file: &Path, to: &Path) -> Result<(), String> {
 fn unpack(file: &Path, to: &Path) -> Result<(), String> {
     let mnt = to.with_extension("mnt");
     let _ = std::fs::create_dir_all(&mnt);
-    let st = std::process::Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-readonly", "-noverify", "-mountpoint"])
+    // some disk images show a licence first: answer it ("Y") on stdin
+    let mut child = std::process::Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noverify", "-noautoopen", "-mountpoint"])
         .arg(&mnt)
         .arg(file)
-        .stdout(std::process::Stdio::null())
-        .status()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("hdiutil: {e}"))?;
-    if !st.success() {
-        return Err("Couldn't open the Audiveris disk image".into());
+    if let Some(mut i) = child.stdin.take() {
+        let _ = std::io::Write::write_all(&mut i, b"Y\n");
+    }
+    let out = child.wait_with_output().map_err(|e| format!("hdiutil: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("Couldn't open the Audiveris disk image: {why}"));
     }
     let app = std::fs::read_dir(&mnt).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.extension().map(|x| x == "app").unwrap_or(false)));
     let r = match app {
