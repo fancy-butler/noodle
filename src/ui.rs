@@ -138,6 +138,8 @@ pub struct App {
     /// files picked in the "Add files…" dialog (it runs on its own thread)
     pick_rx: Option<crossbeam_channel::Receiver<Vec<PathBuf>>>,
     song_note: Option<String>,
+    updater: crate::update::Updater,
+    update_open: bool,
     /// a MuseScore/MusicXML score converting in the background (result, file name)
     score_pending: Option<(crossbeam_channel::Receiver<Result<Song, String>>, String)>,
     search_focused: bool,
@@ -513,6 +515,8 @@ impl App {
             set_play: None,
             pick_rx: None,
             song_note: None,
+            updater: Default::default(),
+            update_open: false,
             score_pending: None,
             search_focused: false,
             blocked: h.blocked,
@@ -1082,6 +1086,68 @@ impl App {
             self.load_song_path(&tunes[0].clone());
         } else if !tunes.is_empty() {
             self.song_note = Some(format!("✓ Added {} tunes to My files", tunes.len()));
+        }
+    }
+
+    /// Once a day: is there a newer Noodle? And the window that shows it.
+    fn update_window(&mut self, ctx: &egui::Context) {
+        use crate::update::State;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if self.s.check_updates && now.saturating_sub(self.s.update_checked) > 86_400 && matches!(self.updater.get(), State::Idle) {
+            self.s.update_checked = now;
+            self.updater.check(ctx.clone());
+        }
+        if !self.update_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Update Noodle").open(&mut open).collapsible(false).resizable(true).default_size([520.0, 380.0]).show(ctx, |ui| {
+            match self.updater.get() {
+                State::Idle | State::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new());
+                        ui.label("Looking for a new version…");
+                    });
+                }
+                State::UpToDate => {
+                    ui.label(RichText::new(format!("✓ You have the newest Noodle ({}).", crate::VERSION)).color(GOOD));
+                }
+                State::Available(r) => {
+                    ui.label(RichText::new(format!("Noodle {} is out (you have {}).", r.version, crate::VERSION)).size(15.0).strong());
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        ui.label(RichText::new(if r.notes.trim().is_empty() { "No notes for this one." } else { r.notes.as_str() }).size(12.0));
+                    });
+                    ui.add_space(6.0);
+                    let label = if cfg!(target_os = "macos") || r.asset.is_none() { "Open the download page" } else { "⬇ Update now" };
+                    if ui.add(egui::Button::new(RichText::new(label).strong().color(Color32::BLACK)).fill(GOOD)).clicked() {
+                        self.updater.install(r, ctx.clone());
+                    }
+                    if cfg!(target_os = "macos") {
+                        ui.label(RichText::new("On a Mac: open the .dmg and drag Noodle onto Applications, replacing the old one.").size(11.5).color(text_dim()));
+                    }
+                }
+                State::Installing(m) => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new());
+                        ui.label(m);
+                    });
+                }
+                State::Done(v) => {
+                    ui.label(RichText::new(format!("✓ Noodle {v} is installed.")).color(GOOD));
+                    if ui.add(egui::Button::new(RichText::new("↻ Restart Noodle now").strong().color(Color32::BLACK)).fill(GOOD)).clicked() {
+                        crate::update::restart();
+                    }
+                }
+                State::Failed(e) => {
+                    ui.label(RichText::new(e).color(BAD));
+                    if ui.button("Open the download page instead").clicked() {
+                        crate::update::open_page();
+                    }
+                }
+            }
+        });
+        if !open {
+            self.update_open = false;
         }
     }
 
@@ -1766,9 +1832,33 @@ impl App {
                     ui.radio_value(&mut self.s.fing_mode, 2, "Off");
                     ui.separator();
                     ui.checkbox(&mut self.s.hide_modules, "Hide all panels (F2)");
+                    ui.separator();
+                    ui.label(RichText::new(format!("Noodle {}", crate::VERSION)).size(11.0).color(text_dim()));
+                    ui.checkbox(&mut self.s.check_updates, "Check for updates once a day");
+                    if ui.button("Check for updates now").clicked() {
+                        self.updater.check(ui.ctx().clone());
+                        self.update_open = true;
+                    }
                 });
                 if ui.button("?").on_hover_text("Keys & shortcuts (F1)").clicked() {
                     self.show_help = !self.show_help;
+                }
+                match self.updater.get() {
+                    crate::update::State::Available(r) => {
+                        if ui.add(egui::Button::new(RichText::new(format!("⬆ Noodle {}", r.version)).strong().color(Color32::BLACK)).fill(GOOD)).on_hover_text("A new Noodle is out: click to see what's new and update").clicked() {
+                            self.update_open = true;
+                        }
+                    }
+                    crate::update::State::Done(v) => {
+                        if ui.add(egui::Button::new(RichText::new(format!("↻ Restart into {v}")).strong().color(Color32::BLACK)).fill(GOOD)).clicked() {
+                            crate::update::restart();
+                        }
+                    }
+                    crate::update::State::Installing(m) => {
+                        ui.add(egui::Spinner::new());
+                        ui.label(RichText::new(m).size(11.5));
+                    }
+                    _ => {}
                 }
                 let (icon, tip) = match self.s.theme {
                     1 => ("☀", "Light mode — click for follow-system"),
@@ -5130,6 +5220,7 @@ impl eframe::App for App {
         self.apply_range();
         self.poll_score(ctx);
         self.poll_pick(ctx);
+        self.update_window(ctx);
         self.pump();
         self.keyboard_input(ctx);
         // drag & drop

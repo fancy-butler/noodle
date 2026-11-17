@@ -40,6 +40,10 @@ pub struct Settings {
     pub acc_vol: f32,
     /// accordion button note names: 0 player's (C♯ E♭ F♯ A♭ B♭), 1 row's key, 2 sharps, 3 flats
     pub acc_spell: u8,
+    /// look for a new Noodle once a day
+    pub check_updates: bool,
+    /// when it last looked (unix seconds)
+    pub update_checked: u64,
     pub drum_rows: [u16; DRUM_ROWS],
     /// pattern slots A–H: (rows, steps)
     pub drum_slots: Vec<([u16; DRUM_ROWS], u8)>,
@@ -169,6 +173,8 @@ impl Default for Settings {
             midi_out: false,
             acc_vol: 1.6,
             acc_spell: 0,
+            check_updates: true,
+            update_checked: 0,
             drum_rows: crate::drums::PATTERNS[1].1,
             drum_slots: Vec::new(),
             drum_slot_names: Vec::new(),

@@ -33,6 +33,7 @@ mod song;
 mod sounds;
 mod theory;
 mod ui;
+mod update;
 
 use engine::{Cmd, Engine, Params, UiEvt};
 use std::sync::atomic::Ordering::Relaxed;
@@ -63,6 +64,7 @@ fn main() {
         return;
     }
 
+    update::cleanup();
     let p = Arc::new(Params::new());
     let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
     let (utx, urx) = crossbeam_channel::bounded::<UiEvt>(16384);
