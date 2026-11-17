@@ -38,6 +38,8 @@ pub struct Settings {
     /// accordion mode volume (gain, 1 = level with the piano; default +4 dB, as reeds
     /// played without velocity sound smaller than a keyboard played hard)
     pub acc_vol: f32,
+    /// accordion button note names: 0 player's (C♯ E♭ F♯ A♭ B♭), 1 row's key, 2 sharps, 3 flats
+    pub acc_spell: u8,
     pub drum_rows: [u16; DRUM_ROWS],
     /// pattern slots A–H: (rows, steps)
     pub drum_slots: Vec<([u16; DRUM_ROWS], u8)>,
@@ -166,6 +168,7 @@ impl Default for Settings {
             arp_notes: 0,
             midi_out: false,
             acc_vol: 1.6,
+            acc_spell: 0,
             drum_rows: crate::drums::PATTERNS[1].1,
             drum_slots: Vec::new(),
             drum_slot_names: Vec::new(),

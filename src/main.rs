@@ -27,6 +27,7 @@ mod reed;
 mod sampler;
 mod score;
 mod session;
+mod sets;
 mod settings;
 mod song;
 mod sounds;

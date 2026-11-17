@@ -126,6 +126,46 @@ pub fn musescore() -> Option<PathBuf> {
 /// Load a score as a song. Slow when MuseScore does the converting (a few seconds), so run it
 /// off the UI thread.
 pub fn load(path: &Path) -> Result<Song, String> {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let mut song = load_raw(path)?;
+    // a part for B♭ / E♭ instruments ("Galitzaner Tenzil - Bb") is written above the sound:
+    // play it at concert pitch, so it's in tune with the band and the staff's Concert view
+    let part = part_shift(&stem);
+    if part != 0 {
+        shift(&mut song, part);
+        song.name = format!("{} (concert pitch)", song.name);
+    }
+    Ok(song)
+}
+
+/// Written-to-sounding shift for a part named in the file name: "- Bb" → −2, "- Eb" → −9
+/// (alto sax), "- F" → −7 (horn). C and concert parts: 0.
+pub fn part_shift(stem: &str) -> i32 {
+    let s = stem.to_lowercase().replace('♭', "b");
+    let tail = s.rsplit(['-', '(', '_']).next().unwrap_or("").trim().trim_end_matches(')').trim().to_string();
+    let tail = tail.trim_end_matches(" low").trim_end_matches(" part").trim().to_string();
+    match tail.as_str() {
+        "bb" | "b flat" | "bb instruments" | "bb clarinet" | "bb trumpet" | "clarinet" | "trumpet" => -2,
+        "eb" | "e flat" | "eb instruments" | "alto sax" => -9,
+        "f" | "f horn" => -7,
+        _ => 0,
+    }
+}
+
+fn shift(song: &mut Song, by: i32) {
+    for n in &mut song.notes {
+        if n.ch != 9 {
+            n.key = (n.key as i32 + by).clamp(0, 127) as u8;
+        }
+    }
+    for e in &mut song.evs {
+        if e.ch != 9 && (e.st == 0x90 || e.st == 0x80 || e.st == 0xA0) {
+            e.d1 = (e.d1 as i32 + by).clamp(0, 127) as u8;
+        }
+    }
+}
+
+fn load_raw(path: &Path) -> Result<Song, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     if ext == "pdf" {
@@ -405,6 +445,32 @@ mod tests {
         assert!((s.notes[1].start - s.notes[0].start - 1.0).abs() < 1e-6);
         assert!((s.notes[3].end - s.notes[3].start) > 1.9, "tie joins two quarters");
         assert_eq!(s.programs[0], 73, "flute program");
+    }
+
+    #[test]
+    fn parts_in_file_names() {
+        assert_eq!(part_shift("Galitzaner Tenzil - Bb"), -2);
+        assert_eq!(part_shift("Freylekhs #5 - Bb Low"), -2);
+        assert_eq!(part_shift("Leonard_s Sirba Bb"), 0, "no separator: leave it");
+        assert_eq!(part_shift("Hora - Eb"), -9);
+        assert_eq!(part_shift("Old Sher"), 0);
+        assert_eq!(part_shift("Old Sher - C"), 0);
+    }
+
+    /// NOODLE_SCORE_DIR=folder: read every .mxl with Noodle's own reader, report the counts
+    #[test]
+    #[ignore]
+    fn score_dir() {
+        let Ok(d) = std::env::var("NOODLE_SCORE_DIR") else { return };
+        let mut v: Vec<_> = std::fs::read_dir(d).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "mxl").unwrap_or(false)).collect();
+        v.sort();
+        for p in v {
+            let name = p.file_stem().unwrap().to_string_lossy().to_string();
+            match mxl_text(&p).and_then(|x| from_musicxml(&x, name.clone())) {
+                Ok(s) => println!("OK   {:>4} notes {:>6.1}s  {name}", s.notes.len(), s.dur),
+                Err(e) => println!("FAIL {name}: {e}"),
+            }
+        }
     }
 
     /// NOODLE_SCORE=file.mscz cargo test -- --ignored score_live: through MuseScore

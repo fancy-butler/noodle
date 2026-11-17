@@ -58,12 +58,15 @@ fn ink_on(c: [u8; 3], alpha: u8) -> Color32 {
     }
 }
 
-/// Sharps, except on rows in flat keys (the row's home note is F, B♭, E♭ or A♭).
-fn spell(n: u8, row_home: u8) -> &'static str {
-    if matches!(row_home % 12, 5 | 10 | 3 | 8) {
-        acc::NAMES_FLAT[(n % 12) as usize]
-    } else {
-        acc::NAMES_SHARP[(n % 12) as usize]
+/// Note names on the buttons. 0 = how players write them (C♯ E♭ F♯ A♭ B♭), 1 = the row's
+/// key (a B row gets D♯ G♯ A♯), 2 = all sharps, 3 = all flats.
+fn spell(n: u8, row_home: u8, how: u8) -> &'static str {
+    let i = (n % 12) as usize;
+    match how {
+        1 if matches!(row_home % 12, 5 | 10 | 3 | 8) => acc::NAMES_FLAT[i],
+        1 | 2 => acc::NAMES_SHARP[i],
+        3 => acc::NAMES_FLAT[i],
+        _ => acc::NAMES[i],
     }
 }
 
@@ -553,6 +556,23 @@ impl App {
                 ui.separator();
                 ui.toggle_value(&mut self.s.acc_space_pull, "Space = pull").on_hover_text("Off: hold Space to push, let go to pull. On: the other way round.");
                 ui.separator();
+                egui::ComboBox::from_id_salt("acc_spell")
+                    .selected_text(["C♯ E♭ F♯ A♭ B♭", "Row's key", "All ♯", "All ♭"][self.s.acc_spell.min(3) as usize])
+                    .width(118.0)
+                    .show_ui(ui, |ui| {
+                        for (i, n, tip) in [
+                            (0u8, "C♯ E♭ F♯ A♭ B♭", "The way most players write them"),
+                            (1, "Row's key", "Each row spelt in its own key: a B row gets D♯ G♯ A♯"),
+                            (2, "All ♯", "C♯ D♯ F♯ G♯ A♯"),
+                            (3, "All ♭", "D♭ E♭ G♭ A♭ B♭"),
+                        ] {
+                            ui.selectable_value(&mut self.s.acc_spell, i, n).on_hover_text(tip);
+                        }
+                    })
+                    .response
+                    .on_hover_text("How the black-key notes are named on the buttons");
+                ui.label(RichText::new("Names").size(12.0).color(text_dim()));
+                ui.separator();
                 let mut v = self.s.acc_vol;
                 if ui.add(egui::Slider::new(&mut v, 0.25..=4.0).logarithmic(true).show_value(false)).on_hover_text("Accordion volume (the limiter keeps it clean)").changed() {
                     self.s.acc_vol = v;
@@ -732,10 +752,10 @@ impl App {
                     if bisonoric {
                         let (big, small) = if push { (b.push, b.pull) } else { (b.pull, b.push) };
                         let (m, sm, _, sa, _) = spots(kr);
-                        p.text(m, Align2::CENTER_CENTER, spell(big, home), FontId::proportional(u * if round { 0.36 } else { 0.42 }), ink3);
-                        p.text(sm, sa, spell(small, home), FontId::proportional(u * if round { 0.17 } else { 0.2 }), ink3.linear_multiply(0.5));
+                        p.text(m, Align2::CENTER_CENTER, spell(big, home, self.s.acc_spell), FontId::proportional(u * if round { 0.36 } else { 0.42 }), ink3);
+                        p.text(sm, sa, spell(small, home, self.s.acc_spell), FontId::proportional(u * if round { 0.17 } else { 0.2 }), ink3.linear_multiply(0.5));
                     } else {
-                        p.text(spots(kr).0, Align2::CENTER_CENTER, spell(b.push, 0), FontId::proportional(u * if round { 0.38 } else { 0.42 }), ink3);
+                        p.text(spots(kr).0, Align2::CENTER_CENTER, spell(b.push, 0, self.s.acc_spell), FontId::proportional(u * if round { 0.38 } else { 0.42 }), ink3);
                         if b.push % 12 == 0 {
                             ring(kr, -u * 0.06, 2.0, Color32::from_rgb(0xd0, 0x40, 0x40));
                         }

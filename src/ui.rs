@@ -125,6 +125,16 @@ pub struct App {
     midi_out_status: Arc<Mutex<String>>,
     sound_search: String,
     file_search: String,
+    /// practice sets (sets.json)
+    sets: Vec<crate::sets::Set>,
+    set_cur: usize,
+    set_paste: String,
+    set_pasting: bool,
+    /// item whose "find" list is open, and its search text
+    set_find: Option<usize>,
+    set_find_q: String,
+    /// practising: (set, item) now loaded
+    set_play: Option<(usize, usize)>,
     /// a MuseScore/MusicXML score converting in the background (result, file name)
     score_pending: Option<(crossbeam_channel::Receiver<Result<Song, String>>, String)>,
     search_focused: bool,
@@ -491,6 +501,13 @@ impl App {
             midi_out_status: h.midi_out_status,
             sound_search: String::new(),
             file_search: String::new(),
+            sets: crate::sets::load(),
+            set_cur: 0,
+            set_paste: String::new(),
+            set_pasting: false,
+            set_find: None,
+            set_find_q: String::new(),
+            set_play: None,
             score_pending: None,
             search_focused: false,
             blocked: h.blocked,
@@ -3138,6 +3155,16 @@ impl App {
             if ui.add(egui::Slider::new(&mut sv, 0.0..=1.0).show_value(false)).on_hover_text("Song volume").changed() {
                 self.p.song_vol.set(sv);
             }
+            if let Some((si, ii)) = self.set_play {
+                if let Some(st) = self.sets.get(si) {
+                    let pos = st.items[..=ii.min(st.items.len().saturating_sub(1))].iter().filter(|x| !x.heading).count();
+                    let n = st.items.iter().filter(|x| !x.heading).count();
+                    ui.label(RichText::new(format!("{} · {pos}/{n}", st.name)).size(12.0).color(YOURS));
+                    if ui.button("⏭ Next tune").clicked() {
+                        self.set_next();
+                    }
+                }
+            }
             if ui.button("✕").on_hover_text("Close song").clicked() {
                 self.set_song(None, 0);
             }
@@ -3692,6 +3719,307 @@ impl App {
         }
     }
 
+    /// A .zip of charts dropped on the window: its tunes go into a folder of their own in the
+    /// songs folder (e.g. songs/TKS Bb Charts/), and My files opens.
+    fn import_zip(&mut self, zip_path: &std::path::Path) {
+        use std::io::Read;
+        let name = zip_path.file_stem().map(|n| n.to_string_lossy().replace('_', " ")).unwrap_or_else(|| "Imported".into());
+        let dest = sounds::user_dir().join("songs").join(&name);
+        let res = (|| -> Result<usize, String> {
+            let f = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+            let mut z = zip::ZipArchive::new(f).map_err(|e| format!("Not a readable zip: {e}"))?;
+            std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+            let mut n = 0;
+            for i in 0..z.len() {
+                let mut e = z.by_index(i).map_err(|e| e.to_string())?;
+                if e.is_dir() {
+                    continue;
+                }
+                let Some(inner) = e.enclosed_name() else { continue };
+                let Some(fname) = inner.file_name() else { continue };
+                let ext = inner.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+                if !["mid", "midi", "kar", "abc", "mscz", "mscx", "musicxml", "mxl", "xml", "pdf"].contains(&ext.as_str()) || fname.to_string_lossy().starts_with("._") {
+                    continue;
+                }
+                let mut buf = Vec::new();
+                e.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                std::fs::write(dest.join(fname), buf).map_err(|e| e.to_string())?;
+                n += 1;
+            }
+            Ok(n)
+        })();
+        match res {
+            Ok(n) => {
+                self.song_files = sounds::find_songs();
+                self.song_err = Some(format!("Added {n} tunes to My files › {name}"));
+                self.tune_tab = 4;
+                self.tunes_open = true;
+            }
+            Err(e) => self.song_err = Some(e),
+        }
+    }
+
+    /// Files worth listing: a PDF whose MusicXML reading sits next to it shows once, as the reading.
+    fn visible_songs(&self) -> Vec<PathBuf> {
+        self.song_files
+            .iter()
+            .filter(|p| {
+                let pdf = p.extension().map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false);
+                !(pdf && (p.with_extension("mxl").exists() || p.with_extension("musicxml").exists()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Where a set's tune could come from: your files, the klezmer collection, The Session.
+    /// Best first: (score, label, source).
+    fn set_candidates(&self, title: &str, limit: usize) -> Vec<(f32, String, crate::sets::Source)> {
+        use crate::sets::{score, Source};
+        let mut out: Vec<(f32, String, Source)> = Vec::new();
+        for f in self.visible_songs() {
+            let stem = f.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            // "Galitzaner Tenzil - Bb" → match on the name, not the part
+            let name = stem.rsplit_once(" - ").map(|(a, _)| a.to_string()).unwrap_or(stem.clone());
+            let sc = score(title, &name.replace('_', "'"));
+            if sc > 0.3 {
+                let ext = f.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                out.push((sc + 0.05, format!("📁 {stem} ·{ext}"), Source::File(f.clone())));
+            }
+        }
+        if let Some(book) = self.coll.book() {
+            for t in &book.tunes {
+                let sc = score(title, &t.name);
+                if sc > 0.3 {
+                    if let Some(v) = t.versions.first() {
+                        out.push((sc, format!("🎻 {} ({}, klezmer collection)", t.name, v.key), Source::Abc("Klezmer collection".into(), v.text.clone())));
+                    }
+                }
+            }
+        }
+        if let Some(book) = self.tunes.book() {
+            for t in &book.tunes {
+                let mut sc = score(title, &t.name);
+                for a in &t.aliases {
+                    sc = sc.max(score(title, a));
+                }
+                if sc > 0.5 {
+                    out.push((sc - 0.05, format!("☘ {} ({}, The Session)", crate::session::display_name(&t.name), t.kind), Source::Abc("The Session".into(), t.abc(0))));
+                }
+            }
+        }
+        out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        out.truncate(limit);
+        out
+    }
+
+    /// Look up every tune in a set that hasn't got a source yet.
+    fn set_match_all(&mut self, si: usize) {
+        let titles: Vec<(usize, String)> = self.sets[si].items.iter().enumerate().filter(|(_, it)| !it.heading && it.source.is_none()).map(|(i, it)| (i, it.title.clone())).collect();
+        for (i, t) in titles {
+            if let Some((sc, _, src)) = self.set_candidates(&t, 1).into_iter().next() {
+                if sc >= 0.75 {
+                    self.sets[si].items[i].source = Some(src);
+                }
+            }
+        }
+        crate::sets::save(&self.sets);
+    }
+
+    /// Load a set's tune and remember where we are in the set.
+    fn set_open_item(&mut self, si: usize, ii: usize) -> Option<crate::sets::Source> {
+        let src = self.sets.get(si)?.items.get(ii)?.source.clone()?;
+        self.set_play = Some((si, ii));
+        Some(src)
+    }
+
+    /// The next tune in the set being practised (skips headings and tunes not found).
+    fn set_next(&mut self) {
+        let Some((si, ii)) = self.set_play else { return };
+        let n = self.sets.get(si).map(|s| s.items.len()).unwrap_or(0);
+        for j in ii + 1..n {
+            if self.sets[si].items[j].source.is_some() && !self.sets[si].items[j].heading {
+                match self.set_open_item(si, j) {
+                    Some(crate::sets::Source::File(f)) => self.load_song_path(&f),
+                    Some(crate::sets::Source::Abc(_, t)) => self.load_abc(&t),
+                    None => {}
+                }
+                return;
+            }
+        }
+        self.set_play = None;
+    }
+
+    /// Tunes & songs › Sets: paste the setlist from the e-mail, Noodle finds the tunes, practise in order.
+    fn sets_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<crate::sets::Source> {
+        use crate::sets;
+        let mut open = None;
+        // the collections have to be loaded to be searched
+        if matches!(self.coll.status(), crate::collections::Status::Idle) && crate::collections::downloaded(&crate::collections::SOURCES[0]) {
+            self.coll.start(&crate::collections::SOURCES[0], false, ctx.clone());
+        }
+        if matches!(self.tunes.status(), crate::session::Status::Idle) && crate::session::downloaded() {
+            self.tunes.start(false, ctx.clone());
+        }
+        ui.horizontal(|ui| {
+            if !self.sets.is_empty() {
+                self.set_cur = self.set_cur.min(self.sets.len() - 1);
+                egui::ComboBox::from_id_salt("set_pick").selected_text(RichText::new(&self.sets[self.set_cur].name).strong()).width(260.0).show_ui(ui, |ui| {
+                    for (i, st) in self.sets.iter().enumerate() {
+                        ui.selectable_value(&mut self.set_cur, i, format!("{}  ({} tunes)", st.name, st.items.iter().filter(|x| !x.heading).count()));
+                    }
+                });
+            }
+            if ui.add(egui::Button::new(RichText::new("📋 Paste a setlist").strong().color(Color32::BLACK)).fill(YOURS)).on_hover_text("Paste the list from the e-mail: one tune per line, \"First Set:\" lines become headings").clicked() {
+                self.set_pasting = !self.set_pasting;
+            }
+            if !self.sets.is_empty() {
+                if ui.button("🔎 Find missing tunes").on_hover_text("Look up every tune that hasn't got a chart yet (after you add files)").clicked() {
+                    let c = self.set_cur;
+                    self.set_match_all(c);
+                }
+                if ui.small_button("🗑 Delete set").clicked() {
+                    self.sets.remove(self.set_cur);
+                    self.set_cur = 0;
+                    self.set_play = None;
+                    sets::save(&self.sets);
+                }
+            }
+        });
+        if self.set_pasting || self.sets.is_empty() {
+            ui.label(RichText::new("Paste the setlist (the tune names, one per line). Noodle looks each one up in your files (charts, MuseScore, MIDI), the klezmer collection and The Session.").size(12.0).color(text_dim()));
+            ui.add(egui::TextEdit::multiline(&mut self.set_paste).desired_rows(8).desired_width(f32::INFINITY).hint_text("Setlist for Nov. 18th!\nFirst Set:\nGoldenshteyn Freylekhs No. 17\nAi Raci Ku Ne Draci\n…"));
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Make the set").strong()).clicked() && !self.set_paste.trim().is_empty() {
+                    let (mut name, items) = sets::parse_setlist(&self.set_paste);
+                    if name.is_empty() {
+                        name = format!("Set {}", self.sets.len() + 1);
+                    }
+                    self.sets.push(sets::Set { name, items });
+                    self.set_cur = self.sets.len() - 1;
+                    let c = self.set_cur;
+                    self.set_match_all(c);
+                    self.set_paste.clear();
+                    self.set_pasting = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    self.set_pasting = false;
+                }
+            });
+            if self.sets.is_empty() {
+                return None;
+            }
+            ui.separator();
+        }
+        let si = self.set_cur.min(self.sets.len() - 1);
+        let total = self.sets[si].items.iter().filter(|x| !x.heading).count();
+        let found = self.sets[si].items.iter().filter(|x| !x.heading && x.source.is_some()).count();
+        let learned = self.sets[si].items.iter().filter(|x| !x.heading && x.learned).count();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{found} of {total} tunes found · {learned} learned")).size(12.5));
+            if found > 0 && ui.add(egui::Button::new(RichText::new("▶ Practise the set").strong().color(Color32::BLACK)).fill(GOOD)).on_hover_text("Loads the first tune you haven't ticked as learned; ⏭ in the song bar goes to the next").clicked() {
+                if let Some(i) = self.sets[si].items.iter().position(|x| !x.heading && x.source.is_some() && !x.learned).or_else(|| self.sets[si].items.iter().position(|x| x.source.is_some())) {
+                    open = self.set_open_item(si, i);
+                }
+            }
+        });
+        if found < total {
+            ui.label(RichText::new("Not found yet? Drop the chart (PDF, MuseScore, MIDI) on the window, then 🔍 next to the tune.").size(11.5).color(text_dim()));
+        }
+        let mut changed = false;
+        let mut remove = None;
+        let mut swap = None;
+        let mut find_pick: Option<(usize, sets::Source)> = None;
+        let n_items = self.sets[si].items.len();
+        egui::ScrollArea::vertical().max_height(380.0).id_salt("set_items").show(ui, |ui| {
+            let mut num = 0;
+            for i in 0..n_items {
+                let it = self.sets[si].items[i].clone();
+                if it.heading {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(it.title.to_uppercase()).size(12.5).strong().color(text_dim()));
+                    continue;
+                }
+                num += 1;
+                let playing = self.set_play == Some((si, i));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{num:>2}.")).monospace().color(text_dim()));
+                    let mut l = it.learned;
+                    if ui.checkbox(&mut l, "").on_hover_text("Learned").changed() {
+                        self.sets[si].items[i].learned = l;
+                        changed = true;
+                    }
+                    let title = RichText::new(&it.title).size(14.0).strong().color(if playing { YOURS } else { fg() });
+                    match &it.source {
+                        Some(src) => {
+                            if ui.add(egui::Button::new(title).frame(false)).on_hover_text("Play this one").clicked() {
+                                open = self.set_open_item(si, i);
+                            }
+                            let what = match src {
+                                sets::Source::File(f) => format!("📁 {}", f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+                                sets::Source::Abc(from, _) => format!("🎻 {from}"),
+                            };
+                            ui.label(RichText::new(what).size(11.0).color(text_dim()));
+                        }
+                        None => {
+                            ui.label(title);
+                            ui.label(RichText::new("not found").size(11.0).color(BAD));
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").on_hover_text("Take it out of the set").clicked() {
+                            remove = Some(i);
+                        }
+                        if ui.small_button("▼").clicked() && i + 1 < n_items {
+                            swap = Some((i, i + 1));
+                        }
+                        if ui.small_button("▲").clicked() && i > 0 {
+                            swap = Some((i - 1, i));
+                        }
+                        if ui.small_button("🔍").on_hover_text("Choose the chart for this tune").clicked() {
+                            if self.set_find == Some(i) {
+                                self.set_find = None;
+                            } else {
+                                self.set_find = Some(i);
+                                self.set_find_q = it.title.clone();
+                            }
+                        }
+                    });
+                });
+                if self.set_find == Some(i) {
+                    egui::Frame::new().fill(card_bg()).corner_radius(6.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut self.set_find_q).hint_text("search by name").desired_width(280.0));
+                        let cands = self.set_candidates(&self.set_find_q.clone(), 10);
+                        if cands.is_empty() {
+                            ui.label(RichText::new("Nothing by that name in your files or the collections.").size(11.5).color(text_dim()));
+                        }
+                        for (_, label, src) in cands {
+                            if ui.selectable_label(it.source.as_ref() == Some(&src), label).clicked() {
+                                find_pick = Some((i, src));
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        if let Some((i, src)) = find_pick {
+            self.sets[si].items[i].source = Some(src);
+            self.set_find = None;
+            changed = true;
+        }
+        if let Some((a, b)) = swap {
+            self.sets[si].items.swap(a, b);
+            changed = true;
+        }
+        if let Some(i) = remove {
+            self.sets[si].items.remove(i);
+            changed = true;
+        }
+        if changed {
+            sets::save(&self.sets);
+        }
+        open
+    }
+
     /// Tunes & songs › My files: everything in the songs folders, by kind, with a search box.
     fn my_files_tab(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         let mut pick = None;
@@ -3744,7 +4072,8 @@ impl App {
                 ui.label(RichText::new(format!("No files yet. Drop some in {}", sounds::user_dir().join("songs").display())).color(text_dim()));
             }
             for (k, head) in [(0u8, "🎹  MIDI"), (1, "🎼  MuseScore & MusicXML"), (3, "📄  Sheet music (PDF): read by Audiveris"), (2, "📜  ABC")] {
-                let files: Vec<&PathBuf> = self.song_files.iter().filter(|p| kind(p) == k).filter(|p| q.is_empty() || p.file_name().map(|n| n.to_string_lossy().to_lowercase().contains(&q)).unwrap_or(false)).collect();
+                let visible = self.visible_songs();
+                let files: Vec<&PathBuf> = visible.iter().filter(|p| kind(p) == k).filter(|p| q.is_empty() || p.file_name().map(|n| n.to_string_lossy().to_lowercase().contains(&q)).unwrap_or(false)).collect();
                 if files.is_empty() {
                     continue;
                 }
@@ -3775,7 +4104,7 @@ impl App {
         let mut load: Option<String> = None;
         egui::Window::new("🎵 Tunes & songs").open(&mut open).collapsible(false).resizable(true).default_size([860.0, 560.0]).max_height(640.0).show(ctx, |ui| {
             // how ABC tunes play back (not for your MIDI/MuseScore files)
-            if self.tune_tab != 4 { ui.horizontal(|ui| {
+            if self.tune_tab != 4 && self.tune_tab != 5 { ui.horizontal(|ui| {
                 let mut changed = false;
                 changed |= ui.toggle_value(&mut self.s.abc_feel, "♩ Feel").on_hover_text("Accents and swing that fit the tune type: jig lilt, reel drive, hornpipe swing, waltz one, mazurka two").changed();
                 changed |= ui.toggle_value(&mut self.s.abc_backing, "🎸 Backing").on_hover_text("Play the tune's chord symbols as an accompaniment, in the style of its time signature").changed();
@@ -3804,7 +4133,7 @@ impl App {
                 }
             }); }
             ui.horizontal(|ui| {
-                for (t, n) in [(4u8, "📁 My files".to_string()), (0, "☘ The Session".to_string()), (3, format!("🎻 {}", crate::collections::SOURCES[0].tab)), (1, "✎ Paste ABC".to_string())] {
+                for (t, n) in [(5u8, "🗂 Sets".to_string()), (4u8, "📁 My files".to_string()), (0, "☘ The Session".to_string()), (3, format!("🎻 {}", crate::collections::SOURCES[0].tab)), (1, "✎ Paste ABC".to_string())] {
                     if ui.selectable_label(self.tune_tab == t, RichText::new(n).size(14.0)).clicked() {
                         self.tune_tab = t;
                     }
@@ -3816,6 +4145,14 @@ impl App {
             ui.label(RichText::new("Pick a tune → it loads in the song bar → press ▶, turn on Walk it, or play it in Game mode.").size(11.5).color(text_dim()));
             ui.separator();
             match self.tune_tab {
+                5 => {
+                    if let Some(src) = self.sets_tab(ui, ctx) {
+                        match src {
+                            crate::sets::Source::File(f) => self.load_song_path(&f),
+                            crate::sets::Source::Abc(_, t) => load = Some(t),
+                        }
+                    }
+                }
                 4 => {
                     if let Some(f) = self.my_files_tab(ui) {
                         self.load_song_path(&f);
@@ -4713,6 +5050,16 @@ impl eframe::App for App {
         {
             static ACC_ENV: std::sync::Once = std::sync::Once::new();
             ACC_ENV.call_once(|| {
+                if let Ok(f) = std::env::var("NOODLE_SET_PASTE") {
+                    // screenshots/tests: make a set from a pasted-setlist file
+                    if let Ok(t) = std::fs::read_to_string(f) {
+                        let (name, items) = crate::sets::parse_setlist(&t);
+                        self.sets.push(crate::sets::Set { name, items });
+                        self.set_cur = self.sets.len() - 1;
+                        let c = self.set_cur;
+                        self.set_match_all(c);
+                    }
+                }
                 if std::env::var("NOODLE_OCARINA").is_ok() {
                     self.set_mode(3);
                 }
@@ -4734,6 +5081,7 @@ impl eframe::App for App {
             if let Some(p) = f.path {
                 let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                 match ext.as_str() {
+                    "zip" => self.import_zip(&p),
                     "sf2" => self.load_sf(p),
                     "sfz" | "dspreset" => {
                         if !self.inst_extra.contains(&p) {
