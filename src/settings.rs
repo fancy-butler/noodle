@@ -35,6 +35,9 @@ pub struct Settings {
     pub arp_notes: u8,
     /// send what you play out of the "Noodle" MIDI port (MuseScore note input etc.)
     pub midi_out: bool,
+    /// accordion mode volume (gain, 1 = level with the piano; default +4 dB, as reeds
+    /// played without velocity sound smaller than a keyboard played hard)
+    pub acc_vol: f32,
     pub drum_rows: [u16; DRUM_ROWS],
     /// pattern slots A–H: (rows, steps)
     pub drum_slots: Vec<([u16; DRUM_ROWS], u8)>,
@@ -162,6 +165,7 @@ impl Default for Settings {
             arp_latch: false,
             arp_notes: 0,
             midi_out: false,
+            acc_vol: 1.6,
             drum_rows: crate::drums::PATTERNS[1].1,
             drum_slots: Vec::new(),
             drum_slot_names: Vec::new(),
@@ -321,6 +325,7 @@ impl Settings {
         p.arp_latch.store(self.arp_latch, Relaxed);
         p.arp_notes.store(self.arp_notes, Relaxed);
         p.midi_out.store(self.midi_out, Relaxed);
+        p.acc_vol.set(self.acc_vol);
         for (k, (rows, len)) in self.drum_slots.iter().enumerate() {
             for i in 0..DRUM_ROWS {
                 p.drum_bank[k][i].store(rows[i], Relaxed);

@@ -147,6 +147,8 @@ pub struct Params {
     pub arp_notes: AtomicU8,
     /// send what you play out of the "Noodle" MIDI port
     pub midi_out: AtomicBool,
+    /// accordion mode volume (gain on the accordion channel)
+    pub acc_vol: AF32,
     pub arp_gate: AF32,
     // drums
     pub drums_on: AtomicBool,
@@ -258,6 +260,7 @@ impl Params {
             arp_latch: AtomicBool::new(false),
             arp_notes: AtomicU8::new(0),
             midi_out: AtomicBool::new(false),
+            acc_vol: AF32::new(1.6),
             arp_gate: AF32::new(0.6),
             drums_on: AtomicBool::new(false),
             drum_bank: Default::default(),
@@ -2126,11 +2129,13 @@ impl Engine {
                 self.nr[..len].fill(0.0);
                 let (mut nl, mut nr) = (std::mem::take(&mut self.nl), std::mem::take(&mut self.nr));
                 let (mut tl, mut tr) = (std::mem::take(&mut self.tl), std::mem::take(&mut self.tr));
-                for n in self.native.iter_mut().flatten() {
+                let acc_vol = self.p.acc_vol.get().clamp(0.0, 4.0);
+                for (ch, n) in self.native.iter_mut().enumerate() {
+                    let Some(n) = n else { continue };
                     tl[..len].fill(0.0);
                     tr[..len].fill(0.0);
                     n.render(&mut tl[..len], &mut tr[..len]);
-                    let g = n.loudness_trim();
+                    let g = n.loudness_trim() * if ch == ACC_CH as usize { acc_vol } else { 1.0 };
                     for i in 0..len {
                         nl[i] += tl[i] * g;
                         nr[i] += tr[i] * g;

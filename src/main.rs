@@ -205,6 +205,20 @@ fn level_survey(args: &[String]) -> Result<(), String> {
                 run(&mut eng, 0.6);
                 println!("{:<40} rms {:>7.4}  peak {:>6.3}  {:>+6.1} dB vs piano", format!("accordion {label}, {what}"), rms, pk, 20.0 * (rms / reference.unwrap()).log10());
             }
+            // every register of a diatonic and a chromatic, one button
+            for inst in [&insts[0], insts.iter().find(|x| x.registers.len() >= 10).unwrap_or(&insts[0])] {
+                for reg in inst.registers {
+                    tx.send(Cmd::Acc(engine::AccMsg::Setup(Some((*reg, inst.bass_ranks, inst.tuning, smp.clone()))))).unwrap();
+                    tx.send(Cmd::Acc(engine::AccMsg::Bellows(true))).unwrap();
+                    run(&mut eng, 0.2);
+                    tx.send(Cmd::Acc(engine::AccMsg::Treble { id: 1, note: 72, on: true })).unwrap();
+                    run(&mut eng, 0.1);
+                    let (_, rms) = run(&mut eng, 0.8);
+                    tx.send(Cmd::Acc(engine::AccMsg::Setup(None))).unwrap();
+                    run(&mut eng, 0.6);
+                    println!("    {label}: {:<34} {:>+6.1} dB vs piano", reg.name, 20.0 * (rms / reference.unwrap()).log10());
+                }
+            }
         }
     }
     // the SoundFont drum kit: one kick + snare, peak against the piano note's peak

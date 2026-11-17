@@ -552,6 +552,13 @@ impl App {
                 ui.label(RichText::new("Look").size(12.0).color(text_dim()));
                 ui.separator();
                 ui.toggle_value(&mut self.s.acc_space_pull, "Space = pull").on_hover_text("Off: hold Space to push, let go to pull. On: the other way round.");
+                ui.separator();
+                let mut v = self.s.acc_vol;
+                if ui.add(egui::Slider::new(&mut v, 0.25..=4.0).logarithmic(true).show_value(false)).on_hover_text("Accordion volume (the limiter keeps it clean)").changed() {
+                    self.s.acc_vol = v;
+                    self.p.acc_vol.set(v);
+                }
+                ui.label(RichText::new(format!("Volume {:+.0} dB", 20.0 * v.log10())).size(12.0).color(text_dim()));
             });
         }
         if leave {
