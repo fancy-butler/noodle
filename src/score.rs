@@ -24,6 +24,10 @@ fn work_dir(tag: &str) -> PathBuf {
 
 /// Audiveris (free optical music recognition: reads printed sheet music), if installed.
 pub fn audiveris() -> Option<PathBuf> {
+    // the copy Noodle fetched itself comes first
+    if let Some(p) = crate::omr::installed() {
+        return Some(p);
+    }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
             for n in ["audiveris", "Audiveris", "Audiveris.exe"] {
@@ -50,12 +54,7 @@ pub fn audiveris() -> Option<PathBuf> {
 /// the PDF in the songs folder (opens instantly next time, and MuseScore can open it too).
 fn from_pdf(path: &Path, name: String) -> Result<Song, String> {
     let Some(aud) = audiveris() else {
-        let how = if cfg!(target_os = "linux") {
-            "flatpak install flathub org.audiveris.audiveris"
-        } else {
-            "get it from audiveris.github.io"
-        };
-        return Err(format!("Reading sheet music needs Audiveris (free): {how}. Or ask for the MuseScore/MusicXML file instead of the PDF."));
+        return Err("Reading sheet music needs the free reader (Audiveris). Get it in one click: Tunes & songs → My files → ⬇ Get the sheet-music reader.".into());
     };
     let out = work_dir("omr");
     let flat = aud.to_string_lossy().contains("org.audiveris.audiveris");

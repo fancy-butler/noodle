@@ -199,6 +199,7 @@ pub struct App {
     song: Option<Arc<Song>>,
     /// the song as loaded, before any key change
     song_base: Option<Arc<Song>>,
+    omr: crate::omr::Fetcher,
     /// semitones the song is moved from its written key
     song_key: i32,
     song_files: Vec<PathBuf>,
@@ -579,6 +580,7 @@ impl App {
             right: [-10.0; 128],
             song: None,
             song_base: None,
+            omr: Default::default(),
             song_key: 0,
             song_files: sounds::find_songs(),
             song_err: None,
@@ -4357,17 +4359,52 @@ impl App {
             .size(11.5)
             .color(text_dim()),
         );
-        ui.label(
-            RichText::new(if has_omr {
-                "Sheet music PDFs: Audiveris reads them into notes (half a minute or so; check the result against the page — triplets and repeat endings are where it slips)."
-            } else if cfg!(target_os = "linux") {
-                "Sheet music PDFs need Audiveris, a free music reader: flatpak install flathub org.audiveris.audiveris"
-            } else {
-                "Sheet music PDFs need Audiveris, a free music reader: audiveris.github.io"
-            })
-            .size(11.5)
-            .color(if has_omr { text_dim() } else { YOURS }),
-        );
+        if has_omr {
+            ui.label(
+                RichText::new("Sheet music PDFs: Audiveris reads them into notes (half a minute or so; check the result against the page — triplets and repeat endings are where it slips).")
+                    .size(11.5)
+                    .color(text_dim()),
+            );
+        }
+        match self.omr.state() {
+            crate::omr::State::Downloading(got, total) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    let mb = |b: u64| b as f32 / 1_048_576.0;
+                    let t = if total > 0 { format!("Getting the sheet-music reader… {:.0} of {:.0} MB", mb(got), mb(total)) } else { format!("Getting the sheet-music reader… {:.0} MB", mb(got)) };
+                    ui.label(RichText::new(t).color(YOURS));
+                });
+                if total > 0 {
+                    ui.add(egui::ProgressBar::new(got as f32 / total as f32).desired_width(320.0));
+                }
+            }
+            crate::omr::State::Unpacking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Unpacking the sheet-music reader…").color(YOURS));
+                });
+            }
+            st => {
+                if let crate::omr::State::Failed(e) = &st {
+                    ui.label(RichText::new(e).color(BAD).size(11.5));
+                }
+                if st == crate::omr::State::Done {
+                    ui.label(RichText::new("✔ Sheet-music reader ready. Click any PDF to read it.").color(GOOD).size(11.5));
+                }
+                if !has_omr {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new("⬇ Get the sheet-music reader").color(Color32::BLACK).strong()).fill(YOURS))
+                            .on_hover_text(format!("Downloads Audiveris {} (free, AGPL) into Noodle's own folder — about 70 MB, no install or admin rights needed.\n{}", crate::omr::VERSION, crate::omr::url()))
+                            .clicked()
+                        {
+                            self.omr.start(Some(ui.ctx().clone()));
+                        }
+                        ui.label(RichText::new("Needed to turn sheet-music PDFs into notes · about 70 MB, one time").size(11.5).color(text_dim()));
+                    });
+                }
+            }
+        }
         ui.add_space(4.0);
         let q = self.file_search.to_lowercase();
         let kind = |p: &PathBuf| -> u8 {

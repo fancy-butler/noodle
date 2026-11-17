@@ -22,6 +22,7 @@ mod fingering;
 mod midi;
 mod native;
 mod packs;
+mod omr;
 mod pipe_art;
 mod pipes;
 mod reed;
