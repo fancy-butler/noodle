@@ -531,6 +531,51 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     if !refused || played60 || !played72 {
         fails.push("real range mode".into());
     }
+    // "Hear it": a scale plays on the player's own sound, at the right pitches
+    {
+        tx.send(Cmd::Program { layer: false, bank: 0, prog: 73, inst: None }).unwrap(); // flute
+        p.song_user.store(0, Relaxed); // "Hear it" plays every note
+        p.song_wait.store(false, Relaxed);
+        let up: Vec<u8> = [0u8, 2, 4, 5, 7, 9, 11, 12].iter().map(|s| 60 + s).collect();
+        // bank/program of a recorded sound: not a GM program, must not reach the song synth
+        let song = song::scale_song(&up, 120.0, sounds::SAMPLE_BANK, 5);
+        tx.send(Cmd::LoadSong(Some(Arc::new(song)))).unwrap();
+        tx.send(Cmd::SongPlay(true)).unwrap();
+        let grab = |secs: f32, eng: &mut Engine| {
+            let (mut gl, mut gr) = (vec![0.0f32; block], vec![0.0f32; block]);
+            let mut v = Vec::new();
+            for _ in 0..(secs * sr as f32) as usize / block {
+                eng.process(&mut gl, &mut gr);
+                v.extend_from_slice(&gl);
+            }
+            v
+        };
+        let f0 = |x: &[f32]| -> f32 {
+            let (mut best, mut lag) = (f32::MIN, 0);
+            for t in 60..400 {
+                let c: f32 = (0..x.len() - t).map(|i| x[i] * x[i + t]).sum();
+                if c > best {
+                    best = c;
+                    lag = t;
+                }
+            }
+            sr as f32 / lag as f32
+        };
+        // eighth notes at 120 bpm: note i sounds from 0.05 + i*0.25 s for 0.225 s
+        grab(0.15, &mut eng);
+        let a = grab(0.10, &mut eng); // C4
+        grab(0.90, &mut eng);
+        let b = grab(0.10, &mut eng); // G4
+        let (fa, fb) = (f0(&a), f0(&b));
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        println!("  hear it: {fa:.0} Hz then {fb:.0} Hz (want ~262, ~392), rms {:.3} {:.3}", rms(&a), rms(&b));
+        if rms(&a) < 0.002 || rms(&b) < 0.002 || (fa - 261.6).abs() > 12.0 || (fb - 392.0).abs() > 18.0 {
+            fails.push("hear it on own sound".into());
+        }
+        tx.send(Cmd::SongPlay(false)).unwrap();
+        tx.send(Cmd::LoadSong(None)).unwrap();
+        render(0.3, "hear it stopped", &mut eng);
+    }
     // accordion: a button's off ends the note it started even if the bellows changed the note
     {
         while urx.try_recv().is_ok() {}

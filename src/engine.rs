@@ -507,6 +507,7 @@ pub struct Engine {
     song_pos: f64,
     song_playing: bool,
     wait_keys: [bool; 128],
+    own_held: [bool; 128],
     waiting: bool,
     wait_done_t: f64,
     enc_last: [u8; 128],
@@ -637,6 +638,7 @@ impl Engine {
             song_pos: 0.0,
             song_playing: false,
             wait_keys: [false; 128],
+            own_held: [false; 128],
             waiting: false,
             wait_done_t: -1.0,
             enc_last: [64; 128],
@@ -1948,7 +1950,17 @@ impl Engine {
     }
 
     // ---------- song player ----------
+    fn own_release(&mut self) {
+        for k in 0..128 {
+            if self.own_held[k] {
+                self.own_held[k] = false;
+                self.route(k as u8, 0, false);
+            }
+        }
+    }
+
     fn song_seek(&mut self, t: f64) {
+        self.own_release();
         let Some(song) = self.song.clone() else { return };
         if let Some(s) = self.synths.as_mut() {
             s.song.note_off_all(true);
@@ -2011,7 +2023,18 @@ impl Engine {
                 self.p.song_pos.set(self.song_pos);
                 return;
             }
-            if !(is_user && is_note) {
+            if song.own_sound && e.ch != 9 && (is_note || e.st == 0xC0 || e.st == 0xB0) {
+                // scales and drills: play on the sound the player has picked
+                if is_note && !is_user {
+                    let on = e.st == 0x90 && e.d2 > 0;
+                    let k = e.d1 as usize & 127;
+                    if on && self.own_held[k] {
+                        self.route(e.d1, 0, false);
+                    }
+                    self.own_held[k] = on;
+                    self.route(e.d1, e.d2, on);
+                }
+            } else if !(is_user && is_note) {
                 if let Some(s) = self.synths.as_mut() {
                     s.song.process_midi_message(e.ch as i32, e.st as i32, e.d1 as i32, e.d2 as i32);
                 }
@@ -2022,6 +2045,7 @@ impl Engine {
         if self.song_pos >= song.dur {
             self.song_playing = false;
             self.song_pos = song.dur;
+            self.own_release();
             if let Some(s) = self.synths.as_mut() {
                 s.song.note_off_all(false);
             }
@@ -2062,6 +2086,7 @@ impl Engine {
                     self.p.synth_ready.store(true, Relaxed);
                 }
                 Cmd::LoadSong(s) => {
+                    self.own_release();
                     if let Some(sy) = self.synths.as_mut() {
                         sy.song.note_off_all(true);
                         sy.song.reset();
@@ -2080,8 +2105,11 @@ impl Engine {
                                 self.song_seek(0.0);
                             }
                         }
-                    } else if let Some(s) = self.synths.as_mut() {
-                        s.song.note_off_all(false);
+                    } else {
+                        if let Some(s) = self.synths.as_mut() {
+                            s.song.note_off_all(false);
+                        }
+                        self.own_release();
                     }
                     self.song_playing = on && self.song.is_some();
                 }

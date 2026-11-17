@@ -410,7 +410,7 @@ pub fn from_musicxml(xml: &str, name: String) -> Result<Song, String> {
     }
     evs.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap().then((a.st == 0x90).cmp(&(b.st == 0x90))));
     let dur = notes.iter().map(|n| n.end).fold(0.0, f64::max) + 0.5;
-    Ok(Song { name, notes, evs, dur, channels, programs, notes_per_ch: npc })
+    Ok(Song { name, notes, evs, dur, channels, programs, notes_per_ch: npc, own_sound: false })
 }
 
 #[cfg(test)]

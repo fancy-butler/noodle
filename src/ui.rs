@@ -197,6 +197,10 @@ pub struct App {
     right: [f64; 128],
     // song
     song: Option<Arc<Song>>,
+    /// the song as loaded, before any key change
+    song_base: Option<Arc<Song>>,
+    /// semitones the song is moved from its written key
+    song_key: i32,
     song_files: Vec<PathBuf>,
     song_err: Option<String>,
     song_user: u16,
@@ -574,6 +578,8 @@ impl App {
             wrong: [-10.0; 128],
             right: [-10.0; 128],
             song: None,
+            song_base: None,
+            song_key: 0,
             song_files: sounds::find_songs(),
             song_err: None,
             song_user: 0,
@@ -1251,14 +1257,54 @@ impl App {
     }
 
     fn set_song(&mut self, s: Option<Arc<Song>>, user: u16) {
-        if s.is_none() {
-            self.tune_info = None;
-        }
+        // load_abc sets this again right after for ABC tunes
+        self.tune_info = None;
         self.song_err = None;
         self.song_user = user;
         self.p.song_user.store(user, Relaxed);
         let _ = self.tx.send(Cmd::LoadSong(s.clone()));
+        self.song_base = s.clone();
+        self.song_key = 0;
         self.song = s;
+    }
+
+    /// Move the loaded song to another key (semitones from how it was written), keeping its place.
+    fn set_song_key(&mut self, k: i32) {
+        let Some(base) = self.song_base.clone() else { return };
+        let k = k.clamp(-12, 12);
+        let delta = k - self.song_key;
+        if delta == 0 {
+            return;
+        }
+        let mut s = (*base).clone();
+        let mv = |key: u8| (key as i32 + k).clamp(0, 127) as u8;
+        for e in s.evs.iter_mut() {
+            if e.ch != 9 && (e.st == 0x90 || e.st == 0x80) {
+                e.d1 = mv(e.d1);
+            }
+        }
+        for n in s.notes.iter_mut() {
+            if n.ch != 9 {
+                n.key = mv(n.key);
+            }
+        }
+        let pos = self.p.song_pos.get();
+        let playing = self.p.song_playing.load(Relaxed);
+        let s = Some(Arc::new(s));
+        let _ = self.tx.send(Cmd::LoadSong(s.clone()));
+        let _ = self.tx.send(Cmd::SongSeek(pos));
+        if playing {
+            let _ = self.tx.send(Cmd::SongPlay(true));
+        }
+        self.song = s;
+        self.song_key = k;
+        // the scale (and so the drones and walk) follows the tune
+        if self.tune_info.is_some() {
+            self.s.scale_root = (self.s.scale_root as i32 + delta).rem_euclid(12) as usize;
+            self.rebuild_walk();
+            let m = self.scale_mask();
+            self.p.scale_mask.store(m, Relaxed);
+        }
     }
 
     // ---------- event pump ----------
@@ -3379,6 +3425,42 @@ impl App {
         });
         if let Some(song) = self.song.clone() {
             ui.horizontal_wrapped(|ui| {
+                if self.song.is_some() {
+                    ui.label(RichText::new("Key").color(text_dim())).on_hover_text("Move the whole tune up or down, in semitones. Your keyboard's Transpose is separate.");
+                    let k = self.song_key;
+                    if ui.small_button("−").on_hover_text("Down a semitone").clicked() {
+                        self.set_song_key(k - 1);
+                    }
+                    let shown = if k == 0 { "as written".to_string() } else { format!("{:+}", k) };
+                    if ui.add(egui::Label::new(RichText::new(shown).strong().monospace()).sense(egui::Sense::click())).on_hover_text("Click to put it back as written").clicked() {
+                        self.set_song_key(0);
+                    }
+                    if ui.small_button("+").on_hover_text("Up a semitone").clicked() {
+                        self.set_song_key(k + 1);
+                    }
+                    if self.tune_info.is_some() && self.last_abc.is_some() {
+                        let has = self.tune_info.as_ref().map(|i| !i.chords.is_empty()).unwrap_or(false);
+                        let mut on = self.s.abc_backing;
+                        let r = ui.add_enabled(has, egui::Button::new("🎸 Chords").selected(on && has));
+                        let r = r.on_hover_text(if has { "Chords on or off" } else { "This tune has no chord symbols" });
+                        if r.clicked() {
+                            on = !on;
+                            self.s.abc_backing = on;
+                            let k = self.song_key;
+                            let pos = self.p.song_pos.get();
+                            let playing = self.p.song_playing.load(Relaxed);
+                            let text = self.last_abc.clone().unwrap();
+                            self.load_abc(&text);
+                            let _ = self.tx.send(Cmd::SongSeek(pos));
+                            if playing {
+                                let _ = self.tx.send(Cmd::SongPlay(true));
+                            }
+                            self.set_song_key(k);
+                        }
+                    }
+                    ui.separator();
+                }
+
                 ui.label(RichText::new("You play:").color(YOURS)).on_hover_text("Pick the part(s) you want to play. They go silent and light up yellow.");
                 for ch in 0..16u16 {
                     if song.channels & (1 << ch) == 0 {
@@ -5307,6 +5389,14 @@ impl eframe::App for App {
                         self.set_cur = self.sets.len() - 1;
                         let c = self.set_cur;
                         self.set_match_all(c);
+                    }
+                }
+                if let Ok(f) = std::env::var("NOODLE_ABC") {
+                    // screenshots/tests: load an ABC tune, optionally moved to another key
+                    if let Ok(t) = std::fs::read_to_string(f) {
+                        self.load_abc(&t);
+                        let k = std::env::var("NOODLE_SONG_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                        self.set_song_key(k);
                     }
                 }
                 if std::env::var("NOODLE_OCARINA").is_ok() {

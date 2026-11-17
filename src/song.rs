@@ -22,6 +22,7 @@ pub struct SongEv {
     pub d2: u8,
 }
 
+#[derive(Clone)]
 pub struct Song {
     pub name: String,
     pub notes: Vec<SongNote>,
@@ -32,6 +33,8 @@ pub struct Song {
     /// first program seen on each channel (-1 = none)
     pub programs: [i16; 16],
     pub notes_per_ch: [u32; 16],
+    /// play the notes through the player's own sound instead of the GM song synth
+    pub own_sound: bool,
 }
 
 pub fn load(path: &Path) -> Result<Song, String> {
@@ -197,7 +200,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     if notes.is_empty() {
         return Err("That MIDI file has no notes in it.".into());
     }
-    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch })
+    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch, own_sound: false })
 }
 
 /// Build a tiny song that plays a scale up and back down — used by "Hear it".
@@ -224,5 +227,5 @@ pub fn scale_song(keys: &[u8], bpm: f32, bank: i32, program: i32) -> Song {
     programs[0] = program as i16;
     let mut npc = [0u32; 16];
     npc[0] = notes.len() as u32;
-    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc }
+    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true }
 }

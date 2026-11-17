@@ -1040,7 +1040,7 @@ pub fn to_song_opts(text: &str, bank: i32, program: i32, opts: Opts) -> Result<(
         npc[1] = n_back;
     }
     info.chords = chords;
-    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: if has_backing { 0b11 } else { 1 }, programs, notes_per_ch: npc };
+    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: if has_backing { 0b11 } else { 1 }, programs, notes_per_ch: npc, own_sound: false };
     Ok((song, info))
 }
 
