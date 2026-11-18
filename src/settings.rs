@@ -76,6 +76,9 @@ pub struct Settings {
     pub kb_inst_tr: usize,
     /// "Play as" leaves the sound alone instead of switching to the instrument's
     pub keep_sound: bool,
+    /// the sound you picked for each fingering chart (chart name, bank, program); a bagpipe
+    /// chart with no entry plays its modelled chanter
+    pub chart_sounds: Vec<(String, i32, i32)>,
     pub layout: u8,     // 0 classic, 1 MiniLab 3
     pub controller: u8, // 0 auto-detect, 1 off, 2 MiniLab 3
     pub score_dark: bool,
@@ -126,6 +129,8 @@ pub struct Settings {
     pub pipe_tune: i32,
     pub pipe_just: bool,
     pub pipe_cont: bool,
+    /// closed (covered) fingering: notes come out detached
+    pub pipe_closed: bool,
     pub drone_level: f32,
     pub shruti_pat: usize,
     pub shruti_low: bool,
@@ -203,6 +208,7 @@ impl Default for Settings {
             kb_inst: None,
             kb_inst_tr: 0,
             keep_sound: false,
+            chart_sounds: Vec::new(),
             layout: 0,
             controller: 0,
             score_dark: false,
@@ -248,6 +254,7 @@ impl Default for Settings {
             pipe_tune: 0,
             pipe_just: true,
             pipe_cont: false,
+            pipe_closed: false,
             drone_level: 0.6,
             shruti_pat: 0,
             shruti_low: true,

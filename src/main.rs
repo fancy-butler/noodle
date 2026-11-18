@@ -45,6 +45,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--pipe-demo") {
+        let out = args.get(i + 1).cloned().unwrap_or("pipes.wav".into());
+        pipe_demo(&out);
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--render-test") {
         let out = args.get(i + 1).cloned().unwrap_or_else(|| "noodle-test.wav".into());
         let sf = args.get(i + 2).cloned();
@@ -797,6 +802,86 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
     }
     p.pipe_continuous.store(false, Relaxed);
 
+    // each chanter's harmonics, measured off the audio, match its table (MacAdam's measurements)
+    {
+        p.drone_on.store(false, Relaxed);
+        p.pipe_mode.store(true, Relaxed);
+        p.pipe_just.store(false, Relaxed);
+        p.pipe_tune.store(0, Relaxed);
+        p.chanter_level.set(0.7);
+        let goertzel = |x: &[f32], f: f32| -> f32 {
+            let w = std::f32::consts::TAU * f / sr as f32;
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, v) in x.iter().enumerate() {
+                // Hann window
+                let h = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / x.len() as f32).cos();
+                re += v * h * (w * i as f32).cos();
+                im += v * h * (w * i as f32).sin();
+            }
+            (re * re + im * im).sqrt()
+        };
+        for (voice, key, name) in [(0u8, 69u8, "Highland"), (1, 69, "Scottish smallpipes"), (2, 69, "Border"), (3, 64, "Uilleann (low E)"), (4, 69, "Northumbrian")] {
+            p.chanter_voice.store(voice, Relaxed);
+            p.pipe_tonic.store(if voice == 3 { 62 } else { key }, Relaxed);
+            tx.send(note(key, true)).unwrap();
+            let (mut gl, mut gr) = (vec![0.0f32; block], vec![0.0f32; block]);
+            let mut buf = Vec::new();
+            for i in 0..(0.6 * sr as f32) as usize / block {
+                eng.process(&mut gl, &mut gr);
+                if i * block > (0.25 * sr as f32) as usize {
+                    buf.extend_from_slice(&gl);
+                }
+            }
+            tx.send(note(key, false)).unwrap();
+            tx.send(Cmd::Panic).unwrap();
+            let mut z = (vec![0.0f32; block], vec![0.0f32; block]);
+            for _ in 0..40 {
+                eng.process(&mut z.0, &mut z.1);
+            }
+            let f0 = 440.0 * 2f32.powf((key as f32 - 69.0) / 12.0);
+            let a1 = goertzel(&buf, f0);
+            let got: Vec<f32> = (1..=8).map(|n| 20.0 * (goertzel(&buf, f0 * n as f32) / a1).log10()).collect();
+            let want = engine_tables(voice);
+            let worst = got.iter().zip(want.iter()).map(|(g, w)| (g - w).abs()).fold(0.0f32, f32::max);
+            println!("  {name:<22} H1–8 dB: {}  (worst off by {worst:.1} dB)", got.iter().map(|g| format!("{g:+.0}")).collect::<Vec<_>>().join(" "));
+            if worst > 3.0 {
+                fails.push(format!("{name} chanter spectrum off its measurements"));
+            }
+        }
+        // closed fingering: a brief silence between two legato notes
+        {
+            p.chanter_voice.store(4, Relaxed);
+            p.pipe_tonic.store(67, Relaxed);
+            p.pipe_closed.store(true, Relaxed);
+            tx.send(note(67, true)).unwrap();
+            let (mut gl, mut gr) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+            let mut env = Vec::new();
+            for i in 0..(0.6 * sr as f32) as usize / 64 {
+                if i == (0.3 * sr as f32) as usize / 64 {
+                    tx.send(note(69, true)).unwrap();
+                    tx.send(note(67, false)).unwrap();
+                }
+                eng.process(&mut gl, &mut gr);
+                env.push((gl.iter().map(|v| v * v).sum::<f32>() / 64.0).sqrt());
+            }
+            let held = env[(0.2 * sr as f32) as usize / 64];
+            let mid = (0.3 * sr as f32) as usize / 64;
+            let dip = env[mid..mid + 30].iter().cloned().fold(f32::MAX, f32::min);
+            let after = env[env.len() - 5];
+            println!("  closed fingering: held {held:.3}, between notes {dip:.4}, next note {after:.3}");
+            if dip > held * 0.1 || after < held * 0.5 {
+                fails.push("closed fingering gap".into());
+            }
+            tx.send(note(69, false)).unwrap();
+            tx.send(Cmd::Panic).unwrap();
+            p.pipe_closed.store(false, Relaxed);
+        }
+        p.pipe_mode.store(false, Relaxed);
+        fn engine_tables(v: u8) -> [f32; 8] {
+            crate::pipes::CHANTERS[v as usize].harm
+        }
+    }
+
     // UI events made it out
     let mut notes = 0;
     while let Ok(e) = urx.try_recv() {
@@ -811,5 +896,71 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
         Ok(())
     } else {
         Err(fails.join("; "))
+    }
+}
+
+/// Every bagpipe playing the same phrase over its own drones, one after another.
+fn pipe_demo(out: &str) {
+    let sr = 48000u32;
+    let p = Arc::new(Params::new());
+    let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
+    let (utx, _urx) = crossbeam_channel::bounded::<UiEvt>(1 << 20);
+    let mut eng = Engine::new(p.clone(), rx, utx, sr as f32, 8192);
+    if let Some(sf) = sounds::find_soundfonts().into_iter().next() {
+        if let Ok(l) = sounds::load_soundfont(&sf, sr) {
+            tx.send(Cmd::Synths(l.synths)).unwrap();
+        }
+    }
+    let mut wav = hound::WavWriter::create(out, hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 16, sample_format: hound::SampleFormat::Int }).unwrap();
+    let block = 256;
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut run = |secs: f32, eng: &mut Engine| {
+        for _ in 0..(secs * sr as f32) as usize / block {
+            eng.process(&mut l, &mut r);
+            for i in 0..block {
+                wav.write_sample((l[i] * 32767.0) as i16).unwrap();
+                wav.write_sample((r[i] * 32767.0) as i16).unwrap();
+            }
+        }
+    };
+    p.chanter_level.set(0.7);
+    p.drone_level.set(0.45);
+    p.pipe_just.store(true, Relaxed);
+    // degrees of the scale: up and home again
+    let phrase: [(i32, f32); 9] = [(0, 0.5), (2, 0.25), (4, 0.25), (5, 0.5), (7, 0.5), (5, 0.25), (4, 0.25), (2, 0.5), (0, 1.2)];
+    for (pi, closed) in [(0usize, false), (2, false), (1, false), (11, true), (3, false), (4, true)] {
+        let pp = &pipes::PIPES[pi];
+        println!("{:>5.1}s  {}", 0.0, pp.name);
+        p.chanter_voice.store(pi as u8, Relaxed);
+        p.pipe_tonic.store(pp.tonic, Relaxed);
+        p.drone_tone.store(pp.tone, Relaxed);
+        p.pipe_closed.store(closed, Relaxed);
+        for i in 0..13 {
+            p.drone_cents[i].store(i32::MIN, Relaxed);
+        }
+        for (i, d) in pp.drones.iter().enumerate() {
+            if d.2 {
+                p.drone_cents[i].store((pp.tonic as i32 + d.0 as i32) * 100, Relaxed);
+            }
+        }
+        p.drone_on.store(true, Relaxed);
+        p.pipe_mode.store(true, Relaxed);
+        run(0.8, &mut eng); // drones strike in
+        let mut prev: Option<u8> = None;
+        for (deg, len) in phrase {
+            let k = (pp.tonic as i32 + deg) as u8;
+            tx.send(Cmd::Midi([0x90, k, 100])).unwrap();
+            if let Some(pk) = prev {
+                tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+            }
+            prev = Some(k);
+            run(len * 0.75, &mut eng);
+        }
+        if let Some(pk) = prev {
+            tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+        }
+        p.drone_on.store(false, Relaxed);
+        tx.send(Cmd::Panic).unwrap();
+        run(0.9, &mut eng);
     }
 }

@@ -106,41 +106,107 @@ pub const PIPES: &[Pipe] = &[
         tone: 2,
         note: "Small, quiet Renaissance German pipe (after Praetorius). Reconstructions vary.",
     },
+    Pipe {
+        name: "Leicestershire smallpipes",
+        tonic: 62,
+        drones: &[(-12, "Tenor", true), (-24, "Bass", true), (-5, "Fifth", false)],
+        scale: "Major (Ionian)",
+        tone: 2,
+        note: "Set in D. Drone tunings vary by maker — switch and retune them to match yours.",
+    },
 ];
 
 /// Synthesised chanter voice per pipe type (same order as PIPES).
+///
+/// The tone is built from harmonic levels, in dB relative to the fundamental, for
+/// harmonics 1–8, then a steady fall-off. Where marked "measured", the levels follow
+/// K. & S. MacAdam, "Tone quality and harmonics of bagpipes, flutes and whistles"
+/// (2013), which measured sustained notes across each chanter's range:
+///   Highland — 3rd, 4th and 5th harmonics ~15 dB over the fundamental, no odd/even pattern
+///   Border — 2nd to 6th 5–10 dB over the fundamental, then a steady decline
+///   Uilleann — 1st octave: 2nd ~13 dB over, then ~3 dB less per harmonic;
+///              2nd octave: fundamental and 3rd strongest, ~5 dB less per harmonic after
+///   Northumbrian — odd harmonics 10–15 dB over the even ones; 1st, 3rd, 5th about equal
+///   Scottish smallpipes — 3rd, 5th, 7th ~13 dB over the fundamental, the weakest of the eight
+/// The rest are estimates from their bore (conical: all harmonics; cylindrical: odd ones
+/// strong) and reports of loudness, not measurements.
 #[derive(Clone, Copy)]
 pub struct Chanter {
-    /// cylindrical bore = odd harmonics (hollow/buzzy); conical = all harmonics (bright/brassy)
+    /// cylindrical bore: loudest at the top of the hand; conical: loudest at the bottom
+    /// (Common Stock, LBPS, "Dynamics in piping", 2001)
     pub cylindrical: bool,
-    /// overall brightness (lowpass, Hz)
-    pub bright: f32,
-    /// two resonances (Hz) and their strength
-    pub f1: f32,
-    pub g1: f32,
-    pub f2: f32,
-    pub g2: f32,
+    /// harmonics 1–8, dB relative to the fundamental
+    pub harm: [f32; 8],
+    /// second octave, where it differs (uilleann)
+    pub harm_hi: Option<[f32; 8]>,
+    /// dB lost per harmonic above the 8th
+    pub tail: f32,
+    /// reed noise
     pub noise: f32,
+    /// loudness relative to the Highland chanter
     pub level: f32,
+    pub measured: bool,
 }
 
-const fn ch(cylindrical: bool, bright: f32, f1: f32, g1: f32, f2: f32, g2: f32, noise: f32, level: f32) -> Chanter {
-    Chanter { cylindrical, bright, f1, g1, f2, g2, noise, level }
+const fn ch(cylindrical: bool, harm: [f32; 8], tail: f32, noise: f32, level: f32, measured: bool) -> Chanter {
+    Chanter { cylindrical, harm, harm_hi: None, tail, noise, level, measured }
 }
 
-pub const CHANTERS: [Chanter; 11] = [
-    ch(false, 6000.0, 1350.0, 1.1, 3000.0, 0.8, 0.020, 1.00), // Great Highland: loud, brassy
-    ch(true, 3200.0, 950.0, 0.8, 2200.0, 0.4, 0.010, 0.60),   // Scottish smallpipes: soft, hollow
-    ch(false, 4200.0, 1150.0, 0.9, 2500.0, 0.6, 0.014, 0.80), // Border: between the two
-    ch(false, 3800.0, 1000.0, 0.8, 2300.0, 0.5, 0.012, 0.65), // Uilleann: sweet, rounded
-    ch(true, 2700.0, 820.0, 0.6, 1900.0, 0.3, 0.006, 0.50),   // Northumbrian: quiet, pure
-    ch(false, 5200.0, 1450.0, 1.0, 3100.0, 0.7, 0.016, 0.95), // Galician gaita: bright, strong
-    ch(false, 5000.0, 1400.0, 1.0, 2900.0, 0.7, 0.016, 0.95), // Asturian gaita
-    ch(false, 7000.0, 1900.0, 1.1, 3800.0, 0.9, 0.022, 0.90), // Breton biniou: piercing
-    ch(true, 4200.0, 1250.0, 0.9, 2800.0, 0.6, 0.024, 0.85),  // Bulgarian gaida: buzzy single reed
-    ch(true, 4600.0, 1150.0, 0.9, 2600.0, 0.7, 0.020, 0.90),  // Medieval market pipes: raw, buzzy
-    ch(true, 2600.0, 820.0, 0.6, 1800.0, 0.3, 0.008, 0.45),   // Hümmelchen: small and soft
+pub const CHANTERS: [Chanter; 12] = [
+    // Great Highland: 3rd–5th ~15 dB over the fundamental, loud
+    ch(false, [0.0, 10.0, 15.0, 15.0, 15.0, 11.0, 8.0, 5.0], 3.0, 0.020, 1.00, true),
+    // Scottish smallpipes: odd harmonics ~13 dB up, fundamental weakest; quiet
+    ch(true, [0.0, 3.0, 13.0, 3.0, 13.0, 3.0, 13.0, 2.0], 4.0, 0.010, 0.55, true),
+    // Border: 2nd–6th 5–10 dB up, then steady decline
+    ch(false, [0.0, 8.0, 9.0, 6.0, 8.0, 6.0, 3.0, 0.0], 3.5, 0.014, 0.80, true),
+    // Uilleann: 1st octave 2nd ~13 dB up then −3 dB/harmonic; 2nd octave below
+    Chanter {
+        cylindrical: false,
+        harm: [0.0, 13.0, 10.0, 7.0, 4.0, 1.0, -2.0, -5.0],
+        harm_hi: Some([0.0, -2.0, 0.0, -5.0, -10.0, -15.0, -20.0, -25.0]),
+        tail: 3.0,
+        noise: 0.010,
+        level: 0.65,
+        measured: true,
+    },
+    // Northumbrian: odd 10–15 dB over even, 1st/3rd/5th about equal; quiet, pure
+    ch(true, [0.0, -12.0, 0.0, -12.0, -1.0, -14.0, -4.0, -16.0], 5.0, 0.006, 0.45, true),
+    // Galician gaita (estimate): conical, bright and strong
+    ch(false, [0.0, 9.0, 13.0, 12.0, 11.0, 9.0, 7.0, 4.0], 3.0, 0.016, 0.95, false),
+    // Asturian gaita (estimate)
+    ch(false, [0.0, 8.0, 12.0, 12.0, 10.0, 8.0, 5.0, 2.0], 3.0, 0.016, 0.95, false),
+    // Breton biniou kozh (estimate): very high, piercing
+    ch(false, [0.0, 6.0, 8.0, 6.0, 3.0, 0.0, -3.0, -6.0], 4.0, 0.022, 0.90, false),
+    // Bulgarian gaida (estimate): cylindrical, buzzy single reed
+    ch(true, [0.0, 4.0, 12.0, 5.0, 11.0, 5.0, 9.0, 4.0], 3.5, 0.024, 0.80, false),
+    // Medieval market pipes (estimate): raw, buzzy
+    ch(true, [0.0, 5.0, 12.0, 6.0, 10.0, 5.0, 8.0, 3.0], 3.5, 0.020, 0.90, false),
+    // Hümmelchen (estimate): small and soft
+    ch(true, [0.0, -6.0, 4.0, -8.0, 2.0, -10.0, -2.0, -12.0], 6.0, 0.008, 0.45, false),
+    // Leicestershire smallpipes (estimate from the Scottish smallpipe measurement): cylindrical,
+    // slightly conical lower half — a little more even-harmonic body
+    ch(true, [0.0, 5.0, 12.0, 5.0, 12.0, 4.0, 10.0, 2.0], 4.5, 0.010, 0.55, false),
 ];
+
+/// One cycle's harmonic amplitudes (linear, fundamental = 1) for `voice` at `freq`,
+/// up to the band limit. `upper` = the chanter's second octave.
+pub fn harmonics(voice: usize, freq: f32, sr: f32, upper: bool, out: &mut Vec<f32>) {
+    let v = &CHANTERS[voice.min(CHANTERS.len() - 1)];
+    let table = if upper { v.harm_hi.unwrap_or(v.harm) } else { v.harm };
+    out.clear();
+    let n_max = ((0.45 * sr / freq.max(20.0)) as usize).clamp(1, 160);
+    for n in 1..=n_max {
+        let db = if n <= 8 { table[n - 1] } else { table[7] - v.tail * (n - 8) as f32 };
+        // a gentle top end: nothing a real chanter radiates much above ~9 kHz
+        let f = freq * n as f32;
+        let air = if f > 9000.0 { -12.0 * ((f - 9000.0) / 3000.0) } else { 0.0 };
+        let a = 10f32.powf((db + air) / 20.0);
+        if a < 1e-4 && n > 8 {
+            break;
+        }
+        out.push(a);
+    }
+}
 
 /// Shruti box drone patterns: semitones relative to Sa.
 pub const SHRUTI: &[(&str, &[i8])] = &[

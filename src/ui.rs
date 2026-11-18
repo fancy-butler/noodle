@@ -200,6 +200,8 @@ pub struct App {
     /// the song as loaded, before any key change
     song_base: Option<Arc<Song>>,
     omr: crate::omr::Fetcher,
+    /// the bagpipe module was switched on by picking a bagpipe chart (not by you)
+    pipe_auto: bool,
     /// semitones the song is moved from its written key
     song_key: i32,
     song_files: Vec<PathBuf>,
@@ -581,6 +583,7 @@ impl App {
             song: None,
             song_base: None,
             omr: Default::default(),
+            pipe_auto: false,
             song_key: 0,
             song_files: sounds::find_songs(),
             song_err: None,
@@ -2340,6 +2343,7 @@ impl App {
     fn select_pipe(&mut self, i: usize) {
         let pp = &crate::pipes::PIPES[i.min(crate::pipes::PIPES.len() - 1)];
         self.s.pipe_idx = i;
+        self.s.pipe_closed = false;
         if let Some(c) = crate::fingering::chart_for_pipe(i) {
             self.s.fing_idx = c;
         }
@@ -2352,6 +2356,7 @@ impl App {
     }
 
     fn set_drone_mode(&mut self, m: u8) {
+        self.pipe_auto = false;
         if self.s.drone_mode == 1 && m != 1 {
             let _ = self.tx.send(Cmd::Panic); // leaving bagpipes: make sure the chanter stops
         }
@@ -2434,6 +2439,7 @@ impl App {
         p.pipe_just.store(self.s.pipe_just, Relaxed);
         p.pipe_tune.store(self.s.pipe_tune, Relaxed);
         p.pipe_continuous.store(self.s.pipe_cont, Relaxed);
+        p.pipe_closed.store(self.s.pipe_closed || self.s.pipe_idx == 4, Relaxed);
         p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
     }
@@ -2622,7 +2628,12 @@ impl App {
             _ => {
                 // what are we emulating? the bagpipe module wins, then the sound's name
                 let want = if self.s.drone_mode == 1 {
-                    crate::fingering::chart_for_pipe(self.s.pipe_idx).map(|c| (c, 0))
+                    // the chart you're on if it's for this pipe (open or covered), else the pipe's own
+                    if crate::fingering::pipe_for_chart(self.s.fing_idx) == Some(self.s.pipe_idx) {
+                        Some((self.s.fing_idx, self.s.fing_tr))
+                    } else {
+                        crate::fingering::chart_for_pipe(self.s.pipe_idx).map(|c| (c, 0))
+                    }
                 } else {
                     crate::fingering::chart_for_sound(&self.preset_name(self.s.main))
                 };
@@ -5078,57 +5089,143 @@ impl App {
             return;
         }
         let c = self.s.fing_idx.min(crate::fingering::CHARTS.len() - 1);
-        if !self.s.keep_sound && self.s.drone_mode != 1 {
-            let bp = self.best_sound(crate::fingering::gm_for_chart(c, self.s.fing_tr));
-            if crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).map(|x| x.0) != Some(c) {
-                self.set_preset(false, bp);
-            }
-        }
+        let t = self.s.fing_tr;
+        self.apply_chart_sound(c, t);
         // the chart stays what you picked even if the sound's own name points elsewhere
         // (a sopilka chart on the GM recorder sound, say); with a sound that has no chart
         // at all (kept your piano) the pane switches to always-on so it doesn't vanish
-        if crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).is_none() && self.s.fing_mode == 0 {
+        if crate::fingering::chart_for_sound(&self.preset_name(self.s.main)).is_none() && self.s.drone_mode != 1 && self.s.fing_mode == 0 {
             self.s.fing_mode = 1;
         }
         self.fing_auto_key = format!("{:?}{:?}", self.s.main, crate::fingering::chart_for_sound(&self.preset_name(self.s.main)));
     }
 
+    /// The sound you chose for this chart, if you chose one.
+    fn chart_sound_pick(&self, c: usize) -> Option<(i32, i32)> {
+        let n = crate::fingering::CHARTS.get(c)?.name;
+        self.s.chart_sounds.iter().find(|x| x.0 == n).map(|x| (x.1, x.2)).filter(|bp| self.presets.iter().any(|p| (p.bank, p.prog) == *bp))
+    }
+
+    fn remember_chart_sound(&mut self, c: usize, bp: Option<(i32, i32)>) {
+        let n = crate::fingering::CHARTS[c.min(crate::fingering::CHARTS.len() - 1)].name.to_string();
+        self.s.chart_sounds.retain(|x| x.0 != n);
+        if let Some(bp) = bp {
+            self.s.chart_sounds.push((n, bp.0, bp.1));
+        }
+    }
+
+    /// Put on the chart's sound: the one you picked for it before; else for bagpipe charts the
+    /// modelled pipe, for the rest the recorded instrument if downloaded (General MIDI otherwise).
+    /// Nothing changes with "Keep my own sound", or while you run the bagpipe module yourself.
+    fn apply_chart_sound(&mut self, c: usize, t: usize) {
+        use crate::fingering::{chart_for_sound, chart_is_closed, gm_for_chart, pipe_for_chart};
+        if self.s.keep_sound {
+            return;
+        }
+        let picked = self.chart_sound_pick(c);
+        if let (Some(pi), None) = (pipe_for_chart(c), picked) {
+            if self.s.drone_mode != 1 {
+                self.pipe_auto = true;
+                self.s.drone_mode = 1; // chanter on; the drones wait for STRIKE IN
+            }
+            if self.pipe_auto || self.s.pipe_idx != pi {
+                let keep = (self.s.fing_idx, self.s.fing_tr);
+                if self.s.pipe_idx != pi {
+                    self.select_pipe(pi);
+                }
+                self.s.fing_idx = keep.0;
+                self.s.fing_tr = keep.1;
+            }
+            self.s.pipe_closed = chart_is_closed(c);
+            return;
+        }
+        if self.s.drone_mode == 1 {
+            if !self.pipe_auto {
+                return; // your own bagpipe session: leave it alone
+            }
+            self.set_drone_mode(0);
+            self.pipe_auto = false;
+        }
+        let bp = match picked {
+            Some(bp) => bp,
+            None => {
+                if chart_for_sound(&self.preset_name(self.s.main)) == Some((c, t)) {
+                    return; // already on a sound for this very instrument and key
+                }
+                self.best_sound(gm_for_chart(c, t))
+            }
+        };
+        if bp != self.s.main {
+            self.set_preset(false, bp);
+        }
+    }
+
     /// Under the chart: the sounds for this instrument, one click each, plus "keep my own sound".
     fn chart_sound_row(&mut self, ui: &mut egui::Ui, idx: usize) {
-        use crate::fingering::{chart_for_sound, gm_for_chart, CHARTS};
+        use crate::fingering::{chart_for_sound, gm_for_chart, pipe_for_chart};
         let gm = gm_for_chart(idx, self.s.fing_tr);
         let mut opts: Vec<(i32, i32)> = self.presets.iter().filter(|p| chart_for_sound(&p.name).map(|x| x.0) == Some(idx)).map(|p| (p.bank, p.prog)).collect();
         if !opts.contains(&(0, gm)) && self.presets.iter().any(|p| (p.bank, p.prog) == (0, gm)) {
             opts.insert(0, (0, gm));
         }
+        let pipe = pipe_for_chart(idx);
+        let on_pipe = pipe.is_some() && self.s.drone_mode == 1 && Some(self.s.pipe_idx) == pipe;
         let cur = self.s.main;
-        let mut pick = None;
+        // None = the modelled pipe
+        let mut pick: Option<Option<(i32, i32)>> = None;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
-            let on_inst = opts.contains(&cur);
-            let label = if on_inst { self.preset_name(cur) } else { format!("{} (your own)", self.preset_name(cur)) };
-            egui::ComboBox::from_id_salt("chart_sound").selected_text(label).width(190.0).show_ui(ui, |ui| {
+            let label = if on_pipe {
+                format!("Modelled {}", crate::pipes::PIPES[self.s.pipe_idx].name)
+            } else if opts.contains(&cur) {
+                self.preset_name(cur)
+            } else {
+                format!("{} (your own)", self.preset_name(cur))
+            };
+            egui::ComboBox::from_id_salt("chart_sound").selected_text(label).width(220.0).show_ui(ui, |ui| {
+                if let Some(pi) = pipe {
+                    if ui
+                        .selectable_label(on_pipe, format!("★ Modelled {}", crate::pipes::PIPES[pi].name))
+                        .on_hover_text("This pipe's own chanter, built from measurements of real ones; drones from the Drone panel (STRIKE IN)")
+                        .clicked()
+                    {
+                        pick = Some(None);
+                    }
+                }
                 for bp in &opts {
                     let rec = bp.0 >= sounds::SAMPLE_BANK;
                     let name = format!("{}{}", if rec { "★ " } else { "" }, self.preset_name(*bp));
-                    if ui.selectable_label(*bp == cur, name).on_hover_text(if rec { "Recorded instrument" } else { "From the sound bank" }).clicked() {
-                        pick = Some(*bp);
+                    if ui.selectable_label(!on_pipe && *bp == cur, name).on_hover_text(if rec { "Recorded instrument" } else { "From the sound bank" }).clicked() {
+                        pick = Some(Some(*bp));
                     }
                 }
-                if opts.is_empty() {
+                if opts.is_empty() && pipe.is_none() {
                     ui.label(RichText::new("No sound named for this instrument").color(text_dim()));
                 }
                 ui.separator();
-                ui.label(RichText::new("Any other sound: pick it in the sound box at the top").size(11.5).color(text_dim()));
+                ui.label(RichText::new("Whatever you pick here sticks to this instrument").size(11.5).color(text_dim()));
             });
             let mut keep = self.s.keep_sound;
             if ui.checkbox(&mut keep, "Keep my own sound").on_hover_text("Picking a chart leaves the sound alone").changed() {
                 self.s.keep_sound = keep;
             }
-            let _ = CHARTS.len();
         });
-        if let Some(bp) = pick {
-            self.set_preset(false, bp);
+        if let Some(p) = pick {
+            // locks this instrument's sound: next time you pick the chart, this is what you get
+            match p {
+                None => self.remember_chart_sound(idx, None),
+                Some(bp) => {
+                    if pipe.is_some() || Some(bp) != Some(self.best_sound(gm)) {
+                        self.remember_chart_sound(idx, Some(bp));
+                    } else {
+                        self.remember_chart_sound(idx, None);
+                    }
+                }
+            }
+            let keep = self.s.keep_sound;
+            self.s.keep_sound = false;
+            self.apply_chart_sound(idx, self.s.fing_tr);
+            self.s.keep_sound = keep;
             self.fing_auto_key = format!("{:?}{:?}", self.s.main, chart_for_sound(&self.preset_name(self.s.main)));
         }
     }
@@ -5155,6 +5252,10 @@ impl App {
                 self.s.kb_inst = None;
                 self.s.fing_any = true;
                 self.fing_auto_key.clear();
+                if self.pipe_auto && self.s.drone_mode == 1 {
+                    self.set_drone_mode(0);
+                    self.pipe_auto = false;
+                }
                 // put back the sound you had, unless you've picked another since
                 if let (Some(prev), Some(set)) = (self.play_prev, self.play_set) {
                     if self.s.main == set {
@@ -5167,18 +5268,10 @@ impl App {
         }
     }
 
-    /// Switch to the instrument's own sound (unless "keep my sound", or the bagpipe module is playing).
+    /// Switch to the instrument's own sound (unless "keep my sound", or your own bagpipe session).
     fn play_sound(&mut self) {
-        if self.s.keep_sound || self.s.drone_mode == 1 {
-            return;
-        }
         let (c, t) = self.play_seen;
-        let bp = self.best_sound(crate::fingering::gm_for_chart(c, t));
-        // already on a sound for this very instrument and key (e.g. a recorded flute you chose)? keep it
-        let same = crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) == Some((c, t));
-        if !same && bp != self.s.main {
-            self.set_preset(false, bp);
-        }
+        self.apply_chart_sound(c, t);
         self.play_set = Some(self.s.main);
     }
 
@@ -5189,7 +5282,9 @@ impl App {
         }
         let now = (self.s.fing_idx.min(crate::fingering::CHARTS.len() - 1), self.s.fing_tr);
         if now != self.play_seen {
-            let sound_changes = crate::fingering::gm_for_chart(now.0, now.1) != crate::fingering::gm_for_chart(self.play_seen.0, self.play_seen.1);
+            let sound_changes = crate::fingering::gm_for_chart(now.0, now.1) != crate::fingering::gm_for_chart(self.play_seen.0, self.play_seen.1)
+                || crate::fingering::pipe_for_chart(now.0) != crate::fingering::pipe_for_chart(self.play_seen.0)
+                || self.chart_sound_pick(now.0).is_some();
             self.play_seen = now;
             self.s.kb_inst = Some(crate::fingering::CHARTS[now.0].name.to_string());
             self.s.kb_inst_tr = now.1;
@@ -5263,10 +5358,12 @@ impl App {
                     }
                 }
             } else {
-                let hint = match crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) {
+                let hint = if self.s.drone_mode == 1 && !self.acc_mode {
+                    format!("Keys play the modelled {} chanter (the sound box above is resting). Drones: STRIKE IN on the Drone panel.", crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name)
+                } else { match crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) {
                     Some((c, _)) => format!("Every key sounds. This sound has a {} chart: fingerings show, an octave in where needed.", CHARTS[c].name.split(" (").next().unwrap_or("").to_lowercase()),
                     None => "Every key sounds, any sound: a regular synth. Pick Real instrument for a whistle, sax, flute… range with live fingerings.".into(),
-                };
+                } };
                 ui.label(RichText::new(hint).size(12.5).color(text_dim()));
             }
         });
@@ -5434,6 +5531,14 @@ impl eframe::App for App {
                         self.load_abc(&t);
                         let k = std::env::var("NOODLE_SONG_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                         self.set_song_key(k);
+                    }
+                }
+                if let Ok(f) = std::env::var("NOODLE_PICK_CHART") {
+                    // screenshots/tests: pick a chart as if from the fingering pane
+                    if let Some(i) = crate::fingering::CHARTS.iter().position(|c| c.name.starts_with(f.as_str())) {
+                        self.s.fing_idx = i;
+                        self.s.fing_tr = 0;
+                        self.chart_picked();
                     }
                 }
                 if std::env::var("NOODLE_OCARINA").is_ok() {

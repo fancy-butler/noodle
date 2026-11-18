@@ -222,6 +222,8 @@ pub struct Params {
     pub pipe_just: AtomicBool,
     pub pipe_tune: AtomicI32, // cents
     pub pipe_continuous: AtomicBool,
+    /// closed fingering (Northumbrian, covered smallpipes): a short silence between notes
+    pub pipe_closed: AtomicBool,
     // harmonium: one key → chord in the current scale
     pub chord_on: AtomicBool,
     pub chord_kind: AtomicU8,
@@ -322,6 +324,7 @@ impl Params {
             pipe_just: AtomicBool::new(true),
             pipe_tune: AtomicI32::new(0),
             pipe_continuous: AtomicBool::new(false),
+            pipe_closed: AtomicBool::new(false),
             chord_on: AtomicBool::new(false),
             chord_kind: AtomicU8::new(0),
         }
@@ -392,16 +395,114 @@ struct DroneVoice {
     cents: i32,
 }
 
-#[derive(Clone, Copy, Default)]
+const CH_TAB: usize = 2048;
+const CH_CACHE: usize = 16;
+
+/// Chanter: one wavetable per (pipe, note, octave), built from the pipe's harmonic levels.
 struct ChanterVoice {
     phase: f64,
     cents: f64,
     target_cents: f64,
     gain: f32,
     target: f32,
-    lp: f32,
-    f1: [f32; 2],
-    f2: [f32; 2],
+    /// the note whose table should be playing
+    key: u8,
+    /// cache: tables and what each one is for (voice, key, upper octave)
+    tabs: Vec<Vec<f32>>,
+    tab_for: [Option<(u8, u8, bool)>; CH_CACHE],
+    tab_age: [u32; CH_CACHE],
+    age: u32,
+    cur: usize,
+    old: usize,
+    /// crossfade from the old table, 1 → 0
+    xf: f32,
+    jit: f32,
+    jit2: f32,
+    shimmer: f32,
+    level_note: f32,
+    harm: Vec<f32>,
+    /// samples of silence left (closed fingering between notes)
+    gap: u32,
+}
+
+impl Default for ChanterVoice {
+    fn default() -> Self {
+        ChanterVoice {
+            phase: 0.0,
+            cents: 6900.0,
+            target_cents: 6900.0,
+            gain: 0.0,
+            target: 0.0,
+            key: 69,
+            tabs: vec![vec![0.0; CH_TAB + 1]; CH_CACHE],
+            tab_for: [None; CH_CACHE],
+            tab_age: [0; CH_CACHE],
+            age: 0,
+            cur: 0,
+            old: 0,
+            xf: 0.0,
+            jit: 0.0,
+            jit2: 0.0,
+            shimmer: 1.0,
+            level_note: 1.0,
+            harm: Vec::with_capacity(200),
+            gap: 0,
+        }
+    }
+}
+
+impl ChanterVoice {
+    /// Table index for this voice and note: from the cache, or built now (well under a millisecond).
+    fn table(&mut self, voice: u8, key: u8, upper: bool, sr: f32) -> usize {
+        self.age = self.age.wrapping_add(1);
+        let want = Some((voice, key, upper));
+        if let Some(i) = self.tab_for.iter().position(|t| *t == want) {
+            self.tab_age[i] = self.age;
+            return i;
+        }
+        // reuse the least recently used slot that isn't sounding
+        let mut slot = 0;
+        let mut best = u32::MAX;
+        for i in 0..CH_CACHE {
+            if i == self.cur || i == self.old {
+                continue;
+            }
+            let a = if self.tab_for[i].is_none() { 0 } else { self.tab_age[i] };
+            if a < best {
+                best = a;
+                slot = i;
+            }
+        }
+        let freq = 440.0 * 2f32.powf((key as f32 - 69.0) / 12.0);
+        let mut harm = std::mem::take(&mut self.harm);
+        crate::pipes::harmonics(voice as usize, freq, sr, upper, &mut harm);
+        let t = &mut self.tabs[slot];
+        t.iter_mut().for_each(|x| *x = 0.0);
+        let mut pow = 0.0f32;
+        for (i, a) in harm.iter().enumerate() {
+            let n = (i + 1) as f32;
+            pow += a * a;
+            // fixed, spread-out phases: a reed's waveform, not a buzz-saw spike
+            let ph = n * n * 0.71;
+            let w = std::f32::consts::TAU * n / CH_TAB as f32;
+            // rotate a phasor instead of calling sin() for every sample
+            let (mut sn, mut cs) = ph.sin_cos();
+            let (ds, dc) = w.sin_cos();
+            for x in t.iter_mut().take(CH_TAB) {
+                *x += a * sn;
+                let ns = sn * dc + cs * ds;
+                cs = cs * dc - sn * ds;
+                sn = ns;
+            }
+        }
+        let norm = 1.0 / pow.max(1e-6).sqrt();
+        t.iter_mut().take(CH_TAB).for_each(|x| *x *= norm);
+        t[CH_TAB] = t[0];
+        self.harm = harm;
+        self.tab_for[slot] = want;
+        self.tab_age[slot] = self.age;
+        slot
+    }
 }
 
 #[inline]
@@ -1164,8 +1265,13 @@ impl Engine {
         if self.ch.gain < 0.02 {
             self.ch.cents = cents; // fresh start: no glide in
         }
+        if self.p.pipe_closed.load(Relaxed) && self.ch.gain > 0.05 && self.ch.key != key {
+            // the chanter closes between notes: a brief silence, then the new note
+            self.ch.gap = (0.022 * self.sr) as u32;
+        }
         self.ch.target_cents = cents;
         self.ch.target = 1.0;
+        self.ch.key = key;
         self.chanter = key as i16;
     }
 
@@ -1197,67 +1303,74 @@ impl Engine {
         self.pipe_n = 0;
     }
 
-    /// Synthesised chanter: bore type (conical saw-rich vs cylindrical odd-harmonic),
-    /// two formant resonances, brightness, breath noise — per pipe type.
+    /// Synthesised chanter: a wavetable per note from the pipe's measured harmonic levels
+    /// (pipes::CHANTERS), with slight reed jitter, reed noise and the bore's loudness curve.
     fn render_chanter(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         if self.ch.gain < 1e-4 && self.ch.target == 0.0 {
             return;
         }
-        let v = crate::pipes::CHANTERS[(self.p.chanter_voice.load(Relaxed) as usize).min(crate::pipes::CHANTERS.len() - 1)];
+        let vi = (self.p.chanter_voice.load(Relaxed) as usize).min(crate::pipes::CHANTERS.len() - 1);
+        let v = crate::pipes::CHANTERS[vi];
         let level = self.p.chanter_level.get().clamp(0.0, 1.0) * v.level * 0.2;
         let sr = self.sr;
-        let a_lp = {
-            let g = (std::f32::consts::PI * v.bright / sr).tan();
-            g / (1.0 + g)
-        };
-        let svf = |f: f32, q: f32| {
-            let g = (std::f32::consts::PI * (f / sr).min(0.45)).tan();
-            let k = 1.0 / q;
-            (g, k, 1.0 / (1.0 + g * (g + k)))
-        };
-        let (g1, k1, a1) = svf(v.f1, 4.0);
-        let (g2, k2, a2) = svf(v.f2, 5.0);
-        let att = 1.0 - (-1.0 / (0.004 * sr)).exp();
-        let rel = 1.0 - (-1.0 / (0.05 * sr)).exp();
-        let glide = 1.0 - (-1.0 / (0.0015 * sr as f64)).exp();
-        let ch = &mut self.ch;
-        for i in 0..out_l.len() {
-            ch.gain += (ch.target - ch.gain) * if ch.target > ch.gain { att } else { rel };
-            ch.cents += (ch.target_cents - ch.cents) * glide;
-            let f = 440.0 * 2f64.powf((ch.cents - 6900.0) / 1200.0);
-            let dt = f / sr as f64;
-            ch.phase += dt;
-            if ch.phase >= 1.0 {
-                ch.phase -= 1.0;
+        let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
+        // the note's table (new note → crossfade from the last one, a few ms)
+        let key = self.ch.key;
+        let upper = v.harm_hi.is_some() && key as i32 >= tonic + 12;
+        let want = Some((vi as u8, key, upper));
+        if self.ch.tab_for[self.ch.cur] != want {
+            let t = self.ch.table(vi as u8, key, upper, sr);
+            if self.ch.gain > 1e-3 {
+                self.ch.old = self.ch.cur;
+                self.ch.xf = 1.0;
             }
-            let saw = 2.0 * ch.phase - 1.0 - polyblep(ch.phase, dt);
-            let wave = if v.cylindrical {
-                // square-ish: odd harmonics, hollow and buzzy
-                let mut p2 = ch.phase + 0.5;
-                if p2 >= 1.0 {
-                    p2 -= 1.0;
-                }
-                (saw - (2.0 * p2 - 1.0 - polyblep(p2, dt))) * 0.5
+            self.ch.cur = t;
+        }
+        // cylindrical chanters are loudest up the hand, conical ones at the bottom: ±2.5 dB an octave
+        let rel = ((key as i32 - tonic) as f32 / 12.0).clamp(-1.0, 1.5);
+        let slope_db = if v.cylindrical { 2.5 * rel } else { -2.5 * rel };
+        let want_lvl = 10f32.powf(slope_db / 20.0);
+        let att = 1.0 - (-1.0 / (0.004 * sr)).exp();
+        let rel_c = 1.0 - (-1.0 / (0.05 * sr)).exp();
+        let glide = 1.0 - (-1.0 / (0.0015 * sr as f64)).exp();
+        let xf_step = 1.0 / (0.004 * sr);
+        let gap_a = 1.0 - (-1.0 / (0.003 * sr)).exp();
+        let jit_a = 1.0 - (-std::f32::consts::TAU * 6.0 / sr).exp();
+        let ch = &mut self.ch;
+        let (cur, old) = (ch.cur, ch.old);
+        for i in 0..out_l.len() {
+            if ch.gap > 0 {
+                ch.gap -= 1;
+                ch.gain += (0.0 - ch.gain) * gap_a;
             } else {
-                saw
-            };
+                ch.gain += (ch.target - ch.gain) * if ch.target > ch.gain { att } else { rel_c };
+            }
+            ch.cents += (ch.target_cents - ch.cents) * glide;
+            ch.level_note += (want_lvl - ch.level_note) * 0.002;
             self.noise ^= self.noise << 13;
             self.noise ^= self.noise >> 17;
             self.noise ^= self.noise << 5;
-            let x = wave as f32 + ((self.noise as f32 / u32::MAX as f32) - 0.5) * v.noise;
-            ch.lp += a_lp * (x - ch.lp);
-            let bp = |st: &mut [f32; 2], g: f32, k: f32, a: f32, x: f32| {
-                let v3 = x - st[1];
-                let v1 = a * st[0] + g * a * v3;
-                let v2 = st[1] + g * v1;
-                st[0] = 2.0 * v1 - st[0];
-                st[1] = 2.0 * v2 - st[1];
-                let _ = k;
-                v1
-            };
-            let b1 = bp(&mut ch.f1, g1, k1, a1, x);
-            let b2 = bp(&mut ch.f2, g2, k2, a2, x);
-            let y = (ch.lp * 0.45 + b1 * v.g1 + b2 * v.g2) * ch.gain * level;
+            let wn = (self.noise as f32 / u32::MAX as f32) - 0.5;
+            // reed jitter: a few cents of slow wander, a touch of amplitude shimmer
+            ch.jit += (wn - ch.jit) * jit_a;
+            ch.jit2 += (ch.jit - ch.jit2) * jit_a;
+            let f = 440.0 * 2f64.powf((ch.cents + ch.jit2 as f64 * 40.0 - 6900.0) / 1200.0);
+            ch.phase += f / sr as f64;
+            if ch.phase >= 1.0 {
+                ch.phase -= 1.0;
+            }
+            let pos = ch.phase as f32 * CH_TAB as f32;
+            let j = pos as usize;
+            let fr = pos - j as f32;
+            let rd = |t: &Vec<f32>| t[j] + (t[j + 1] - t[j]) * fr;
+            let mut w = rd(&ch.tabs[cur]);
+            if ch.xf > 0.0 {
+                w = w * (1.0 - ch.xf) + rd(&ch.tabs[old]) * ch.xf;
+                ch.xf = (ch.xf - xf_step).max(0.0);
+            }
+            // reed noise rides on the waveform (it's chopped by the reed closing)
+            let x = w * (1.0 + ch.jit2 * 0.15) + wn * v.noise * 6.0 * (0.4 + 0.6 * w.abs());
+            let y = x * ch.gain * level * ch.level_note;
             out_l[i] += y;
             out_r[i] += y;
         }

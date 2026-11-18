@@ -799,12 +799,35 @@ pub fn chart_for_sound(name: &str) -> Option<(usize, usize)> {
 }
 
 pub fn chart_for_pipe(pipe: usize) -> Option<usize> {
-    match pipe {
-        0 => Some(0), // Great Highland
-        1 => Some(1), // Scottish smallpipes
-        3 => Some(4), // Uilleann
-        _ => None,
+    let name = match pipe {
+        0 => "Great Highland chanter",
+        1 => "Scottish smallpipes",
+        3 => "Uilleann chanter",
+        11 => "Leicestershire smallpipes (covered)",
+        _ => return None,
+    };
+    CHARTS.iter().position(|c| c.name == name)
+}
+
+/// The modelled bagpipe (pipes::PIPES index) that a chart's sound is.
+pub fn pipe_for_chart(chart: usize) -> Option<usize> {
+    let n = CHARTS.get(chart)?.name;
+    if n.starts_with("Great Highland") {
+        Some(0)
+    } else if n.starts_with("Scottish smallpipes") {
+        Some(1)
+    } else if n.starts_with("Uilleann") {
+        Some(3)
+    } else if n.starts_with("Leicestershire") {
+        Some(11)
+    } else {
+        None
     }
+}
+
+/// Closed (covered) fingering: the chanter is stopped between notes, so they come out detached.
+pub fn chart_is_closed(chart: usize) -> bool {
+    CHARTS.get(chart).map(|c| c.name.contains("(covered)")).unwrap_or(false)
 }
 
 #[cfg(test)]
