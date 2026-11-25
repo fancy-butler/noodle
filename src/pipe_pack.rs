@@ -167,9 +167,10 @@ pub fn prepare(mut l: Vec<f32>, mut r: Vec<f32>, rate: u32, nominal: f32) -> Res
     let le = best.1;
     // bake a 60 ms crossfade: the end of the loop fades into what comes just before its start
     let xf = (rate as f32 * 0.06) as usize;
+    // through le itself: the last sample before the wrap becomes the one just before ls
     for i in 0..xf {
-        let t = i as f32 / xf as f32;
-        let (a, b) = (le - xf + i, ls - xf + i);
+        let t = (i + 1) as f32 / xf as f32;
+        let (a, b) = (le + 1 - xf + i, ls + 1 - xf + i - 1);
         l[a] = l[a] * (1.0 - t) + l[b] * t;
         r[a] = r[a] * (1.0 - t) + r[b] * t;
     }
@@ -308,7 +309,7 @@ mod tests {
             let mut rd = hound::WavReader::open(out.join("samples").join(&file)).unwrap();
             let l: Vec<i32> = rd.samples::<i16>().step_by(2).map(|v| v.unwrap() as i32).collect();
             let step = (ls..ls + 4000).map(|i| (l[i + 1] - l[i]).abs()).sum::<i32>() as f32 / 4000.0;
-            let seam = (l[ls] - l[le + 1]).abs().max((l[ls] - l[le]).abs() - step as i32);
+            let seam = (l[ls] - l[le]).abs();
             let ratio = seam as f32 / step.max(1.0);
             println!("seam {file}: {ratio:.2} × a normal step");
             assert!(ratio < 1.5, "{file} clicks at its loop");
