@@ -298,7 +298,21 @@ mod tests {
         for l in &report {
             println!("{l}");
         }
-        println!("{}", std::fs::read_to_string(&p).unwrap());
+        let sfz = std::fs::read_to_string(&p).unwrap();
+        println!("{sfz}");
+        // loop seams: the jump at the wrap must be no bigger than an ordinary sample step
+        for line in sfz.lines().filter(|l| l.starts_with("<region>")) {
+            let get_op = |k: &str| line.split_whitespace().find_map(|w| w.strip_prefix(k)).unwrap().to_string();
+            let file = get_op("sample=");
+            let (ls, le): (usize, usize) = (get_op("loop_start=").parse().unwrap(), get_op("loop_end=").parse().unwrap());
+            let mut rd = hound::WavReader::open(out.join("samples").join(&file)).unwrap();
+            let l: Vec<i32> = rd.samples::<i16>().step_by(2).map(|v| v.unwrap() as i32).collect();
+            let step = (ls..ls + 4000).map(|i| (l[i + 1] - l[i]).abs()).sum::<i32>() as f32 / 4000.0;
+            let seam = (l[ls] - l[le + 1]).abs().max((l[ls] - l[le]).abs() - step as i32);
+            let ratio = seam as f32 / step.max(1.0);
+            println!("seam {file}: {ratio:.2} × a normal step");
+            assert!(ratio < 1.5, "{file} clicks at its loop");
+        }
     }
 }
 
