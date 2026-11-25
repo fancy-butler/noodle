@@ -273,6 +273,23 @@ mod tests {
             let mut r = ureq::get(u).call().map_err(|e| e.to_string())?;
             r.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())
         };
+        // what actually comes back for one note
+        for (id, name, _) in NOTES.iter().take(2) {
+            match get(&url(*id)) {
+                Ok(b) => {
+                    let head: String = b.iter().take(16).map(|c| format!("{c:02x}")).collect();
+                    let d = decode_mp3(b.clone());
+                    match d {
+                        Ok((l, _r, rate)) => {
+                            let peak = l.iter().fold(0f32, |m, v| m.max(v.abs()));
+                            println!("{name}: {} bytes [{head}], {} samples at {rate} Hz, peak {peak:.3}", b.len(), l.len());
+                        }
+                        Err(e) => println!("{name}: {} bytes [{head}], decode failed: {e}", b.len()),
+                    }
+                }
+                Err(e) => println!("{name}: fetch failed: {e}"),
+            }
+        }
         let (p, report) = build(&out, &get, &|_, _| {}).expect("build");
         for l in &report {
             println!("{l}");
