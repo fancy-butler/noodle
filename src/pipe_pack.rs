@@ -121,26 +121,29 @@ pub struct Prepared {
 pub fn prepare(mut l: Vec<f32>, mut r: Vec<f32>, rate: u32, nominal: f32) -> Result<Prepared, String> {
     let fr = (rate / 100) as usize; // 10 ms
     let env: Vec<f32> = l.chunks(fr).zip(r.chunks(fr)).map(|(a, b)| (a.iter().chain(b).map(|v| v * v).sum::<f32>() / (a.len() + b.len()) as f32).sqrt()).collect();
-    let mut sorted = env.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let loud = sorted[sorted.len() * 3 / 4];
-    if loud < 1e-3 {
+    // how loud the note is: the median of the frames that aren't near-silence
+    let peak = env.iter().cloned().fold(0f32, f32::max);
+    if peak < 1e-3 {
         return Err("silent recording".into());
     }
+    let mut sounding: Vec<f32> = env.iter().cloned().filter(|e| *e > peak * 0.1).collect();
+    sounding.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let loud = sounding[sounding.len() / 2];
     let on = env.iter().position(|e| *e > loud * 0.3).ok_or("no note found")? * fr;
     let off = (env.len() - env.iter().rev().position(|e| *e > loud * 0.3).unwrap_or(0)) * fr;
     let start = on.saturating_sub(fr);
-    if off < start + rate as usize * 4 {
-        return Err("the note is shorter than 4 s".into());
+    // the steady part: from 0.5 s in to 0.3 s before the end
+    let s0 = on + rate as usize / 2;
+    let s1 = off.saturating_sub(rate as usize * 3 / 10);
+    if s1 < s0 + rate as usize * 6 / 5 {
+        return Err(format!("the note is only {:.1} s long", (off - on) as f32 / rate as f32));
     }
-    // the steady part: from 1 s in to 1 s before the end
-    let s0 = start + rate as usize;
-    let s1 = off.saturating_sub(rate as usize);
     let mono: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
+    let win = 8192.min((s1 - s0) / 2);
     let mut ests: Vec<f32> = (0..5)
         .filter_map(|i| {
-            let at = s0 + (s1 - s0 - 8192) * i / 4;
-            pitch(&mono[at..at + 8192], rate, nominal * 0.84, nominal * 1.4)
+            let at = s0 + (s1 - s0 - win) * i / 4;
+            pitch(&mono[at..at + win], rate, nominal * 0.84, nominal * 1.4)
         })
         .collect();
     if ests.len() < 3 {
@@ -148,13 +151,11 @@ pub fn prepare(mut l: Vec<f32>, mut r: Vec<f32>, rate: u32, nominal: f32) -> Res
     }
     ests.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let hz = ests[ests.len() / 2];
-    // loop: ~3 s from 1.5 s in; end picked where the waveform best matches the start
+    // loop: up to 3 s of the steady part; the end where the waveform best matches the start
     let period = (rate as f32 / hz) as usize;
-    let ls = start + rate as usize * 3 / 2;
-    let target = ls + rate as usize * 3;
-    if target + period * 4 >= s1.max(ls + 1) + rate as usize {
-        return Err("not enough steady sound to loop".into());
-    }
+    let ls = s0;
+    let span = (rate as usize * 3).min(s1 - s0 - period * 8);
+    let target = ls + span;
     let cmp = period * 2;
     let mut best = (f32::MAX, target);
     for le in target - period * 3..target + period * 3 {
@@ -282,7 +283,10 @@ mod tests {
                     match d {
                         Ok((l, _r, rate)) => {
                             let peak = l.iter().fold(0f32, |m, v| m.max(v.abs()));
-                            println!("{name}: {} bytes [{head}], {} samples at {rate} Hz, peak {peak:.3}", b.len(), l.len());
+                            let fr = rate as usize / 100;
+                            let env: Vec<f32> = l.chunks(fr).map(|c| c.iter().map(|v| v.abs()).fold(0f32, f32::max)).collect();
+                            let above: Vec<usize> = env.iter().enumerate().filter(|(_, e)| **e > peak * 0.2).map(|(i, _)| i).collect();
+                            println!("{name}: {} bytes, {:.1} s at {rate} Hz, peak {peak:.3}, sound from {:.2} s to {:.2} s", b.len(), l.len() as f32 / rate as f32, above.first().copied().unwrap_or(0) as f32 / 100.0, above.last().copied().unwrap_or(0) as f32 / 100.0);
                         }
                         Err(e) => println!("{name}: {} bytes [{head}], decode failed: {e}", b.len()),
                     }
