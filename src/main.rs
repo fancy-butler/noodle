@@ -45,6 +45,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--regs-demo") {
+        let out = args.get(i + 1).cloned().unwrap_or("regs.wav".into());
+        regs_demo(&out);
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--pipe-demo") {
         let out = args.get(i + 1).cloned().unwrap_or("pipes.wav".into());
         pipe_demo(&out);
@@ -876,6 +881,40 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
             tx.send(Cmd::Panic).unwrap();
             p.pipe_closed.store(false, Relaxed);
         }
+        // uilleann regulators: B below the chanter strikes the G row; one regulator sounds its top open key
+        {
+            p.chanter_voice.store(3, Relaxed);
+            p.pipe_tonic.store(62, Relaxed);
+            p.regs_on.store(true, Relaxed);
+            tx.send(note(59, true)).unwrap(); // B3
+            let (mut gl, mut gr) = (vec![0.0f32; block], vec![0.0f32; block]);
+            let mut e = 0.0f32;
+            for _ in 0..(0.3 * sr as f32) as usize / block {
+                eng.process(&mut gl, &mut gr);
+                e += gl.iter().map(|v| v * v).sum::<f32>();
+            }
+            let got: Vec<u8> = (0..3).map(|r| p.reg_sounding[r].load(Relaxed)).collect();
+            println!("  regulators, B row: {:?} (want [71, 67, 59]), energy {:.2}", got, e);
+            if got != vec![71, 67, 59] || e < 1.0 {
+                fails.push("regulator row".into());
+            }
+            tx.send(note(59, false)).unwrap();
+            p.reg_keys[0].store((1 << 1) | (1 << 3), Relaxed); // tenor B and G together
+            for _ in 0..8 {
+                eng.process(&mut gl, &mut gr);
+            }
+            let t = p.reg_sounding[0].load(Relaxed);
+            let b = p.reg_sounding[2].load(Relaxed);
+            println!("  tenor with B+G open sounds {t} (want 71), bass after release {b} (want 255)");
+            if t != 71 || b != 255 {
+                fails.push("regulator top key".into());
+            }
+            p.reg_keys[0].store(0, Relaxed);
+            p.regs_on.store(false, Relaxed);
+            for _ in 0..20 {
+                eng.process(&mut gl, &mut gr);
+            }
+        }
         p.pipe_mode.store(false, Relaxed);
         fn engine_tables(v: u8) -> [f32; 8] {
             crate::pipes::CHANTERS[v as usize].harm
@@ -963,4 +1002,85 @@ fn pipe_demo(out: &str) {
         tx.send(Cmd::Panic).unwrap();
         run(0.9, &mut eng);
     }
+}
+
+/// Uilleann chanter over drones with regulator stabs: G row and D row on the beats.
+fn regs_demo(out: &str) {
+    let sr = 48000u32;
+    let p = Arc::new(Params::new());
+    let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
+    let (utx, _urx) = crossbeam_channel::bounded::<UiEvt>(1 << 20);
+    let mut eng = Engine::new(p.clone(), rx, utx, sr as f32, 8192);
+    if let Some(sf) = sounds::find_soundfonts().into_iter().next() {
+        if let Ok(l) = sounds::load_soundfont(&sf, sr) {
+            tx.send(Cmd::Synths(l.synths)).unwrap();
+        }
+    }
+    let mut wav = hound::WavWriter::create(out, hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 16, sample_format: hound::SampleFormat::Int }).unwrap();
+    let block = 256;
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut run = |secs: f32, eng: &mut Engine| {
+        for _ in 0..(secs * sr as f32) as usize / block {
+            eng.process(&mut l, &mut r);
+            for i in 0..block {
+                wav.write_sample((l[i] * 32767.0) as i16).unwrap();
+                wav.write_sample((r[i] * 32767.0) as i16).unwrap();
+            }
+        }
+    };
+    let pp = &pipes::PIPES[3];
+    p.chanter_voice.store(3, Relaxed);
+    p.pipe_tonic.store(62, Relaxed);
+    p.drone_tone.store(pp.tone, Relaxed);
+    p.chanter_level.set(0.7);
+    p.drone_level.set(0.4);
+    p.pipe_just.store(true, Relaxed);
+    p.regs_on.store(true, Relaxed);
+    p.reg_level.set(0.6);
+    for i in 0..13 {
+        p.drone_cents[i].store(i32::MIN, Relaxed);
+    }
+    for (i, d) in pp.drones.iter().enumerate() {
+        if d.2 {
+            p.drone_cents[i].store((62 + d.0 as i32) * 100, Relaxed);
+        }
+    }
+    p.drone_on.store(true, Relaxed);
+    p.pipe_mode.store(true, Relaxed);
+    run(1.0, &mut eng);
+    // a jig in G: 6/8, eighths at ~0.2 s; row keys: B3 = G row, A3 = D row
+    let bars: [([u8; 6], u8); 4] = [([67, 71, 74, 67, 71, 74], 59), ([66, 69, 74, 66, 69, 74], 57), ([67, 71, 74, 76, 74, 71], 59), ([69, 66, 62, 67, 67, 67], 57)];
+    let eighth = 0.2;
+    let mut prev: Option<u8> = None;
+    for (notes, row) in bars.iter().chain(bars.iter()) {
+        for (i, n) in notes.iter().enumerate() {
+            tx.send(Cmd::Midi([0x90, *n, 100])).unwrap();
+            if let Some(pk) = prev {
+                if pk != *n {
+                    tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+                }
+            }
+            prev = Some(*n);
+            // regulator stab on each dotted-quarter beat
+            if i % 3 == 0 {
+                tx.send(Cmd::Midi([0x90, *row, 100])).unwrap();
+                run(eighth * 0.6, &mut eng);
+                tx.send(Cmd::Midi([0x80, *row, 0])).unwrap();
+                run(eighth * 0.4, &mut eng);
+            } else {
+                run(eighth, &mut eng);
+            }
+        }
+    }
+    if let Some(pk) = prev {
+        tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+    }
+    tx.send(Cmd::Midi([0x90, 59, 100])).unwrap();
+    tx.send(Cmd::Midi([0x90, 67, 100])).unwrap();
+    run(1.2, &mut eng);
+    tx.send(Cmd::Midi([0x80, 59, 0])).unwrap();
+    tx.send(Cmd::Midi([0x80, 67, 0])).unwrap();
+    p.drone_on.store(false, Relaxed);
+    tx.send(Cmd::Panic).unwrap();
+    run(1.0, &mut eng);
 }

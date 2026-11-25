@@ -202,6 +202,10 @@ pub struct App {
     omr: crate::omr::Fetcher,
     /// the bagpipe module was switched on by picking a bagpipe chart (not by you)
     pipe_auto: bool,
+    /// uilleann regulator board: open, and what the mouse is holding (regulator, key) or a row
+    regs_open: bool,
+    reg_mouse: Option<(usize, usize)>,
+    reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
     song_key: i32,
     song_files: Vec<PathBuf>,
@@ -584,6 +588,9 @@ impl App {
             song_base: None,
             omr: Default::default(),
             pipe_auto: false,
+            regs_open: false,
+            reg_mouse: None,
+            reg_mouse_row: None,
             song_key: 0,
             song_files: sounds::find_songs(),
             song_err: None,
@@ -2440,6 +2447,8 @@ impl App {
         p.pipe_tune.store(self.s.pipe_tune, Relaxed);
         p.pipe_continuous.store(self.s.pipe_cont, Relaxed);
         p.pipe_closed.store(self.s.pipe_closed || self.s.pipe_idx == 4, Relaxed);
+        p.regs_on.store(self.s.regs_on && self.s.drone_mode == 1 && self.s.pipe_idx == 3, Relaxed);
+        p.reg_level.set(self.s.reg_level);
         p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
     }
@@ -2596,6 +2605,15 @@ impl App {
                             if on {
                                 let _ = self.tx.send(Cmd::Panic); // also silences the chanter
                             }
+                        }
+                    }
+                    if self.s.drone_mode == 1 && self.s.pipe_idx == 3 {
+                        if ui
+                            .add(egui::Button::new(RichText::new("🎛 Regulators").strong()).selected(self.regs_open))
+                            .on_hover_text("The uilleann regulators: tenor, baritone and bass, struck with the wrist")
+                            .clicked()
+                        {
+                            self.regs_open = !self.regs_open;
                         }
                     }
                 });
@@ -4451,6 +4469,174 @@ impl App {
         pick
     }
 
+    /// The uilleann regulators: three rows of keys on the stock, struck singly or a row at a time.
+    fn regs_window(&mut self, ctx: &egui::Context) {
+        use crate::pipes::{REGS, REG_ROWS};
+        let usable = self.s.drone_mode == 1 && self.s.pipe_idx == 3 && !self.acc_mode;
+        if !self.regs_open || !usable {
+            for r in 0..3 {
+                self.p.reg_keys[r].store(0, Relaxed);
+            }
+            self.reg_mouse = None;
+            self.reg_mouse_row = None;
+            return;
+        }
+        let mut open = true;
+        let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
+        // pipers' names: C natural (not B♯) on a D set
+        let nm = |pc: u8| ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"][(pc % 12) as usize].to_string();
+        egui::Window::new("Uilleann regulators").open(&mut open).resizable(true).default_size(Vec2::new(620.0, 330.0)).show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut on = self.s.regs_on;
+                if ui.checkbox(&mut on, "Regulators on").changed() {
+                    self.s.regs_on = on;
+                }
+                let mut lv = self.s.reg_level;
+                if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false).text("Level")).changed() {
+                    self.s.reg_level = lv;
+                }
+                ui.separator();
+                ui.label("Stock on the");
+                for (v, t) in [(false, "right"), (true, "left")] {
+                    if ui.selectable_label(self.s.regs_left == v, t).clicked() {
+                        self.s.regs_left = v;
+                    }
+                }
+            });
+            ui.label(
+                RichText::new("Click a key, or a row's strip underneath for the whole row (the wrist). Computer keys 1–5 strike rows. On a MIDI keyboard the keys below the chanter's low note strike rows by letter: C → C/A/C · B → G · A → D · G → G/D · F♯ → F♯.")
+                    .size(11.5)
+                    .color(text_dim()),
+            );
+            // rows from the computer keys 1–5
+            let num = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5];
+            let typed: Vec<usize> = ui.input(|i| num.iter().enumerate().filter(|(_, k)| i.key_down(**k)).map(|(n, _)| n).collect());
+
+            let avail = ui.available_size();
+            let w = avail.x.max(420.0);
+            let h = (w * 0.48).min(avail.y.max(220.0));
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click_and_drag());
+            let pnt = ui.painter_at(rect);
+            // wood
+            pnt.rect_filled(rect, 8.0, Color32::from_rgb(120, 34, 20));
+            for i in 0..14 {
+                let y = rect.top() + rect.height() * (i as f32 + 0.5) / 14.0;
+                let a = if i % 2 == 0 { 10 } else { 4 };
+                pnt.line_segment([Pos2::new(rect.left() + 6.0, y), Pos2::new(rect.right() - 6.0, y + 3.0)], Stroke::new(2.0, Color32::from_rgba_unmultiplied(0, 0, 0, a)));
+            }
+            let puck_w = h * 0.30;
+            let flip = self.s.regs_left;
+            let board = if flip { Rect::from_min_max(rect.min + Vec2::new(10.0, 8.0), Pos2::new(rect.right() - puck_w - 10.0, rect.bottom() - 8.0)) } else { Rect::from_min_max(Pos2::new(rect.left() + puck_w + 10.0, rect.top() + 8.0), rect.max - Vec2::new(10.0, 8.0)) };
+            let puck_c = if flip { Pos2::new(rect.right() - puck_w * 0.55, rect.bottom() - puck_w * 0.6) } else { Pos2::new(rect.left() + puck_w * 0.55, rect.bottom() - puck_w * 0.6) };
+            let puck_r = puck_w * 0.36;
+            let strip_h = board.height() * 0.13;
+            let row_h = (board.height() - strip_h) / 3.0;
+            let col_w = board.width() / 5.0;
+            let col_x = |c: usize| if flip { board.right() - col_w * (c as f32 + 0.5) } else { board.left() + col_w * (c as f32 + 0.5) };
+            let key_rect = |r: usize, k: usize| Rect::from_center_size(Pos2::new(col_x(k), board.top() + row_h * (r as f32 + 0.5)), Vec2::new(col_w * 0.78, row_h * 0.62));
+            let strip_rect = |c: usize| Rect::from_center_size(Pos2::new(col_x(c), board.bottom() - strip_h * 0.5), Vec2::new(col_w * 0.86, strip_h * 0.8));
+
+            // what the mouse is on
+            let pos = resp.interact_pointer_pos().or(resp.hover_pos());
+            let mut hover_key = None;
+            let mut hover_row = None;
+            let mut hover_puck = false;
+            if let Some(p) = pos {
+                for (r, (_, keys)) in REGS.iter().enumerate() {
+                    for k in 0..keys.len() {
+                        if key_rect(r, k).contains(p) {
+                            hover_key = Some((r, k));
+                        }
+                    }
+                }
+                for c in 0..5 {
+                    if strip_rect(c).contains(p) {
+                        hover_row = Some(c);
+                    }
+                }
+                hover_puck = p.distance(puck_c) < puck_r;
+            }
+            if resp.is_pointer_button_down_on() {
+                self.reg_mouse = hover_key;
+                self.reg_mouse_row = hover_row;
+            } else {
+                self.reg_mouse = None;
+                self.reg_mouse_row = None;
+            }
+            if resp.clicked() && hover_puck {
+                let on = self.drone_running;
+                self.drone_running = !on;
+                if on {
+                    let _ = self.tx.send(Cmd::Panic);
+                }
+            }
+            // keys down: mouse + rows (typed or the strip)
+            let mut bits = [0u8; 3];
+            if let Some((r, k)) = self.reg_mouse {
+                bits[r] |= 1 << k;
+            }
+            for row in typed.iter().copied().chain(self.reg_mouse_row) {
+                for r in 0..3 {
+                    let k = REG_ROWS[row][r];
+                    if k >= 0 {
+                        bits[r] |= 1 << k;
+                    }
+                }
+            }
+            for r in 0..3 {
+                self.p.reg_keys[r].store(bits[r], Relaxed);
+            }
+            // draw: regulator bodies, keys, strips, puck
+            for (r, (name, keys)) in REGS.iter().enumerate() {
+                let y = board.top() + row_h * (r as f32 + 0.5);
+                let x0 = if flip { col_x(keys.len() - 1) - col_w * 0.5 } else { col_x(0) - col_w * 0.5 };
+                let x1 = if flip { col_x(0) + col_w * 0.5 } else { col_x(keys.len() - 1) + col_w * 0.5 };
+                pnt.rect_filled(Rect::from_min_max(Pos2::new(x0, y - row_h * 0.16), Pos2::new(x1, y + row_h * 0.16)), 4.0, Color32::from_rgb(28, 36, 58));
+                pnt.text(Pos2::new(if flip { x1 - 4.0 } else { x0 + 4.0 }, y - row_h * 0.42), if flip { Align2::RIGHT_TOP } else { Align2::LEFT_TOP }, *name, FontId::proportional(11.0), Color32::from_rgba_unmultiplied(255, 230, 200, 150));
+                let sounding = self.p.reg_sounding[r].load(Relaxed);
+                for (k, off) in keys.iter().enumerate() {
+                    let kr = key_rect(r, k);
+                    let note = (tonic + *off as i32).clamp(0, 127) as u8;
+                    let down = bits[r] & (1 << k) != 0;
+                    let lit = sounding == note;
+                    let ivory = if lit { YOURS } else if down { Color32::from_rgb(214, 200, 170) } else if hover_key == Some((r, k)) { Color32::from_rgb(250, 244, 226) } else { Color32::from_rgb(236, 226, 200) };
+                    // key: a lever with a round touch at its end
+                    let lever = Rect::from_center_size(kr.center(), Vec2::new(kr.width(), kr.height() * 0.42));
+                    pnt.rect_filled(lever, kr.height() * 0.2, ivory);
+                    let head = Pos2::new(if flip { kr.right() - kr.height() * 0.34 } else { kr.left() + kr.height() * 0.34 }, kr.center().y);
+                    pnt.circle_filled(head, kr.height() * 0.42, ivory);
+                    pnt.circle_stroke(head, kr.height() * 0.42, Stroke::new(1.0, Color32::from_rgb(150, 130, 100)));
+                    pnt.text(head, Align2::CENTER_CENTER, nm(note % 12), FontId::proportional((kr.height() * 0.36).clamp(10.0, 18.0)), Color32::from_rgb(60, 40, 25));
+                }
+            }
+            for c in 0..5 {
+                let sr_ = strip_rect(c);
+                let down = typed.contains(&c) || self.reg_mouse_row == Some(c);
+                let names: Vec<String> = (0..3).filter_map(|r| {
+                    let k = REG_ROWS[c][r];
+                    (k >= 0).then(|| nm(((tonic + REGS[r].1[k as usize] as i32).rem_euclid(12)) as u8))
+                }).collect();
+                let fill = if down { YOURS } else if hover_row == Some(c) { Color32::from_rgba_unmultiplied(255, 255, 255, 50) } else { Color32::from_rgba_unmultiplied(0, 0, 0, 70) };
+                pnt.rect_filled(sr_, 5.0, fill);
+                pnt.text(sr_.center(), Align2::CENTER_CENTER, format!("{} · {}", c + 1, names.join("/")), FontId::proportional(11.5), if down { Color32::BLACK } else { Color32::from_rgb(255, 235, 210) });
+            }
+            // drone puck
+            let on = self.drone_running;
+            pnt.circle_filled(puck_c, puck_r, Color32::from_rgb(232, 222, 196));
+            pnt.circle_filled(puck_c, puck_r * 0.72, Color32::from_rgb(40, 34, 30));
+            pnt.circle_filled(puck_c, puck_r * 0.5, if on { GOOD } else { Color32::from_rgb(220, 205, 170) });
+            pnt.circle_filled(puck_c, puck_r * 0.2, Color32::from_rgb(40, 34, 30));
+            pnt.text(puck_c + Vec2::new(0.0, puck_r + 4.0), Align2::CENTER_TOP, if on { "drones on" } else { "drones" }, FontId::proportional(11.0), Color32::from_rgb(255, 235, 210));
+            if hover_puck {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ctx.request_repaint();
+        });
+        if !open {
+            self.regs_open = false;
+        }
+    }
+
     fn tunes_window(&mut self, ctx: &egui::Context) {
         use crate::session::{self, Status};
         if !self.tunes_open {
@@ -5533,6 +5719,9 @@ impl eframe::App for App {
                         self.set_song_key(k);
                     }
                 }
+                if std::env::var("NOODLE_REGS").is_ok() {
+                    self.regs_open = true;
+                }
                 if let Ok(f) = std::env::var("NOODLE_PICK_CHART") {
                     // screenshots/tests: pick a chart as if from the fingering pane
                     if let Some(i) = crate::fingering::CHARTS.iter().position(|c| c.name.starts_with(f.as_str())) {
@@ -5659,6 +5848,7 @@ impl eframe::App for App {
         self.pipe_picker(ctx);
         self.chart_window(ctx);
         self.tunes_window(ctx);
+        self.regs_window(ctx);
         self.packs_window(ctx);
         self.chain_window(ctx);
         let now = now_s(&self.t0);

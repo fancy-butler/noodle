@@ -131,6 +131,10 @@ pub struct Settings {
     pub pipe_cont: bool,
     /// closed (covered) fingering: notes come out detached
     pub pipe_closed: bool,
+    /// uilleann regulators
+    pub regs_on: bool,
+    pub reg_level: f32,
+    pub regs_left: bool,
     pub drone_level: f32,
     pub shruti_pat: usize,
     pub shruti_low: bool,
@@ -255,6 +259,9 @@ impl Default for Settings {
             pipe_just: true,
             pipe_cont: false,
             pipe_closed: false,
+            regs_on: true,
+            reg_level: 0.6,
+            regs_left: false,
             drone_level: 0.6,
             shruti_pat: 0,
             shruti_low: true,

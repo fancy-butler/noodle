@@ -230,6 +230,12 @@ pub struct Params {
     /// synthesised chanter voice (index into pipes::CHANTERS)
     pub chanter_voice: AtomicU8,
     pub chanter_level: AF32,
+    /// uilleann regulators: on, level, keys held on screen (bit per key, per regulator),
+    /// and what each one is sounding (255 = silent) for the screen to show
+    pub regs_on: AtomicBool,
+    pub reg_level: AF32,
+    pub reg_keys: [AtomicU8; 3],
+    pub reg_sounding: [AtomicU8; 3],
     /// harmonium reed stops: bit0 bass (-8va), bit1 male (8'), bit2 female (+8va)
     pub harm_octaves: AtomicU8,
 }
@@ -313,6 +319,10 @@ impl Params {
             drone_cents: std::array::from_fn(|_| AtomicI32::new(i32::MIN)),
             chanter_voice: AtomicU8::new(0),
             chanter_level: AF32::new(0.7),
+            regs_on: AtomicBool::new(false),
+            reg_level: AF32::new(0.6),
+            reg_keys: Default::default(),
+            reg_sounding: [AtomicU8::new(255), AtomicU8::new(255), AtomicU8::new(255)],
             harm_octaves: AtomicU8::new(0b010),
             drone_level: AF32::new(0.6),
             drone_tone: AtomicU8::new(0),
@@ -618,6 +628,10 @@ pub struct Engine {
     ch: ChanterVoice,
     noise: u32,
     chanter: i16,
+    /// the three regulators' voices, and rows held from the keyboard (count per row)
+    regs: [ChanterVoice; 3],
+    reg_rows_midi: [u8; 5],
+    reg_of_key: [i8; 128],
     pipe_held: [u8; 16],
     pipe_n: usize,
     /// output limiter gain (1 = untouched)
@@ -750,6 +764,9 @@ impl Engine {
             noise: 0x9e37_79b9,
             chanter: -1,
             pipe_held: [0; 16],
+            regs: Default::default(),
+            reg_rows_midi: [0; 5],
+            reg_of_key: [-1; 128],
             pipe_n: 0,
             lim_g: 1.0,
             acc_vis: [-1; 320],
@@ -969,6 +986,11 @@ impl Engine {
         self.vis(s, vel, src::LIVE);
         if self.p.pipe_mode.load(Relaxed) {
             self.to_arp[k as usize] = false;
+            if let Some(row) = self.reg_row_for(s) {
+                self.reg_of_key[k as usize] = row as i8;
+                self.reg_rows_midi[row] = self.reg_rows_midi[row].saturating_add(1);
+                return;
+            }
             self.pipe_on(s);
             return;
         }
@@ -1004,8 +1026,37 @@ impl Engine {
         }
     }
 
+    /// Keys below the chanter's bottom note strike regulator rows by letter:
+    /// C → C/A/C, B → G chord, A → D chord, G → G/D, F♯ or F → the tenor F♯.
+    fn reg_row_for(&self, s: u8) -> Option<usize> {
+        if !self.p.regs_on.load(Relaxed) {
+            return None;
+        }
+        let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
+        let rel = s as i32 - tonic;
+        if rel >= 0 {
+            return None;
+        }
+        match rel.rem_euclid(12) {
+            10 => Some(0), // C on a D set
+            9 => Some(1),
+            7 => Some(2),
+            5 => Some(3),
+            4 | 3 => Some(4),
+            _ => None,
+        }
+    }
+
     fn live_off(&mut self, k: u8) {
         self.raw_held[k as usize] = false;
+        let r = self.reg_of_key[k as usize];
+        if r >= 0 {
+            self.reg_of_key[k as usize] = -1;
+            self.reg_rows_midi[r as usize] = self.reg_rows_midi[r as usize].saturating_sub(1);
+            self.sounded_for[k as usize] = -1;
+            self.vis(k, 0, src::LIVE);
+            return;
+        }
         let s = self.sounded_for[k as usize];
         if s < 0 {
             return;
@@ -1303,6 +1354,94 @@ impl Engine {
         self.pipe_n = 0;
     }
 
+    /// The regulators: each a stopped pipe sounding its highest open key; keys up = silent at once.
+    fn render_regs(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
+        let on = self.p.regs_on.load(Relaxed) && self.p.pipe_mode.load(Relaxed);
+        let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
+        let tune = self.p.pipe_tune.load(Relaxed) as f64;
+        let just = self.p.pipe_just.load(Relaxed);
+        let level = self.p.reg_level.get().clamp(0.0, 1.0) * crate::pipes::REGULATOR.level * 0.2;
+        let sr = self.sr;
+        let att = 1.0 - (-1.0 / (0.006 * sr)).exp();
+        let rel = 1.0 - (-1.0 / (0.012 * sr)).exp();
+        let xf_step = 1.0 / (0.004 * sr);
+        let noise_amt = crate::pipes::REGULATOR.noise * 6.0;
+        for r in 0..3 {
+            // keys held: on screen, plus rows from the keyboard
+            let mut bits = self.p.reg_keys[r].load(Relaxed);
+            for (row, n) in self.reg_rows_midi.iter().enumerate() {
+                let k = crate::pipes::REG_ROWS[row][r];
+                if *n > 0 && k >= 0 {
+                    bits |= 1 << k;
+                }
+            }
+            let keys = crate::pipes::REGS[r].1;
+            // the top key is nearest the reed: of several open, the highest sounds
+            let sound = if on { (0..keys.len()).find(|i| bits & (1 << i) != 0) } else { None };
+            let v = &mut self.regs[r];
+            match sound {
+                Some(i) => {
+                    let key = (tonic + keys[i] as i32).clamp(0, 127) as u8;
+                    let mut cents = key as f64 * 100.0 + tune;
+                    if just {
+                        cents += crate::pipes::JUST_CENTS[(key as i32 - tonic).rem_euclid(12) as usize] as f64;
+                    }
+                    if v.gain < 0.02 {
+                        v.cents = cents;
+                    }
+                    v.target_cents = cents;
+                    v.target = 1.0;
+                    v.key = key;
+                    self.p.reg_sounding[r].store(key, Relaxed);
+                }
+                None => {
+                    v.target = 0.0;
+                    self.p.reg_sounding[r].store(255, Relaxed);
+                }
+            }
+            if v.gain < 1e-4 && v.target == 0.0 {
+                continue;
+            }
+            let want = Some((crate::pipes::REG_VOICE as u8, v.key, false));
+            if v.tab_for[v.cur] != want {
+                let t = v.table(crate::pipes::REG_VOICE as u8, v.key, false, sr);
+                if v.gain > 1e-3 {
+                    v.old = v.cur;
+                    v.xf = 1.0;
+                }
+                v.cur = t;
+            }
+            let (cur, old) = (v.cur, v.old);
+            for i in 0..out_l.len() {
+                v.gain += (v.target - v.gain) * if v.target > v.gain { att } else { rel };
+                v.cents += (v.target_cents - v.cents) * 0.02;
+                self.noise ^= self.noise << 13;
+                self.noise ^= self.noise >> 17;
+                self.noise ^= self.noise << 5;
+                let wn = (self.noise as f32 / u32::MAX as f32) - 0.5;
+                let f = 440.0 * 2f64.powf((v.cents - 6900.0) / 1200.0);
+                v.phase += f / sr as f64;
+                if v.phase >= 1.0 {
+                    v.phase -= 1.0;
+                }
+                let pos = v.phase as f32 * CH_TAB as f32;
+                let j = pos as usize;
+                let fr = pos - j as f32;
+                let rd = |t: &Vec<f32>| t[j] + (t[j + 1] - t[j]) * fr;
+                let mut w = rd(&v.tabs[cur]);
+                if v.xf > 0.0 {
+                    w = w * (1.0 - v.xf) + rd(&v.tabs[old]) * v.xf;
+                    v.xf = (v.xf - xf_step).max(0.0);
+                }
+                let y = (w + wn * noise_amt * (0.4 + 0.6 * w.abs())) * v.gain * level;
+                // tenor a touch right, bass a touch left, as on the stock
+                let pan = [0.12f32, 0.0, -0.12][r];
+                out_l[i] += y * (1.0 - pan);
+                out_r[i] += y * (1.0 + pan);
+            }
+        }
+    }
+
     /// Synthesised chanter: a wavetable per note from the pipe's measured harmonic levels
     /// (pipes::CHANTERS), with slight reed jitter, reed noise and the bore's loudness curve.
     fn render_chanter(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
@@ -1399,6 +1538,7 @@ impl Engine {
             self.chanter_stop();
         }
         self.render_chanter(out_l, out_r);
+        self.render_regs(out_l, out_r);
         for v in 0..13 {
             let c = self.p.drone_cents[v].load(Relaxed);
             let active = on && c != i32::MIN;

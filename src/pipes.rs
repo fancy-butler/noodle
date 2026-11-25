@@ -188,10 +188,27 @@ pub const CHANTERS: [Chanter; 12] = [
     ch(true, [0.0, 5.0, 12.0, 5.0, 12.0, 4.0, 10.0, 2.0], 4.5, 0.010, 0.55, false),
 ];
 
+/// Uilleann regulators: three stopped pipes with sprung keys, each sounding one note at a time
+/// (the highest open key). Semitones from the chanter's bottom note, top key first. For a D set:
+/// tenor C B A G F♯, baritone A G F♯ D, bass C B A G an octave below the tenor
+/// (chiffandfipple.com "Tuning the regs"; uilleannobsession.com FAQ).
+pub const REGS: [(&str, &[i8]); 3] = [("Tenor", &[10, 9, 7, 5, 4]), ("Baritone", &[7, 5, 4, 0]), ("Bass", &[-2, -3, -5, -7])];
+
+/// The rows a wrist strikes across the three regulators (key index on each, or -1):
+/// C/A/C, B/G/B (G), A/F♯/A (D), G/D/G, F♯ alone.
+pub const REG_ROWS: [[i8; 3]; 5] = [[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3], [4, -1, -1]];
+
+/// Voice number for the regulators' tone in `harmonics`.
+pub const REG_VOICE: usize = 100;
+
+/// Regulator tone (estimate, not measured): the uilleann chanter's low-octave spectrum with the
+/// even harmonics pulled down, as a pipe stopped at the bottom favours odd ones; a little softer.
+pub const REGULATOR: Chanter = ch(false, [0.0, 7.0, 10.0, 1.0, 4.0, -5.0, -2.0, -11.0], 3.5, 0.008, 0.5, false);
+
 /// One cycle's harmonic amplitudes (linear, fundamental = 1) for `voice` at `freq`,
 /// up to the band limit. `upper` = the chanter's second octave.
 pub fn harmonics(voice: usize, freq: f32, sr: f32, upper: bool, out: &mut Vec<f32>) {
-    let v = &CHANTERS[voice.min(CHANTERS.len() - 1)];
+    let v = if voice == REG_VOICE { &REGULATOR } else { &CHANTERS[voice.min(CHANTERS.len() - 1)] };
     let table = if upper { v.harm_hi.unwrap_or(v.harm) } else { v.harm };
     out.clear();
     let n_max = ((0.45 * sr / freq.max(20.0)) as usize).clamp(1, 160);
