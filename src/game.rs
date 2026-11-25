@@ -202,7 +202,7 @@ pub fn make_drill(cfg: &DrillCfg, scale: &Scale, name: &str) -> Song {
     programs[0] = cfg.program as i16;
     let mut npc = [0u32; 16];
     npc[0] = notes.len() as u32;
-    Song { name: name.to_string(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true, qpm: 120.0 }
+    Song { name: name.to_string(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true, qpm: 120.0, bars: Vec::new() }
 }
 
 pub struct Popup {

@@ -37,6 +37,8 @@ pub struct Song {
     pub own_sound: bool,
     /// quarter notes per minute (the first tempo), for drawing note values
     pub qpm: f32,
+    /// bar line times (seconds), where the file says; empty = unknown
+    pub bars: Vec<f64>,
 }
 
 pub fn load(path: &Path) -> Result<Song, String> {
@@ -151,7 +153,15 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     let mut last_tick = 0u64;
     let mut t = 0.0f64;
     let mut evs = Vec::with_capacity(raws.len());
+    // bar lines from the time signature (4/4 until told otherwise)
+    let mut bars: Vec<f64> = Vec::new();
+    let mut bar_ticks = (ppq * 4.0) as u64;
+    let mut next_bar = bar_ticks;
     for r in &raws {
+        while bar_ticks > 0 && next_bar <= r.tick && fixed_sec_per_tick.is_none() {
+            bars.push(t + (next_bar - last_tick) as f64 * us_per_beat / 1_000_000.0 / ppq);
+            next_bar += bar_ticks;
+        }
         let dt = (r.tick - last_tick) as f64;
         t += match fixed_sec_per_tick {
             Some(s) => dt * s,
@@ -165,7 +175,11 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
                     first_tempo = Some(us_per_beat);
                 }
             }
-            RawKind::TimeSig(..) => {}
+            RawKind::TimeSig(n, d) => {
+                // MIDI stores the denominator as a power of two
+                bar_ticks = ((ppq * 4.0 * n.max(1) as f64) / 2f64.powi(d as i32)) as u64;
+                next_bar = r.tick + bar_ticks;
+            }
             RawKind::Ch(ch, st, d1, d2) => evs.push(SongEv { t, ch, st, d1, d2 }),
         }
     }
@@ -208,7 +222,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     if notes.is_empty() {
         return Err("That MIDI file has no notes in it.".into());
     }
-    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch, own_sound: false, qpm: (60_000_000.0 / first_tempo.unwrap_or(500_000.0)) as f32 })
+    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch, own_sound: false, qpm: (60_000_000.0 / first_tempo.unwrap_or(500_000.0)) as f32, bars })
 }
 
 /// Build a tiny song that plays a scale up and back down — used by "Hear it".
@@ -235,5 +249,5 @@ pub fn scale_song(keys: &[u8], bpm: f32, bank: i32, program: i32) -> Song {
     programs[0] = program as i16;
     let mut npc = [0u32; 16];
     npc[0] = notes.len() as u32;
-    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true, qpm: bpm.max(30.0) }
+    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true, qpm: bpm.max(30.0), bars: Vec::new() }
 }

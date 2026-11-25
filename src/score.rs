@@ -274,6 +274,7 @@ pub fn from_musicxml(xml: &str, name: String) -> Result<Song, String> {
     }
     let mut raws: Vec<Raw> = Vec::new();
     let mut tempos: Vec<(f64, f64)> = vec![(0.0, 120.0)];
+    let mut bar_q: Vec<f64> = Vec::new();
     let mut next_ch = 0u8;
     let mut ch_for_part: Vec<(String, u8)> = Vec::new();
     for part in root.children().filter(|c| c.has_tag_name("part")) {
@@ -290,7 +291,11 @@ pub fn from_musicxml(xml: &str, name: String) -> Result<Song, String> {
         let mut div = 1.0f64;
         let mut t = 0.0f64; // quarters
         let mut last_start = 0.0f64;
+        let first_part = ch_for_part.len() == 1;
         for m in part.children().filter(|c| c.has_tag_name("measure")) {
+            if first_part && t > 0.0 {
+                bar_q.push(t);
+            }
             for el in m.children().filter(|c| c.is_element()) {
                 match el.tag_name().name() {
                     "attributes" => {
@@ -409,7 +414,7 @@ pub fn from_musicxml(xml: &str, name: String) -> Result<Song, String> {
     }
     evs.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap().then((a.st == 0x90).cmp(&(b.st == 0x90))));
     let dur = notes.iter().map(|n| n.end).fold(0.0, f64::max) + 0.5;
-    Ok(Song { name, notes, evs, dur, channels, programs, notes_per_ch: npc, own_sound: false, qpm: tempos[0].1 as f32 })
+    Ok(Song { name, notes, evs, dur, channels, programs, notes_per_ch: npc, own_sound: false, qpm: tempos[0].1 as f32, bars: bar_q.iter().map(|q| secs(*q) + 0.05).collect() })
 }
 
 #[cfg(test)]

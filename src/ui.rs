@@ -202,6 +202,8 @@ pub struct App {
     omr: crate::omr::Fetcher,
     /// the bagpipe module was switched on by picking a bagpipe chart (not by you)
     pipe_auto: bool,
+    /// the sound browser window: open for the main sound (false) or the layer (true)
+    browser: Option<bool>,
     /// uilleann regulator board: open, and what the mouse is holding (regulator, key) or a row
     regs_open: bool,
     /// your sound before the recorded Highland chanter took over the keys
@@ -590,6 +592,7 @@ impl App {
             song_base: None,
             omr: Default::default(),
             pipe_auto: false,
+            browser: None,
             regs_open: false,
             rec_prev_main: None,
             reg_mouse: None,
@@ -1501,12 +1504,6 @@ impl App {
                     let on = !self.p.drums_on.load(Relaxed);
                     self.p.drums_on.store(on, Relaxed);
                 }
-                Key::Enter => {
-                    let _ = self.tx.send(Cmd::LoopButton);
-                }
-                Key::Backspace => {
-                    let _ = self.tx.send(Cmd::LoopUndo);
-                }
                 Key::Escape => {
                     let _ = self.tx.send(Cmd::Panic);
                     let _ = self.tx.send(Cmd::LoopStop);
@@ -1585,13 +1582,10 @@ impl App {
         resp.clicked()
     }
 
+    /// The sound box: shows the sound; click opens the sound browser (a resizable window).
     fn preset_combo(&mut self, ui: &mut egui::Ui, layer: bool, width: f32) {
         let cur = if layer { self.s.layer } else { self.s.main };
         let name = self.preset_name(cur);
-        let list = self.filtered();
-        let mut pick = None;
-        let search_id = egui::Id::new(if layer { "layer_search" } else { "main_search" });
-        let mut open_now = false;
         let size = if layer { 14.0 } else { 19.0 };
         // the chosen sound wears its category's colour
         let cur_style = self.presets.iter().find(|p| (p.bank, p.prog) == cur).and_then(|p| Self::family_style(sounds::family(p)));
@@ -1599,13 +1593,32 @@ impl App {
             Some((a, _, _)) if !layer => a.lerp_to_gamma(Color32::WHITE, 0.15),
             _ => if layer { ARP } else { fg() },
         };
-        egui::ComboBox::from_id_salt(if layer { "layer_preset" } else { "main_preset" })
-            .selected_text(RichText::new(name).size(size).strong().color(name_col))
-            .width(width)
-            .height(520.0)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show_ui(ui, |ui| {
-                open_now = true;
+        let open = self.browser == Some(layer);
+        let btn = egui::Button::new(RichText::new(format!("{name}  ▾")).size(size).strong().color(name_col)).selected(open).min_size(Vec2::new(width, 0.0)).truncate();
+        if ui.add_sized(Vec2::new(width, size + 12.0), btn).on_hover_text("All sounds: search, browse, pick (the window resizes)").clicked() {
+            self.browser = if open { None } else { Some(layer) };
+            self.search_focused = false;
+            self.sound_search.clear();
+        }
+    }
+
+    /// The sound browser: search and every sound by family, in a window you can size.
+    fn sound_browser(&mut self, ctx: &egui::Context) {
+        let Some(layer) = self.browser else { return };
+        let cur = if layer { self.s.layer } else { self.s.main };
+        let list = self.filtered();
+        let mut pick = None;
+        let search_id = egui::Id::new(if layer { "layer_search" } else { "main_search" });
+        let mut open = true;
+        egui::Window::new(if layer { "Layer sound" } else { "Sounds" })
+            .id(egui::Id::new("sound_browser"))
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_size(Vec2::new(520.0, 640.0))
+            .min_size(Vec2::new(300.0, 240.0))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 // type to search: the box has the focus as soon as the list opens
                 let te = egui::TextEdit::singleline(&mut self.sound_search).id(search_id).hint_text("🔍 Type to search all sounds…").desired_width(f32::INFINITY);
                 let resp = ui.add(te);
@@ -1635,7 +1648,7 @@ impl App {
                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         if let Some(&i) = list.first() {
                             pick = Some((self.presets[i].bank, self.presets[i].prog));
-                            ui.close();
+                            self.browser = None;
                         }
                     }
                 }
@@ -1671,16 +1684,21 @@ impl App {
                     };
                     if clicked {
                         pick = Some((pr.bank, pr.prog));
-                        ui.close();
+                        self.browser = None;
                     }
                 }
+
+                });
             });
-        // list closed: next time it opens, start with an empty search box that has the focus
-        if !open_now {
+        if !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.browser = None;
+        }
+        if self.browser.is_none() {
             self.search_focused = false;
             self.sound_search.clear();
         }
         if let Some(bp) = pick {
+            self.browser = None;
             self.sound_search.clear();
             self.set_preset(layer, bp);
         }
@@ -3199,48 +3217,82 @@ impl App {
         card(ui, "LOOPER", 200.0, |ui| {
             let st = p.loop_state.load(Relaxed);
             let pulse = ((t * 4.0).sin() * 0.5 + 0.5) as f32;
-            let (label, col) = match st {
-                lstate::EMPTY => ("● RECORD", BAD),
-                lstate::REC => ("■ CLOSE LOOP", BAD.gamma_multiply(0.6 + 0.4 * pulse)),
-                lstate::PLAY => ("+ OVERDUB", GOOD),
-                lstate::DUB => ("✓ DONE", LIVE.gamma_multiply(0.6 + 0.4 * pulse)),
-                _ => ("▶ PLAY LOOP", GOOD),
+            let passes = p.loop_passes.load(Relaxed);
+            let beats = p.loop_beats.get();
+            let bars = (beats / 4.0).max(0.25);
+            // what's happening, in words
+            let (status, scol) = match st {
+                lstate::EMPTY => ("Empty".to_string(), text_dim()),
+                lstate::REC => ("● RECORDING".to_string(), BAD.gamma_multiply(0.6 + 0.4 * pulse)),
+                lstate::PLAY => (format!("▶ Playing · {bars} bar{} · {passes} layer{}", if bars == 1.0 { "" } else { "s" }, if passes == 1 { "" } else { "s" }), GOOD),
+                lstate::DUB => ("● Adding a layer".to_string(), LIVE.gamma_multiply(0.6 + 0.4 * pulse)),
+                _ => (format!("■ Stopped · {bars} bar{} · {passes} layer{}", if bars == 1.0 { "" } else { "s" }, if passes == 1 { "" } else { "s" }), text_dim()),
+            };
+            ui.label(RichText::new(status).strong().color(scol));
+            // the main action for this state
+            let (label, col, tip) = match st {
+                lstate::EMPTY => ("● Record a loop", BAD, "Start recording what you play. Press again to finish and hear it repeat."),
+                lstate::REC => ("✓ Finish loop", BAD.gamma_multiply(0.6 + 0.4 * pulse), "Stop recording; the loop starts repeating (length rounds to whole bars)"),
+                lstate::PLAY => ("+ Add a layer", GOOD, "Record more on top while it plays"),
+                lstate::DUB => ("✓ Keep this layer", LIVE.gamma_multiply(0.6 + 0.4 * pulse), "Finish the layer you're adding"),
+                _ => ("▶ Play loop", GOOD, "Play the loop from the start"),
             };
             if ui
-                .add_sized(Vec2::new(180.0, 46.0), egui::Button::new(RichText::new(label).size(17.0).strong().color(Color32::BLACK)).fill(col).corner_radius(10.0))
-                .on_hover_text("Enter")
+                .add_sized(Vec2::new(180.0, 40.0), egui::Button::new(RichText::new(label).size(16.0).strong().color(Color32::BLACK)).fill(col).corner_radius(10.0))
+                .on_hover_text(tip)
                 .clicked()
             {
                 let _ = tx.send(Cmd::LoopButton);
             }
-            // progress
-            let (r, _) = ui.allocate_exact_size(Vec2::new(180.0, 10.0), Sense::hover());
+            // progress through the loop
+            let (r, _) = ui.allocate_exact_size(Vec2::new(180.0, 8.0), Sense::hover());
             ui.painter().rect_filled(r, 4.0, gray(40));
             if st != lstate::EMPTY {
                 let mut f = r;
                 f.set_width(r.width() * p.loop_pos.get().clamp(0.0, 1.0));
                 ui.painter().rect_filled(f, 4.0, if st == lstate::REC { BAD } else { LOOPC });
             }
-            ui.horizontal(|ui| {
-                if ui.button("■ Stop").clicked() {
-                    let _ = tx.send(Cmd::LoopStop);
-                }
-                if ui.button("↶ Undo").on_hover_text("Remove the last layer (Backspace)").clicked() {
-                    let _ = tx.send(Cmd::LoopUndo);
-                }
-                if ui.button("✕").on_hover_text("Clear loop").clicked() {
-                    let _ = tx.send(Cmd::LoopClear);
+            // the ways out, named for what they do in this state
+            ui.horizontal_wrapped(|ui| {
+                match st {
+                    lstate::EMPTY => {}
+                    lstate::REC => {
+                        if ui.button("✕ Cancel").on_hover_text("Throw this recording away").clicked() {
+                            let _ = tx.send(Cmd::LoopClear);
+                        }
+                    }
+                    lstate::DUB => {
+                        if ui.button("✕ Drop this layer").clicked() {
+                            let _ = tx.send(Cmd::LoopUndo);
+                        }
+                        if ui.button("■ Stop").on_hover_text("Keep the layer and stop playback").clicked() {
+                            let _ = tx.send(Cmd::LoopStop);
+                        }
+                    }
+                    lstate::PLAY => {
+                        if ui.add(egui::Button::new(RichText::new("■ Stop").strong())).on_hover_text("Stop playback (Esc also stops)").clicked() {
+                            let _ = tx.send(Cmd::LoopStop);
+                        }
+                        if passes > 1 && ui.button("↶ Remove last layer").clicked() {
+                            let _ = tx.send(Cmd::LoopUndo);
+                        }
+                        if ui.button("🗑 Delete loop").clicked() {
+                            let _ = tx.send(Cmd::LoopClear);
+                        }
+                    }
+                    _ => {
+                        if ui.button("🗑 Delete loop").clicked() {
+                            let _ = tx.send(Cmd::LoopClear);
+                        }
+                    }
                 }
             });
-            let passes = p.loop_passes.load(Relaxed);
-            let beats = p.loop_beats.get();
-            let info = match st {
-                lstate::EMPTY => "Press, play, press again.\nLength snaps to whole bars.".to_string(),
-                lstate::REC => "Recording… press to close".to_string(),
-                _ => format!("{} layer{} / {}  ·  {} bars", passes, if passes == 1 { "" } else { "s" }, MAX_PASSES, (beats / 4.0).max(0.25)),
+            let hint = match st {
+                lstate::EMPTY => "Record a few bars, finish, and it repeats while you play over it.",
+                lstate::REC => "Play now. Finish when you're done — it rounds to whole bars.",
+                _ => "Each layer keeps the sound it was played with.",
             };
-            ui.label(RichText::new(info).size(11.0).color(text_dim()));
-            ui.label(RichText::new("Each layer keeps its own sound — switch sounds between overdubs.").size(10.5).color(text_dim()));
+            ui.label(RichText::new(hint).size(10.5).color(text_dim()));
         });
     }
 
@@ -3714,12 +3766,57 @@ impl App {
             Speller::default_sharps()
         };
         let wk = |k: u8| (k as i32 + woff).clamp(0, 127) as u8;
+        // key signature from the scale (letters 0 = C … 6 = B); a mixed scale (freygish, harmonic
+        // minor) keeps the majority direction and its odd note gets an accidental
+        let mut sig = [0i8; 7];
+        if self.scale_on {
+            for pc in 0..12usize {
+                if speller.in_key & (1 << pc) != 0 {
+                    let sp_ = speller.table[pc];
+                    if sp_.acc != 0 {
+                        sig[sp_.letter as usize] = sp_.acc;
+                    }
+                }
+            }
+            let sh = sig.iter().filter(|a| **a > 0).count();
+            let fl = sig.iter().filter(|a| **a < 0).count();
+            if sh > 0 && fl > 0 {
+                let keep_sharps = sh > fl;
+                for a in sig.iter_mut() {
+                    if (*a > 0) != keep_sharps {
+                        *a = 0;
+                    }
+                }
+            }
+        }
+        let n_sig = sig.iter().filter(|a| **a != 0).count();
+        {
+            const SHARP_ORDER: [(usize, i32); 7] = [(3, 10), (0, 7), (4, 11), (1, 8), (5, 5), (2, 9), (6, 6)];
+            const FLAT_ORDER: [(usize, i32); 7] = [(6, 6), (2, 9), (5, 5), (1, 8), (4, 4), (0, 7), (3, 3)];
+            let sharps = sig.iter().any(|a| *a > 0);
+            let order = if sharps { SHARP_ORDER } else { FLAT_ORDER };
+            let mut i = 0;
+            for (letter, step) in order {
+                if sig[letter] == 0 {
+                    continue;
+                }
+                let x = left + sp * 3.6 + i as f32 * sp * 1.0;
+                for st in [step, step - 14] {
+                    if self.music_font {
+                        self.glyph(&painter, if sharps { '\u{E262}' } else { '\u{E260}' }, x, y_of(st), sp, ink);
+                    } else {
+                        painter.text(Pos2::new(x + sp * 0.4, y_of(st)), Align2::CENTER_CENTER, if sharps { "♯" } else { "♭" }, FontId::proportional(sp * 1.6), ink);
+                    }
+                }
+                i += 1;
+            }
+        }
         let has_song = self.song.is_some();
         let now_x = if has_song { left + (right - left) * 0.3 } else { right - 60.0 };
         // room by the beat, not the second: a quarter note gets ~6 staff spaces at any tempo
         let beat_qpm = self.song.as_ref().map(|s| s.qpm).unwrap_or_else(|| self.p.bpm.get()).clamp(30.0, 300.0);
         let px_per_s = ((sp * 6.0 * beat_qpm / 60.0) as f64).max(90.0);
-        let clip_left = left + sp * 4.0;
+        let clip_left = left + sp * 4.0 + n_sig as f32 * sp * 1.0 + if n_sig > 0 { sp * 0.8 } else { 0.0 };
         painter.line_segment([Pos2::new(now_x, y_of(14)), Pos2::new(now_x, y_of(-14))], Stroke::new(1.5_f32, LIVE.gamma_multiply(0.5)));
 
         // note values: how many quarter notes a duration is, to the nearest written value
@@ -3736,7 +3833,9 @@ impl App {
                 return;
             }
             let key = wk(key);
-            let (step, acc) = theory::staff_step(&speller, key);
+            let (step, spelled) = theory::staff_step(&speller, key);
+            // only what the key signature doesn't already say; 9 = natural sign
+            let acc = if spelled == sig[step.rem_euclid(7) as usize] { 0 } else if spelled == 0 { 9 } else { spelled };
             let treble = key >= 60;
             let y = y_of(step);
             // ledger lines
@@ -3813,6 +3912,7 @@ impl App {
                         -2 => '\u{E264}',
                         -1 => '\u{E260}',
                         1 => '\u{E262}',
+                        9 => '\u{E261}',
                         _ => '\u{E263}',
                     };
                     self.glyph(&painter, g, x - sp * 1.9, y, sp, col);
@@ -3824,7 +3924,7 @@ impl App {
                     painter.circle_stroke(Pos2::new(x, y), half * 1.0, Stroke::new(1.6_f32, col));
                 }
                 if acc != 0 {
-                    painter.text(Pos2::new(x - sp * 1.4, y), Align2::CENTER_CENTER, theory::acc_str(acc), FontId::proportional(sp * 1.6), col);
+                    painter.text(Pos2::new(x - sp * 1.4, y), Align2::CENTER_CENTER, if acc == 9 { "♮".to_string() } else { theory::acc_str(acc).to_string() }, FontId::proportional(sp * 1.6), col);
                 }
             }
         };
@@ -3834,11 +3934,31 @@ impl App {
             let pos = self.p.song_pos.get();
             let back = ((now_x - clip_left) as f64) / px_per_s;
             let ahead = ((right - now_x) as f64) / px_per_s;
+            for b in song.bars.iter() {
+                let x = now_x + ((*b - pos) * px_per_s) as f32;
+                if x > clip_left && x < right {
+                    painter.line_segment([Pos2::new(x - sp * 0.9, y_of(10)), Pos2::new(x - sp * 0.9, y_of(-10))], Stroke::new(1.2_f32, ink.gamma_multiply(0.75)));
+                }
+            }
+            if let Some(info) = &self.tune_info {
+                let shift = self.song_key + woff;
+                for (t, name) in info.chords.iter() {
+                    let x = now_x + ((*t - pos) * px_per_s) as f32;
+                    if x > clip_left && x < right {
+                        painter.text(Pos2::new(x - sp * 0.6, y_of(16)), Align2::LEFT_BOTTOM, theory::transpose_chord(name, shift, speller.table[10].acc < 0), FontId::proportional((sp * 1.5).clamp(12.0, 20.0)), ink.gamma_multiply(0.85));
+                    }
+                }
+            }
+            // a tune's chord backing is shown as names, not a pile of notes (unless it's your part)
+            let melody_only = self.tune_info.is_some();
             for n in song.notes.iter() {
                 if n.start > pos + ahead {
                     break;
                 }
                 if n.end < pos - back || n.ch == 9 {
+                    continue;
+                }
+                if melody_only && n.ch != 0 && self.song_user & (1 << n.ch) == 0 {
                     continue;
                 }
                 let yours = self.song_user & (1 << n.ch) != 0;
@@ -5750,8 +5870,6 @@ impl App {
                     ("Z / X", "octave down / up for computer keys"),
                     ("← / →", "previous / next sound"),
                     ("Space", "drums play / stop"),
-                    ("Enter", "looper: record → close → overdub → done"),
-                    ("Backspace", "undo last loop layer"),
                     ("Esc", "panic: all notes off, stop loop"),
                     ("V", "cycle view: falling notes → score → both"),
                     ("F3 / ☀🌙 button", "dark / light / follow system theme"),
@@ -5829,6 +5947,9 @@ impl eframe::App for App {
                 if let Some(v) = std::env::var("NOODLE_VIEW").ok().and_then(|v| v.parse().ok()) {
                     self.s.view = v;
                 }
+                if std::env::var("NOODLE_BROWSER").is_ok() {
+                    self.browser = Some(false);
+                }
                 if std::env::var("NOODLE_REGS").is_ok() {
                     self.regs_open = true;
                 }
@@ -5904,6 +6025,7 @@ impl eframe::App for App {
             });
             self.help(ctx);
             self.tunes_window(ctx);
+            self.sound_browser(ctx);
             self.packs_window(ctx);
             let now = now_s(&self.t0);
             self.autosave(now);
@@ -5959,6 +6081,7 @@ impl eframe::App for App {
         self.pipe_picker(ctx);
         self.chart_window(ctx);
         self.tunes_window(ctx);
+        self.sound_browser(ctx);
         self.regs_window(ctx);
         self.packs_window(ctx);
         self.chain_window(ctx);

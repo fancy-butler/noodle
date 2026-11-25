@@ -526,3 +526,45 @@ mod character_tests {
         assert_eq!(degree_name(&[0, 3, 5, 6, 7, 10], 6), "♭5");
     }
 }
+
+/// Move a chord symbol ("Gm", "D7", "Bb/F", "F#dim") by semitones; `flats` picks the spelling.
+pub fn transpose_chord(name: &str, semis: i32, flats: bool) -> String {
+    if semis.rem_euclid(12) == 0 {
+        return name.to_string();
+    }
+    fn root(s: &str) -> Option<(i32, usize)> {
+        let b = s.as_bytes();
+        let base = match b.first()?.to_ascii_uppercase() {
+            b'C' => 0,
+            b'D' => 2,
+            b'E' => 4,
+            b'F' => 5,
+            b'G' => 7,
+            b'A' => 9,
+            b'B' => 11,
+            _ => return None,
+        };
+        let mut n = 1;
+        let mut pc = base;
+        for c in s[1..].chars() {
+            match c {
+                '#' | '♯' => pc += 1,
+                'b' | '♭' => pc -= 1,
+                _ => break,
+            }
+            n += c.len_utf8();
+        }
+        Some((pc, n))
+    }
+    let names: [&str; 12] = if flats { ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"] } else { ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"] };
+    let mv = |part: &str| -> String {
+        match root(part) {
+            Some((pc, n)) => format!("{}{}", names[(pc + semis).rem_euclid(12) as usize], &part[n..]),
+            None => part.to_string(),
+        }
+    };
+    match name.split_once('/') {
+        Some((a, b)) => format!("{}/{}", mv(a), mv(b)),
+        None => mv(name),
+    }
+}

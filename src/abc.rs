@@ -917,9 +917,13 @@ pub fn to_song_opts(text: &str, bank: i32, program: i32, opts: Opts) -> Result<(
     let mut tied_from: Vec<usize> = Vec::new();
     let mut chords: Vec<(f64, String)> = Vec::new();
     let mut seed: u32 = 0x9e37_79b9;
+    let mut bars: Vec<f64> = Vec::new();
     for (ei, e) in p.evs.iter().enumerate() {
         let d = e.len * sec_per_whole;
         let pos = pos_in_bar[ei];
+        if ei > 0 && pos.abs() < 1e-9 {
+            bars.push(t);
+        }
         // swing moves where notes start and end inside the beat
         let bar_t = t - pos * sec_per_whole;
         let st = bar_t + swing_pos(pos, swing) * sec_per_whole;
@@ -1040,7 +1044,7 @@ pub fn to_song_opts(text: &str, bank: i32, program: i32, opts: Opts) -> Result<(
         npc[1] = n_back;
     }
     info.chords = chords;
-    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: if has_backing { 0b11 } else { 1 }, programs, notes_per_ch: npc, own_sound: false, qpm: qpm as f32 };
+    let song = Song { name: format!("{} ({})", info.title, info.key_label), notes, evs, dur, channels: if has_backing { 0b11 } else { 1 }, programs, notes_per_ch: npc, own_sound: false, qpm: qpm as f32, bars };
     Ok((song, info))
 }
 
