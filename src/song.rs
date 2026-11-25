@@ -35,6 +35,8 @@ pub struct Song {
     pub notes_per_ch: [u32; 16],
     /// play the notes through the player's own sound instead of the GM song synth
     pub own_sound: bool,
+    /// quarter notes per minute (the first tempo), for drawing note values
+    pub qpm: f32,
 }
 
 pub fn load(path: &Path) -> Result<Song, String> {
@@ -145,6 +147,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
         }
     }
     let mut us_per_beat = 500_000.0f64;
+    let mut first_tempo: Option<f64> = None;
     let mut last_tick = 0u64;
     let mut t = 0.0f64;
     let mut evs = Vec::with_capacity(raws.len());
@@ -156,7 +159,12 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
         };
         last_tick = r.tick;
         match r.kind {
-            RawKind::Tempo(v) => us_per_beat = v.max(1) as f64,
+            RawKind::Tempo(v) => {
+                us_per_beat = v.max(1) as f64;
+                if first_tempo.is_none() {
+                    first_tempo = Some(us_per_beat);
+                }
+            }
             RawKind::TimeSig(..) => {}
             RawKind::Ch(ch, st, d1, d2) => evs.push(SongEv { t, ch, st, d1, d2 }),
         }
@@ -200,7 +208,7 @@ pub fn parse(bytes: &[u8], name: String) -> Result<Song, String> {
     if notes.is_empty() {
         return Err("That MIDI file has no notes in it.".into());
     }
-    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch, own_sound: false })
+    Ok(Song { name, notes, evs, dur: dur + 0.5, channels, programs, notes_per_ch, own_sound: false, qpm: (60_000_000.0 / first_tempo.unwrap_or(500_000.0)) as f32 })
 }
 
 /// Build a tiny song that plays a scale up and back down — used by "Hear it".
@@ -227,5 +235,5 @@ pub fn scale_song(keys: &[u8], bpm: f32, bank: i32, program: i32) -> Song {
     programs[0] = program as i16;
     let mut npc = [0u32; 16];
     npc[0] = notes.len() as u32;
-    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true }
+    Song { name: "Scale".into(), notes, evs, dur, channels: 1, programs, notes_per_ch: npc, own_sound: true, qpm: bpm.max(30.0) }
 }

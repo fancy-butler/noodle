@@ -3716,11 +3716,22 @@ impl App {
         let wk = |k: u8| (k as i32 + woff).clamp(0, 127) as u8;
         let has_song = self.song.is_some();
         let now_x = if has_song { left + (right - left) * 0.3 } else { right - 60.0 };
-        let px_per_s = 110.0f64;
+        // room by the beat, not the second: a quarter note gets ~6 staff spaces at any tempo
+        let beat_qpm = self.song.as_ref().map(|s| s.qpm).unwrap_or_else(|| self.p.bpm.get()).clamp(30.0, 300.0);
+        let px_per_s = ((sp * 6.0 * beat_qpm / 60.0) as f64).max(90.0);
         let clip_left = left + sp * 4.0;
         painter.line_segment([Pos2::new(now_x, y_of(14)), Pos2::new(now_x, y_of(-14))], Stroke::new(1.5_f32, LIVE.gamma_multiply(0.5)));
 
-        let draw_note = |key: u8, x: f32, x_end: f32, col: Color32, tail: bool| {
+        // note values: how many quarter notes a duration is, to the nearest written value
+        // (whole, dotted half, half, dotted quarter, quarter, dotted eighth, eighth, sixteenth)
+        let value_of = |beats: f32| -> (u8, u8, bool) {
+            // (head: 0 whole 1 half 2 black, flags, dotted)
+            const V: [(f32, u8, u8, bool); 8] = [(4.0, 0, 0, false), (3.0, 1, 0, true), (2.0, 1, 0, false), (1.5, 2, 0, true), (1.0, 2, 0, false), (0.75, 2, 1, true), (0.5, 2, 1, false), (0.25, 2, 2, false)];
+            let b = beats.clamp(0.2, 8.0);
+            let best = V.iter().min_by(|a, c| (b / a.0).ln().abs().partial_cmp(&(b / c.0).ln().abs()).unwrap()).unwrap();
+            (best.1, best.2, best.3)
+        };
+        let draw_note = |key: u8, x: f32, x_end: f32, col: Color32, tail: bool, beats: Option<f32>| {
             if x < clip_left - 4.0 || x > right {
                 return;
             }
@@ -3759,8 +3770,44 @@ impl App {
             if tail && x_end > x + sp {
                 painter.line_segment([Pos2::new(x, y), Pos2::new(x_end.min(right), y)], Stroke::new(sp * 0.45, col.gamma_multiply(0.35)));
             }
+            let (head, flags, dot) = beats.map(value_of).unwrap_or((2, 0, false));
+            // stems: up below the middle line of each staff, down from it
+            let up = if treble { step < 6 } else { step < -6 };
+            let has_stem = beats.is_some() && head != 0;
+            let hx0 = x - sp * 0.59;
+            let hw = if head == 0 { sp * 1.69 } else { sp * 1.18 };
+            if has_stem {
+                let (sx, y1) = if up { (hx0 + hw - 0.6, y - sp * 3.5) } else { (hx0 + 0.6, y + sp * 3.5) };
+                painter.line_segment([Pos2::new(sx, y), Pos2::new(sx, y1)], Stroke::new((sp * 0.12).max(1.2), col));
+                if flags > 0 {
+                    if self.music_font {
+                        let g = match (flags, up) {
+                            (1, true) => '\u{E240}',
+                            (1, false) => '\u{E241}',
+                            (_, true) => '\u{E242}',
+                            (_, false) => '\u{E243}',
+                        };
+                        self.glyph(&painter, g, sx - 0.6, y1, sp, col);
+                    } else {
+                        for f in 0..flags {
+                            let fy = if up { y1 + f as f32 * sp * 0.8 } else { y1 - f as f32 * sp * 0.8 };
+                            painter.line_segment([Pos2::new(sx, fy), Pos2::new(sx + sp, fy + if up { sp } else { -sp })], Stroke::new(1.5_f32, col));
+                        }
+                    }
+                }
+            }
+            if dot {
+                // on a line the dot sits in the space above
+                let dy = if step % 2 == 0 { y_of(step + 1) } else { y };
+                painter.circle_filled(Pos2::new(hx0 + hw + sp * 0.45, dy), sp * 0.17, col);
+            }
             if self.music_font {
-                self.glyph(&painter, '\u{E0A4}', x - sp * 0.59, y, sp, col);
+                let g = match head {
+                    0 => '\u{E0A2}',
+                    1 => '\u{E0A3}',
+                    _ => '\u{E0A4}',
+                };
+                self.glyph(&painter, g, hx0, y, sp, col);
                 if acc != 0 {
                     let g = match acc {
                         -2 => '\u{E264}',
@@ -3771,7 +3818,11 @@ impl App {
                     self.glyph(&painter, g, x - sp * 1.9, y, sp, col);
                 }
             } else {
-                painter.circle_filled(Pos2::new(x, y), half * 1.1, col);
+                if head == 2 {
+                    painter.circle_filled(Pos2::new(x, y), half * 1.1, col);
+                } else {
+                    painter.circle_stroke(Pos2::new(x, y), half * 1.0, Stroke::new(1.6_f32, col));
+                }
                 if acc != 0 {
                     painter.text(Pos2::new(x - sp * 1.4, y), Align2::CENTER_CENTER, theory::acc_str(acc), FontId::proportional(sp * 1.6), col);
                 }
@@ -3797,7 +3848,7 @@ impl App {
                 let x = now_x + ((n.start - pos) * px_per_s) as f32;
                 let xe = now_x + ((n.end - pos) * px_per_s) as f32;
                 let col = if yours { if dark { YOURS } else { Color32::from_rgb(0xb0, 0x7a, 0x00) } } else { ink };
-                draw_note(n.key, x, xe, col, true);
+                draw_note(n.key, x, xe, col, true, Some(((n.end - n.start) as f32 * song.qpm / 60.0).max(0.01)));
             }
         }
         for b in &self.bars {
@@ -3818,12 +3869,14 @@ impl App {
             if self.scale_on && b.src == src::LIVE && self.scale_mask() & (1 << (b.key % 12)) == 0 {
                 col = if dark { BAD } else { Color32::from_rgb(0xd0, 0x20, 0x30) };
             }
-            draw_note(b.key, x, xe, col, true);
+            // what you play is measured against the tempo (a held note grows as you hold it)
+            let qpm = self.p.bpm.get().max(30.0);
+            draw_note(b.key, x, xe, col, true, Some(((end - b.start) as f32 * qpm / 60.0).max(0.01)));
         }
         if self.scale_on && self.walk && !self.walk_seq.is_empty() {
             let k = self.walk_seq[self.walk_pos];
             let pulse = ((now * 5.0).sin() * 0.5 + 0.5) as f32;
-            draw_note(k, now_x + 36.0, now_x + 36.0, (if dark { GOOD } else { Color32::from_rgb(0x2e, 0x9e, 0x4f) }).gamma_multiply(0.55 + 0.45 * pulse), false);
+            draw_note(k, now_x + 36.0, now_x + 36.0, (if dark { GOOD } else { Color32::from_rgb(0x2e, 0x9e, 0x4f) }).gamma_multiply(0.55 + 0.45 * pulse), false, None);
             painter.text(Pos2::new(now_x + 36.0, y_of(15)), Align2::CENTER_CENTER, format!("next: {}", speller.name(wk(k) % 12)), FontId::proportional(13.0), Color32::from_rgb(0x2e, 0x9e, 0x4f));
         }
         // chord name in ink
@@ -5772,6 +5825,9 @@ impl eframe::App for App {
                         let k = std::env::var("NOODLE_SONG_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                         self.set_song_key(k);
                     }
+                }
+                if let Some(v) = std::env::var("NOODLE_VIEW").ok().and_then(|v| v.parse().ok()) {
+                    self.s.view = v;
                 }
                 if std::env::var("NOODLE_REGS").is_ok() {
                     self.regs_open = true;
