@@ -1292,6 +1292,10 @@ impl Player {
                 if looping && v.pos >= le && le > ls {
                     v.pos -= le - ls;
                 }
+                // a loop that runs to the very end of the file wraps a little early rather than dying
+                if looping && le > ls && v.pos as usize + 2 >= len {
+                    v.pos -= le - ls;
+                }
                 if v.pos >= end - 1.0 || v.pos as usize + 2 >= len {
                     v.stage = Stage::Dead;
                     break;

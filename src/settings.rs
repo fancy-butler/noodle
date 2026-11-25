@@ -135,6 +135,8 @@ pub struct Settings {
     pub regs_on: bool,
     pub reg_level: f32,
     pub regs_left: bool,
+    /// Highland pipes use the recorded chanter when it's downloaded
+    pub ghb_rec: bool,
     pub drone_level: f32,
     pub shruti_pat: usize,
     pub shruti_low: bool,
@@ -262,6 +264,7 @@ impl Default for Settings {
             regs_on: true,
             reg_level: 0.6,
             regs_left: false,
+            ghb_rec: true,
             drone_level: 0.6,
             shruti_pat: 0,
             shruti_low: true,

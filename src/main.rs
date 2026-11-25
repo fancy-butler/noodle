@@ -24,6 +24,7 @@ mod native;
 mod packs;
 mod omr;
 mod pipe_art;
+mod pipe_pack;
 mod pipes;
 mod reed;
 mod sampler;
@@ -914,6 +915,46 @@ fn render_test(out: &str, sf: Option<String>) -> Result<(), String> {
             for _ in 0..20 {
                 eng.process(&mut gl, &mut gr);
             }
+        }
+        // recorded Highland chanter (built pack, if one is at NOODLE_HIGHLAND_PACK): legato, own tuning
+        if let Ok(dir) = std::env::var("NOODLE_HIGHLAND_PACK") {
+            let inst = sampler::load(&std::path::Path::new(&dir).join("Great Highland chanter (recorded).sfz")).expect("pack");
+            let inst = Some(Arc::new(native::InstDef::Sampler(Arc::new(inst))));
+            tx.send(Cmd::Program { layer: false, bank: sounds::SAMPLE_BANK, prog: 1, inst }).unwrap();
+            p.pipe_rec.store(true, Relaxed);
+            p.pipe_closed.store(false, Relaxed);
+            let (mut gl, mut gr) = (vec![0.0f32; block], vec![0.0f32; block]);
+            let mut grab = |secs: f32, eng: &mut Engine| {
+                let mut v = Vec::new();
+                for _ in 0..(secs * sr as f32) as usize / block {
+                    eng.process(&mut gl, &mut gr);
+                    v.extend_from_slice(&gl);
+                }
+                v
+            };
+            let yin = |x: &[f32]| pipe_pack::pitch(x, sr, 300.0, 700.0).unwrap_or(0.0);
+            tx.send(note(69, true)).unwrap();
+            grab(0.5, &mut eng);
+            let a = grab(0.3, &mut eng);
+            tx.send(note(71, true)).unwrap();
+            tx.send(note(69, false)).unwrap();
+            grab(0.3, &mut eng);
+            let b = grab(0.3, &mut eng);
+            let held = grab(5.0, &mut eng); // through several loops
+            tx.send(note(71, false)).unwrap();
+            grab(1.0, &mut eng);
+            let tail = grab(0.6, &mut eng); // after the reverb has mostly gone
+            let (fa, fb) = (yin(&a), yin(&b));
+            let cents_b = 1200.0 * (fb / 493.883).log2();
+            let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+            let chunks: Vec<f32> = held.chunks(2400).map(rms).collect();
+            let (mn, mx) = chunks.iter().fold((f32::MAX, 0f32), |m, v| (m.0.min(*v), m.1.max(*v)));
+            println!("  recorded Highland: low A {fa:.1} Hz, B {fb:.1} Hz ({cents_b:+.1} ¢), held 5 s level {mn:.3}–{mx:.3}, after release {:.4}", rms(&tail[tail.len() / 2..]));
+            if (fa - 440.0).abs() > 1.5 || (cents_b - 3.0).abs() > 3.0 || mn < mx * 0.6 || rms(&tail[tail.len() / 2..]) > mx * 0.1 {
+                fails.push("recorded Highland chanter".into());
+            }
+            p.pipe_rec.store(false, Relaxed);
+            tx.send(Cmd::Panic).unwrap();
         }
         p.pipe_mode.store(false, Relaxed);
         fn engine_tables(v: u8) -> [f32; 8] {

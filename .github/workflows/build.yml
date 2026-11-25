@@ -23,6 +23,9 @@ jobs:
       - name: sheet-music reader downloads, unpacks and runs (Audiveris)
         continue-on-error: true
         run: cargo test --release -- --ignored omr_fetch_live --nocapture
+      - name: recorded Highland chanter builds from Freesound
+        continue-on-error: true
+        run: cargo test --release -- --ignored highland_live --nocapture
       - run: cargo build --release
       - name: package
         run: |

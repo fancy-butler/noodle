@@ -224,6 +224,8 @@ pub struct Params {
     pub pipe_continuous: AtomicBool,
     /// closed fingering (Northumbrian, covered smallpipes): a short silence between notes
     pub pipe_closed: AtomicBool,
+    /// the chanter is a recorded instrument on the main sound (one note at a time), not the model
+    pub pipe_rec: AtomicBool,
     // harmonium: one key → chord in the current scale
     pub chord_on: AtomicBool,
     pub chord_kind: AtomicU8,
@@ -335,6 +337,7 @@ impl Params {
             pipe_tune: AtomicI32::new(0),
             pipe_continuous: AtomicBool::new(false),
             pipe_closed: AtomicBool::new(false),
+            pipe_rec: AtomicBool::new(false),
             chord_on: AtomicBool::new(false),
             chord_kind: AtomicU8::new(0),
         }
@@ -1307,6 +1310,19 @@ impl Engine {
             self.pipe_held[self.pipe_n] = key;
             self.pipe_n += 1;
         }
+        if self.p.pipe_rec.load(Relaxed) {
+            // recorded chanter: new note on, then the old one off (no gap, no two at once)
+            let old = self.chanter;
+            if old != key as i16 {
+                self.route(key, 100, true);
+                if old >= 0 {
+                    self.route(old as u8, 0, false);
+                }
+            }
+            self.ch.target = 0.0;
+            self.chanter = key as i16;
+            return;
+        }
         // pitch: just intonation against the drones + pipe tuning; the tone never re-attacks between notes
         let mut cents = key as f64 * 100.0 + self.p.pipe_tune.load(Relaxed) as f64;
         if self.p.pipe_just.load(Relaxed) {
@@ -1349,6 +1365,9 @@ impl Engine {
     }
 
     fn chanter_stop(&mut self) {
+        if self.chanter >= 0 && self.p.pipe_rec.load(Relaxed) {
+            self.route(self.chanter as u8, 0, false);
+        }
         self.ch.target = 0.0;
         self.chanter = -1;
         self.pipe_n = 0;

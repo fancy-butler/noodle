@@ -204,6 +204,8 @@ pub struct App {
     pipe_auto: bool,
     /// uilleann regulator board: open, and what the mouse is holding (regulator, key) or a row
     regs_open: bool,
+    /// your sound before the recorded Highland chanter took over the keys
+    rec_prev_main: Option<(i32, i32)>,
     reg_mouse: Option<(usize, usize)>,
     reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
@@ -589,6 +591,7 @@ impl App {
             omr: Default::default(),
             pipe_auto: false,
             regs_open: false,
+            rec_prev_main: None,
             reg_mouse: None,
             reg_mouse_row: None,
             song_key: 0,
@@ -4469,6 +4472,31 @@ impl App {
         pick
     }
 
+    /// Highland pipes with the recorded chanter downloaded: the bagpipe module plays it (one note
+    /// at a time over the drones) instead of the model; your own sound comes back afterwards.
+    fn sync_recorded_chanter(&mut self) {
+        let pk = crate::packs::PACKS.iter().find(|p| matches!(p.src, crate::packs::Src::Highland));
+        let want = self.s.drone_mode == 1 && self.s.pipe_idx == 0 && self.s.ghb_rec && !self.acc_mode && !self.oc_mode && pk.map(crate::packs::installed).unwrap_or(false);
+        let bp = pk.map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
+        if want {
+            let bp = bp.unwrap();
+            if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+                self.add_native_presets();
+            }
+            if self.s.main != bp && self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+                if self.rec_prev_main.is_none() {
+                    self.rec_prev_main = Some(self.s.main);
+                }
+                self.set_preset(false, bp);
+            }
+        } else if let Some(prev) = self.rec_prev_main.take() {
+            if Some(self.s.main) == bp {
+                self.set_preset(false, prev);
+            }
+        }
+        self.p.pipe_rec.store(want && Some(self.s.main) == bp, Relaxed);
+    }
+
     /// The uilleann regulators: three rows of keys on the stock, struck singly or a row at a time.
     fn regs_window(&mut self, ctx: &egui::Context) {
         use crate::pipes::{REGS, REG_ROWS};
@@ -5361,7 +5389,9 @@ impl App {
         let mut pick: Option<Option<(i32, i32)>> = None;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
-            let label = if on_pipe {
+            let label = if on_pipe && self.p.pipe_rec.load(Relaxed) {
+                "Recorded Highland chanter".to_string()
+            } else if on_pipe {
                 format!("Modelled {}", crate::pipes::PIPES[self.s.pipe_idx].name)
             } else if opts.contains(&cur) {
                 self.preset_name(cur)
@@ -5369,16 +5399,36 @@ impl App {
                 format!("{} (your own)", self.preset_name(cur))
             };
             egui::ComboBox::from_id_salt("chart_sound").selected_text(label).width(220.0).show_ui(ui, |ui| {
+                let rec_pk = crate::packs::PACKS.iter().find(|p| matches!(p.src, crate::packs::Src::Highland)).copied();
+                if pipe == Some(0) {
+                    if let Some(pk) = rec_pk {
+                        let have = crate::packs::installed(&pk);
+                        let on = on_pipe && self.s.ghb_rec && have;
+                        let label = if have { "★ Recorded Highland chanter".to_string() } else { "⬇ Recorded Highland chanter (download, 9 notes)".to_string() };
+                        if ui.selectable_label(on, label).on_hover_text(pk.credit).clicked() {
+                            if !have {
+                                self.dl.start(pk, ui.ctx().clone());
+                            }
+                            self.s.ghb_rec = true;
+                            pick = Some(None);
+                        }
+                    }
+                }
                 if let Some(pi) = pipe {
+                    let modelled_on = on_pipe && !(pi == 0 && self.s.ghb_rec && rec_pk.map(|p| crate::packs::installed(&p)).unwrap_or(false));
                     if ui
-                        .selectable_label(on_pipe, format!("★ Modelled {}", crate::pipes::PIPES[pi].name))
+                        .selectable_label(modelled_on, format!("{}Modelled {}", if pi == 0 { "" } else { "★ " }, crate::pipes::PIPES[pi].name))
                         .on_hover_text("This pipe's own chanter, built from measurements of real ones; drones from the Drone panel (STRIKE IN)")
                         .clicked()
                     {
+                        if pi == 0 {
+                            self.s.ghb_rec = false;
+                        }
                         pick = Some(None);
                     }
                 }
-                for bp in &opts {
+                let rec_bp = rec_pk.map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(&pk))));
+                for bp in opts.iter().filter(|bp| Some(**bp) != rec_bp) {
                     let rec = bp.0 >= sounds::SAMPLE_BANK;
                     let name = format!("{}{}", if rec { "★ " } else { "" }, self.preset_name(*bp));
                     if ui.selectable_label(!on_pipe && *bp == cur, name).on_hover_text(if rec { "Recorded instrument" } else { "From the sound bank" }).clicked() {
@@ -5545,7 +5595,11 @@ impl App {
                 }
             } else {
                 let hint = if self.s.drone_mode == 1 && !self.acc_mode {
-                    format!("Keys play the modelled {} chanter (the sound box above is resting). Drones: STRIKE IN on the Drone panel.", crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name)
+                    if self.p.pipe_rec.load(Relaxed) {
+                        "Keys play the recorded Highland chanter, one note at a time. Drones: STRIKE IN on the Drone panel.".to_string()
+                    } else {
+                        format!("Keys play the modelled {} chanter (the sound box above is resting). Drones: STRIKE IN on the Drone panel.", crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name)
+                    }
                 } else { match crate::fingering::chart_for_sound(&self.preset_name(self.s.main)) {
                     Some((c, _)) => format!("Every key sounds. This sound has a {} chart: fingerings show, an octave in where needed.", CHARTS[c].name.split(" (").next().unwrap_or("").to_lowercase()),
                     None => "Every key sounds, any sound: a regular synth. Pick Real instrument for a whistle, sax, flute… range with live fingerings.".into(),
@@ -5741,6 +5795,7 @@ impl eframe::App for App {
         }
         self.apply_controller(ctx);
         self.apply_drones();
+        self.sync_recorded_chanter();
         self.apply_range();
         self.poll_score(ctx);
         self.poll_pick(ctx);

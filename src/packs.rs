@@ -16,6 +16,8 @@ pub enum Src {
     Sfz(&'static str, &'static str, &'static str, &'static str),
     /// a whole SoundFont file (url, file name, licence url)
     Sf2(&'static str, &'static str, &'static str),
+    /// built by Noodle from separate recordings (see pipe_pack.rs)
+    Highland,
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +44,7 @@ pub const PACKS: &[Pack] = &[
         src: Src::Sf2("https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2", "GeneralUser-GS.sf2", "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/documentation/LICENSE.txt"),
         credit: "S. Christian Collins · free licence (use without restriction)",
     },
+    Pack { name: "Great Highland chanter (recorded)", group: "Pipes & whistles", src: Src::Highland, credit: crate::pipe_pack::CREDIT },
     Pack { name: "Bagpipe in G (with drones)", group: "Pipes & whistles", src: Src::Sfz("freepats", "bagpipe", "main", "Bagpipe 20260806.sfz"), credit: "FreePats · Gilles Sadowski · CC0" },
     vcsl("Harmonica, chromatic (Hohner Super 64)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz"),
     vcsl("Harmonica, chromatic (vibrato)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Vib.sfz"),
@@ -166,6 +169,7 @@ pub fn installed_path(p: &Pack) -> PathBuf {
     match p.src {
         Src::Sfz(owner, repo, _, path) => root().join(format!("{owner}-{repo}")).join(path),
         Src::Sf2(_, file, _) => crate::sounds::user_dir().join("soundfonts").join(file),
+        Src::Highland => crate::pipe_pack::sfz_path(),
     }
 }
 
@@ -362,6 +366,21 @@ impl Downloads {
 
     fn run(&self, p: Pack, ctx: &eframe::egui::Context) -> Result<PathBuf, String> {
         match p.src {
+            Src::Highland => {
+                let dir = crate::pipe_pack::dir();
+                let tmp = dir.with_extension("building");
+                let _ = std::fs::remove_dir_all(&tmp);
+                let me = self.clone();
+                let c = ctx.clone();
+                let progress = move |i: usize, n: usize| {
+                    me.set(p.name, Status::Working(i, n));
+                    c.request_repaint();
+                };
+                crate::pipe_pack::build(&tmp, &fetch, &progress)?;
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::rename(&tmp, &dir).map_err(|e| e.to_string())?;
+                Ok(crate::pipe_pack::sfz_path())
+            }
             Src::Sf2(url, file, lic) => {
                 let dir = crate::sounds::user_dir().join("soundfonts");
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
