@@ -25,6 +25,7 @@ mod packs;
 mod omr;
 mod pipe_art;
 mod pipe_pack;
+mod rec_build;
 mod pipes;
 mod reed;
 mod sampler;

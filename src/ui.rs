@@ -204,6 +204,9 @@ pub struct App {
     pipe_auto: bool,
     /// the sound browser window: open for the main sound (false) or the layer (true)
     browser: Option<bool>,
+    /// "make an instrument from a recording": the job running, and what it found
+    rec_job: Option<std::sync::Arc<std::sync::Mutex<Option<Result<(PathBuf, Vec<String>), String>>>>>,
+    rec_report: Option<Vec<String>>,
     /// uilleann regulator board: open, and what the mouse is holding (regulator, key) or a row
     regs_open: bool,
     /// your sound before the recorded Highland chanter took over the keys
@@ -593,6 +596,8 @@ impl App {
             omr: Default::default(),
             pipe_auto: false,
             browser: None,
+            rec_job: None,
+            rec_report: None,
             regs_open: false,
             rec_prev_main: None,
             reg_mouse: None,
@@ -5213,6 +5218,21 @@ impl App {
                 }
             }
         }
+        // a recording turned into an instrument: list it, switch to it
+        let done = self.rec_job.as_ref().and_then(|j| j.lock().unwrap().take());
+        if let Some(r) = done {
+            self.rec_job = None;
+            match r {
+                Ok((path, report)) => {
+                    self.add_native_presets();
+                    self.set_preset(false, (sounds::SAMPLE_BANK, sounds::inst_id(&path)));
+                    let mut rep = vec![format!("✓ Made {}", path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())];
+                    rep.extend(report);
+                    self.rec_report = Some(rep);
+                }
+                Err(e) => self.rec_report = Some(vec![format!("✕ {e}")]),
+            }
+        }
         if !self.packs_open {
             return;
         }
@@ -5245,6 +5265,36 @@ impl App {
                     }
                 }
             });
+            // your own instrument from one recording of a scale
+            ui.horizontal_wrapped(|ui| {
+                let busy = self.rec_job.as_ref().map(|j| j.lock().unwrap().is_none()).unwrap_or(false);
+                if busy {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Listening through the recording…");
+                } else if ui
+                    .button(RichText::new("🎤 Make an instrument from a recording…").strong())
+                    .on_hover_text("A recording of an instrument playing a scale, one steady note at a time (half a second or more each). Noodle finds the notes, loops them and adds the instrument under Samples. It stays on this computer.")
+                    .clicked()
+                {
+                    if let Some(f) = rfd::FileDialog::new().add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "mp4", "aac"]).pick_file() {
+                        let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "My instrument".into());
+                        let job = std::sync::Arc::new(std::sync::Mutex::new(None));
+                        self.rec_job = Some(job.clone());
+                        let c = ctx.clone();
+                        std::thread::spawn(move || {
+                            let r = crate::rec_build::build(&f, &name, &sounds::user_dir().join("instruments"), 70.0, 1600.0);
+                            *job.lock().unwrap() = Some(r);
+                            c.request_repaint();
+                        });
+                    }
+                }
+                ui.label(RichText::new("WAV, FLAC, MP3, OGG or M4A").size(11.0).color(text_dim()));
+            });
+            if let Some(rep) = &self.rec_report {
+                for (i, l) in rep.iter().enumerate() {
+                    ui.label(RichText::new(l).size(11.5).color(if i == 0 { GOOD } else { text_dim() }));
+                }
+            }
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut group = "";
