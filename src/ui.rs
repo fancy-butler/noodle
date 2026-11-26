@@ -4652,21 +4652,45 @@ impl App {
 
     /// Highland pipes with the recorded chanter downloaded: the bagpipe module plays it (one note
     /// at a time over the drones) instead of the model; your own sound comes back afterwards.
+    /// The recorded chanter for a pipe, if there is one: Highland (0), uilleann (3).
+    fn rec_pack(pipe: usize) -> Option<crate::packs::Pack> {
+        let name = match pipe {
+            0 => "Great Highland chanter (recorded)",
+            3 => "Uilleann chanter (recorded)",
+            _ => return None,
+        };
+        crate::packs::PACKS.iter().find(|p| p.name == name).copied()
+    }
+    fn rec_wanted(&self, pipe: usize) -> bool {
+        match pipe {
+            0 => self.s.ghb_rec,
+            3 => self.s.uil_rec,
+            _ => false,
+        }
+    }
+    fn set_rec_wanted(&mut self, pipe: usize, on: bool) {
+        match pipe {
+            0 => self.s.ghb_rec = on,
+            3 => self.s.uil_rec = on,
+            _ => {}
+        }
+    }
+
     fn bank_label(&self) -> String {
         self.s.soundfont.as_ref().and_then(|p| std::path::Path::new(p).file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "your sound bank".into())
     }
 
     fn sync_recorded_chanter(&mut self) {
-        let pk = crate::packs::PACKS.iter().find(|p| matches!(p.src, crate::packs::Src::Highland));
         let on = self.s.drone_mode == 1 && !self.acc_mode && !self.oc_mode;
-        let rec_bp = pk.filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
-        // the chanter sound for this pipe: one you picked from your banks, or the recorded Highland one
-        let picked = self.s.pipe_sounds.iter().find(|x| x.0 == self.s.pipe_idx).map(|x| (x.1, x.2));
+        let pi = self.s.pipe_idx;
+        let rec_bp = Self::rec_pack(pi).filter(crate::packs::installed).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(&pk))));
+        // the chanter sound for this pipe: one you picked from your banks, or its recorded one
+        let picked = self.s.pipe_sounds.iter().find(|x| x.0 == pi).map(|x| (x.1, x.2));
         let bp = if !on {
             None
         } else if let Some(bp) = picked {
             Some(bp)
-        } else if self.s.pipe_idx == 0 && self.s.ghb_rec {
+        } else if self.rec_wanted(pi) {
             rec_bp
         } else {
             None
@@ -5625,7 +5649,10 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
             let label = if on_pipe && self.p.pipe_rec.load(Relaxed) {
-                format!("{} (chanter)", self.preset_name(self.s.main))
+                {
+                    let n = self.preset_name(self.s.main);
+                    if n.contains("chanter") { n } else { format!("{n} (chanter)") }
+                }
             } else if on_pipe {
                 format!("Modelled {}", crate::pipes::PIPES[self.s.pipe_idx].name)
             } else if opts.contains(&cur) {
@@ -5634,32 +5661,28 @@ impl App {
                 format!("{} (your own)", self.preset_name(cur))
             };
             egui::ComboBox::from_id_salt("chart_sound").selected_text(label).width(220.0).show_ui(ui, |ui| {
-                let rec_pk = crate::packs::PACKS.iter().find(|p| matches!(p.src, crate::packs::Src::Highland)).copied();
-                if pipe == Some(0) {
-                    if let Some(pk) = rec_pk {
-                        let have = crate::packs::installed(&pk);
-                        let on = on_pipe && self.s.ghb_rec && have;
-                        let label = if have { "★ Recorded Highland chanter".to_string() } else { "⬇ Recorded Highland chanter (download, 9 notes)".to_string() };
-                        if ui.selectable_label(on, label).on_hover_text(pk.credit).clicked() {
-                            if !have {
-                                self.dl.start(pk, ui.ctx().clone());
-                            }
-                            self.s.ghb_rec = true;
-                            self.s.pipe_sounds.retain(|x| x.0 != 0);
-                            pick = Some(None);
+                let rec_pk = pipe.and_then(Self::rec_pack);
+                if let (Some(pi), Some(pk)) = (pipe, rec_pk) {
+                    let have = crate::packs::installed(&pk);
+                    let on = on_pipe && self.rec_wanted(pi) && have && !self.s.pipe_sounds.iter().any(|x| x.0 == pi);
+                    let label = if have { format!("★ {}", pk.name.replace(" (recorded)", ", recorded")) } else { format!("⬇ {} (download)", pk.name) };
+                    if ui.selectable_label(on, label).on_hover_text(pk.credit).clicked() {
+                        if !have {
+                            self.dl.start(pk, ui.ctx().clone());
                         }
+                        self.set_rec_wanted(pi, true);
+                        self.s.pipe_sounds.retain(|x| x.0 != pi);
+                        pick = Some(None);
                     }
                 }
                 if let Some(pi) = pipe {
-                    let modelled_on = on_pipe && !(pi == 0 && self.s.ghb_rec && rec_pk.map(|p| crate::packs::installed(&p)).unwrap_or(false));
+                    let modelled_on = on_pipe && !self.p.pipe_rec.load(Relaxed);
                     if ui
-                        .selectable_label(modelled_on, format!("{}Modelled {}", if pi == 0 { "" } else { "★ " }, crate::pipes::PIPES[pi].name))
+                        .selectable_label(modelled_on, format!("{}Modelled {}", if Self::rec_pack(pi).is_some() { "" } else { "★ " }, crate::pipes::PIPES[pi].name))
                         .on_hover_text("This pipe's own chanter, built from measurements of real ones; drones from the Drone panel (STRIKE IN)")
                         .clicked()
                     {
-                        if pi == 0 {
-                            self.s.ghb_rec = false;
-                        }
+                        self.set_rec_wanted(pi, false);
                         self.s.pipe_sounds.retain(|x| x.0 != pi);
                         pick = Some(None);
                     }

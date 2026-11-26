@@ -137,6 +137,8 @@ pub struct Settings {
     pub regs_left: bool,
     /// Highland pipes use the recorded chanter when it's downloaded
     pub ghb_rec: bool,
+    /// uilleann pipes use the recorded chanter when it's downloaded
+    pub uil_rec: bool,
     /// a sound from your banks used as a pipe's chanter (pipe index, bank, program)
     pub pipe_sounds: Vec<(usize, i32, i32)>,
     pub drone_level: f32,
@@ -267,6 +269,7 @@ impl Default for Settings {
             reg_level: 0.6,
             regs_left: false,
             ghb_rec: true,
+            uil_rec: true,
             pipe_sounds: Vec::new(),
             drone_level: 0.6,
             shruti_pat: 0,

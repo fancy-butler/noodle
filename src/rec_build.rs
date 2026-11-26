@@ -98,17 +98,36 @@ pub fn find_notes(mono: &[f32], rate: u32, lo: f32, hi: f32) -> Vec<Found> {
         }
         s = e;
     }
-    // one take per key: the longest
-    let mut best: Vec<Found> = Vec::new();
+    // the set's overall offset from A440, from the clearly held notes (each one's distance to its
+    // nearest equal-tempered pitch, wrapped to ±50 ¢); keys are assigned after removing it, so a
+    // sharp set's E♭ isn't mistaken for a flat E
+    let long: Vec<&(usize, usize, f32)> = runs.iter().filter(|r| (r.1 - r.0) * hop >= rate as usize / 2).collect();
+    let mut devs: Vec<f32> = long.iter().map(|r| r.2 - (r.2 / 100.0).round() * 100.0).collect();
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let offset = if devs.is_empty() { 0.0 } else { devs[devs.len() / 2] };
+    // one take per key: unclipped first, then the longest; slides and squeaks (short, or far
+    // from any note once the offset is out) are dropped
+    let clipped = |s: usize, e: usize| mono[s.min(mono.len())..e.min(mono.len())].iter().any(|v| v.abs() > 0.985);
+    let mut best: Vec<(Found, bool)> = Vec::new();
     for (s, e, c) in runs {
-        let key = (c / 100.0).round().clamp(0.0, 127.0) as u8;
+        if (e - s) * hop < rate as usize * 2 / 5 {
+            continue;
+        }
+        let rel = c - offset;
+        let key = (rel / 100.0).round().clamp(0.0, 127.0) as u8;
+        if (rel - key as f32 * 100.0).abs() > 45.0 {
+            continue;
+        }
         let f = Found { key, hz: 440.0 * 2f32.powf((c - 6900.0) / 1200.0), cents: c - key as f32 * 100.0, start: s * hop, end: e * hop + win / 2 };
-        match best.iter_mut().find(|b| b.key == key) {
-            Some(b) if b.end - b.start >= f.end - f.start => {}
-            Some(b) => *b = f,
-            None => best.push(f),
+        let clip = clipped(f.start, f.end);
+        let better = |old: &(Found, bool)| (old.1 && !clip) || (old.1 == clip && f.end - f.start > old.0.end - old.0.start);
+        match best.iter_mut().find(|b| b.0.key == key) {
+            Some(b) if !better(b) => {}
+            Some(b) => *b = (f, clip),
+            None => best.push((f, clip)),
         }
     }
+    let mut best: Vec<Found> = best.into_iter().map(|b| b.0).collect();
     best.sort_by_key(|b| b.key);
     best
 }
@@ -240,4 +259,18 @@ mod tests {
         let inst = crate::sampler::load(&sfz).expect("loads");
         assert_eq!(inst.regions.len(), 8);
     }
+
+    /// `NOODLE_REC=file.wav cargo test --release -- --ignored rec_file --nocapture`
+    #[test]
+    #[ignore]
+    fn rec_file() {
+        let f = std::env::var("NOODLE_REC").unwrap();
+        let out = std::env::temp_dir().join("noodle-rec-out");
+        let (sfz, report) = build(std::path::Path::new(&f), "Uilleann chanter", &out, 200.0, 1600.0).expect("build");
+        for l in &report {
+            println!("{l}");
+        }
+        println!("{}", std::fs::read_to_string(&sfz).unwrap());
+    }
 }
+

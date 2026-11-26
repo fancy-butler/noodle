@@ -45,6 +45,7 @@ pub const PACKS: &[Pack] = &[
         credit: "S. Christian Collins · free licence (use without restriction)",
     },
     Pack { name: "Great Highland chanter (recorded)", group: "Pipes & whistles", src: Src::Highland, credit: crate::pipe_pack::CREDIT },
+    Pack { name: "Uilleann chanter (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-chanter/Uilleann chanter (recorded).sfz"), credit: "Uilleann chanter · recorded by Fancy Butler · CC0" },
     Pack { name: "Bagpipe in G (with drones)", group: "Pipes & whistles", src: Src::Sfz("freepats", "bagpipe", "main", "Bagpipe 20260806.sfz"), credit: "FreePats · Gilles Sadowski · CC0" },
     vcsl("Harmonica, chromatic (Hohner Super 64)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz"),
     vcsl("Harmonica, chromatic (vibrato)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Vib.sfz"),

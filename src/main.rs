@@ -1087,9 +1087,22 @@ fn regs_demo(out: &str) {
             p.drone_cents[i].store((62 + d.0 as i32) * 100, Relaxed);
         }
     }
+    // a recorded chanter instead of the model (NOODLE_DEMO_SFZ)
+    if let Ok(f) = std::env::var("NOODLE_DEMO_SFZ") {
+        let inst = sampler::load(std::path::Path::new(&f)).expect("sfz");
+        tx.send(Cmd::Program { layer: false, bank: sounds::SAMPLE_BANK, prog: 1, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }).unwrap();
+        p.pipe_rec.store(true, Relaxed);
+    }
     p.drone_on.store(true, Relaxed);
     p.pipe_mode.store(true, Relaxed);
     run(1.0, &mut eng);
+    // the scale up and down first
+    for k in [62u8, 64, 66, 67, 69, 71, 73, 74, 73, 71, 69, 67, 66, 64, 62] {
+        tx.send(Cmd::Midi([0x90, k, 100])).unwrap();
+        run(0.3, &mut eng);
+        tx.send(Cmd::Midi([0x80, k, 0])).unwrap();
+    }
+    run(0.4, &mut eng);
     // a jig in G: 6/8, eighths at ~0.2 s; row keys: B3 = G row, A3 = D row
     let bars: [([u8; 6], u8); 4] = [([67, 71, 74, 67, 71, 74], 59), ([66, 69, 74, 66, 69, 74], 57), ([67, 71, 74, 76, 74, 71], 59), ([69, 66, 62, 67, 67, 67], 57)];
     let eighth = 0.2;
