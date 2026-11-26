@@ -4647,13 +4647,27 @@ impl App {
 
     /// Highland pipes with the recorded chanter downloaded: the bagpipe module plays it (one note
     /// at a time over the drones) instead of the model; your own sound comes back afterwards.
+    fn bank_label(&self) -> String {
+        self.s.soundfont.as_ref().and_then(|p| std::path::Path::new(p).file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "your sound bank".into())
+    }
+
     fn sync_recorded_chanter(&mut self) {
         let pk = crate::packs::PACKS.iter().find(|p| matches!(p.src, crate::packs::Src::Highland));
-        let want = self.s.drone_mode == 1 && self.s.pipe_idx == 0 && self.s.ghb_rec && !self.acc_mode && !self.oc_mode && pk.map(crate::packs::installed).unwrap_or(false);
-        let bp = pk.map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
-        if want {
-            let bp = bp.unwrap();
-            if !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+        let on = self.s.drone_mode == 1 && !self.acc_mode && !self.oc_mode;
+        let rec_bp = pk.filter(|pk| crate::packs::installed(pk)).map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(pk))));
+        // the chanter sound for this pipe: one you picked from your banks, or the recorded Highland one
+        let picked = self.s.pipe_sounds.iter().find(|x| x.0 == self.s.pipe_idx).map(|x| (x.1, x.2));
+        let bp = if !on {
+            None
+        } else if let Some(bp) = picked {
+            Some(bp)
+        } else if self.s.pipe_idx == 0 && self.s.ghb_rec {
+            rec_bp
+        } else {
+            None
+        };
+        if let Some(bp) = bp {
+            if bp.0 >= sounds::SAMPLE_BANK && !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
                 self.add_native_presets();
             }
             if self.s.main != bp && self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
@@ -4663,11 +4677,9 @@ impl App {
                 self.set_preset(false, bp);
             }
         } else if let Some(prev) = self.rec_prev_main.take() {
-            if Some(self.s.main) == bp {
-                self.set_preset(false, prev);
-            }
+            self.set_preset(false, prev);
         }
-        self.p.pipe_rec.store(want && Some(self.s.main) == bp, Relaxed);
+        self.p.pipe_rec.store(bp.is_some() && Some(self.s.main) == bp, Relaxed);
     }
 
     /// The uilleann regulators: three rows of keys on the stock, struck singly or a row at a time.
@@ -5563,7 +5575,7 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
             let label = if on_pipe && self.p.pipe_rec.load(Relaxed) {
-                "Recorded Highland chanter".to_string()
+                format!("{} (chanter)", self.preset_name(self.s.main))
             } else if on_pipe {
                 format!("Modelled {}", crate::pipes::PIPES[self.s.pipe_idx].name)
             } else if opts.contains(&cur) {
@@ -5583,6 +5595,7 @@ impl App {
                                 self.dl.start(pk, ui.ctx().clone());
                             }
                             self.s.ghb_rec = true;
+                            self.s.pipe_sounds.retain(|x| x.0 != 0);
                             pick = Some(None);
                         }
                     }
@@ -5597,10 +5610,37 @@ impl App {
                         if pi == 0 {
                             self.s.ghb_rec = false;
                         }
+                        self.s.pipe_sounds.retain(|x| x.0 != pi);
                         pick = Some(None);
                     }
                 }
                 let rec_bp = rec_pk.map(|pk| (sounds::SAMPLE_BANK, sounds::inst_id(&crate::packs::installed_path(&pk))));
+                if let Some(pi) = pipe {
+                    // any bagpipe in your banks can be this pipe's chanter (one note at a time, over the drones)
+                    let cands: Vec<(i32, i32, String)> = self
+                        .presets
+                        .iter()
+                        .filter(|p| Some((p.bank, p.prog)) != rec_bp)
+                        .filter(|p| {
+                            let n = p.name.to_lowercase();
+                            (p.bank < 128 && p.prog == 109) || ((n.contains("pipe") || n.contains("chanter") || n.contains("uilleann")) && !n.contains("pan") && !n.contains("organ"))
+                        })
+                        .map(|p| (p.bank, p.prog, p.name.clone()))
+                        .collect();
+                    if !cands.is_empty() {
+                        ui.separator();
+                        ui.label(RichText::new(format!("As the chanter — from {}", self.bank_label())).size(11.5).color(text_dim()));
+                    }
+                    let chosen = self.s.pipe_sounds.iter().find(|x| x.0 == pi).map(|x| (x.1, x.2));
+                    for (b, pr, name) in cands {
+                        if ui.selectable_label(on_pipe && chosen == Some((b, pr)), format!("{name} (chanter)")).on_hover_text("Played one note at a time over Noodle's drones. If this sound has its own drones built in, turn Noodle's off.").clicked() {
+                            self.s.pipe_sounds.retain(|x| x.0 != pi);
+                            self.s.pipe_sounds.push((pi, b, pr));
+                            pick = Some(None);
+                        }
+                    }
+                    ui.separator();
+                }
                 for bp in opts.iter().filter(|bp| Some(**bp) != rec_bp) {
                     let rec = bp.0 >= sounds::SAMPLE_BANK;
                     let name = format!("{}{}", if rec { "★ " } else { "" }, self.preset_name(*bp));
@@ -5769,7 +5809,7 @@ impl App {
             } else {
                 let hint = if self.s.drone_mode == 1 && !self.acc_mode {
                     if self.p.pipe_rec.load(Relaxed) {
-                        "Keys play the recorded Highland chanter, one note at a time. Drones: STRIKE IN on the Drone panel.".to_string()
+                        format!("Keys play {} as the {} chanter, one note at a time. Drones: STRIKE IN on the Drone panel.", self.preset_name(self.s.main), crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name)
                     } else {
                         format!("Keys play the modelled {} chanter (the sound box above is resting). Drones: STRIKE IN on the Drone panel.", crate::pipes::PIPES[self.s.pipe_idx.min(crate::pipes::PIPES.len() - 1)].name)
                     }
@@ -5946,6 +5986,14 @@ impl eframe::App for App {
                 }
                 if let Some(v) = std::env::var("NOODLE_VIEW").ok().and_then(|v| v.parse().ok()) {
                     self.s.view = v;
+                }
+                if let Ok(v) = std::env::var("NOODLE_PIPE_SOUND") {
+                    // tests: "pipe,bank,prog" as that pipe's chanter
+                    let n: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                    if n.len() == 3 {
+                        self.s.pipe_sounds.retain(|x| x.0 != n[0] as usize);
+                        self.s.pipe_sounds.push((n[0] as usize, n[1], n[2]));
+                    }
                 }
                 if std::env::var("NOODLE_BROWSER").is_ok() {
                     self.browser = Some(false);
