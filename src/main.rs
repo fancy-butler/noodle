@@ -17,6 +17,7 @@ mod controllers;
 mod audio;
 mod drums;
 mod game;
+mod drone_rec;
 mod engine;
 mod fingering;
 mod midi;
@@ -1092,6 +1093,20 @@ fn regs_demo(out: &str) {
         let inst = sampler::load(std::path::Path::new(&f)).expect("sfz");
         tx.send(Cmd::Program { layer: false, bank: sounds::SAMPLE_BANK, prog: 1, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }).unwrap();
         p.pipe_rec.store(true, Relaxed);
+    }
+    // recorded regulators instead of the model (NOODLE_DEMO_REGS = the regulators .sfz)
+    if let Ok(f) = std::env::var("NOODLE_DEMO_REGS") {
+        let r = drone_rec::load_regs(std::path::Path::new(&f)).expect("regs");
+        tx.send(Cmd::RegSet(Some(Arc::new(r)))).unwrap();
+    }
+    // recorded drones instead of the model (NOODLE_DEMO_DRONES = the drones .sfz)
+    if let Ok(f) = std::env::var("NOODLE_DEMO_DRONES") {
+        let d = drone_rec::load(std::path::Path::new(&f)).expect("drones");
+        tx.send(Cmd::DroneLoop(Some(Arc::new(d)))).unwrap();
+        p.drone_rec_cents.store(6200, Relaxed);
+        for i in 0..13 {
+            p.drone_cents[i].store(i32::MIN, Relaxed);
+        }
     }
     p.drone_on.store(true, Relaxed);
     p.pipe_mode.store(true, Relaxed);

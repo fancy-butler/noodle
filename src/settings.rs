@@ -143,6 +143,10 @@ pub struct Settings {
     pub ghb_rec: bool,
     /// uilleann pipes use the recorded chanter when it's downloaded
     pub uil_rec: bool,
+    /// uilleann pipes use the recorded drones when they're downloaded
+    pub uil_drones_rec: bool,
+    /// uilleann regulators use the recorded ones when they're downloaded
+    pub uil_regs_rec: bool,
     /// a sound from your banks used as a pipe's chanter (pipe index, bank, program)
     pub pipe_sounds: Vec<(usize, i32, i32)>,
     pub drone_level: f32,
@@ -276,6 +280,8 @@ impl Default for Settings {
             regs_left: false,
             ghb_rec: true,
             uil_rec: true,
+            uil_drones_rec: true,
+            uil_regs_rec: true,
             pipe_sounds: Vec::new(),
             drone_level: 0.6,
             shruti_pat: 0,

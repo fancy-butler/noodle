@@ -90,7 +90,7 @@ pub fn native_presets(extra: &[PathBuf]) -> (Vec<PresetInfo>, Vec<(i32, PathBuf)
     let mut v = Vec::new();
     let mut paths = Vec::new();
     let pack_names: std::collections::HashMap<PathBuf, &str> = crate::packs::PACKS.iter().map(|p| (crate::packs::installed_path(p), p.name)).collect();
-    for f in files {
+    for f in files.into_iter().filter(|f| !crate::packs::not_an_instrument(f)) {
         let id = inst_id(&f);
         let name = pack_names
             .get(&f)

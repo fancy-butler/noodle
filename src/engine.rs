@@ -210,6 +210,8 @@ pub struct Params {
     pub drone_on: AtomicBool,
     pub drone_cents: [AtomicI32; 13],
     pub drone_level: AF32,
+    /// recorded drone set: absolute cents of its top drone, i32::MIN = use the synthesised drones
+    pub drone_rec_cents: AtomicI32,
     pub drone_tone: AtomicU8, // 0 bright pipe, 1 medium pipe, 2 sweet pipe, 3 reed (shruti/harmonium)
     // bagpipe chanter
     pub pipe_mode: AtomicBool,
@@ -327,6 +329,7 @@ impl Params {
             reg_sounding: [AtomicU8::new(255), AtomicU8::new(255), AtomicU8::new(255)],
             harm_octaves: AtomicU8::new(0b010),
             drone_level: AF32::new(0.6),
+            drone_rec_cents: AtomicI32::new(i32::MIN),
             drone_tone: AtomicU8::new(0),
             pipe_mode: AtomicBool::new(false),
             acc_on: AtomicBool::new(false),
@@ -365,6 +368,10 @@ pub enum Cmd {
     SongPlay(bool),
     SongSeek(f64),
     Acc(AccMsg),
+    /// a recorded drone set (None = put it away)
+    DroneLoop(Option<Arc<crate::drone_rec::DroneLoop>>),
+    /// recorded regulators (None = the modelled ones)
+    RegSet(Option<Arc<crate::drone_rec::RegSet>>),
 }
 
 pub enum AccMsg {
@@ -628,6 +635,10 @@ pub struct Engine {
     breath_lock: u8,
     wind_was: bool,
     drones: [DroneVoice; 13],
+    dloop: Option<Arc<crate::drone_rec::DroneLoop>>,
+    dplay: crate::drone_rec::DronePlay,
+    regset: Option<Arc<crate::drone_rec::RegSet>>,
+    regplay: [crate::drone_rec::RegPlay; 3],
     ch: ChanterVoice,
     noise: u32,
     chanter: i16,
@@ -763,6 +774,10 @@ impl Engine {
             breath_lock: 0,
             wind_was: false,
             drones: [DroneVoice::default(); 13],
+            dloop: None,
+            dplay: Default::default(),
+            regset: None,
+            regplay: Default::default(),
             ch: ChanterVoice::default(),
             noise: 0x9e37_79b9,
             chanter: -1,
@@ -1397,6 +1412,28 @@ impl Engine {
             let keys = crate::pipes::REGS[r].1;
             // the top key is nearest the reed: of several open, the highest sounds
             let sound = if on { (0..keys.len()).find(|i| bits & (1 << i) != 0) } else { None };
+            if let Some(set) = self.regset.clone() {
+                // recorded regulators: the sample for that key, repitched to the same tuning as the model
+                let note = sound.and_then(|i| {
+                    let key = (tonic + keys[i] as i32).clamp(0, 127) as u8;
+                    let mut cents = key as f64 * 100.0 + tune;
+                    if just {
+                        cents += crate::pipes::JUST_CENTS[(key as i32 - tonic).rem_euclid(12) as usize] as f64;
+                    }
+                    // the recording is a D set: take the sample for the same key position
+                    let rec_key = (62 + keys[i] as i32) as u8;
+                    let idx = set.rows[r].iter().position(|x| x.0 == rec_key)?;
+                    self.p.reg_sounding[r].store(key, Relaxed);
+                    Some((idx, cents))
+                });
+                if note.is_none() {
+                    self.p.reg_sounding[r].store(255, Relaxed);
+                }
+                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 1.2;
+                let pan = [0.12f32, 0.0, -0.12][r];
+                self.regplay[r].render(&set.rows[r], note, lv, pan, sr, out_l, out_r);
+                continue;
+            }
             let v = &mut self.regs[r];
             match sound {
                 Some(i) => {
@@ -1558,6 +1595,13 @@ impl Engine {
         }
         self.render_chanter(out_l, out_r);
         self.render_regs(out_l, out_r);
+        if let Some(d) = self.dloop.clone() {
+            let rc = self.p.drone_rec_cents.load(Relaxed);
+            let on_rec = on && rc != i32::MIN;
+            // recorded drones are as loud as they were blown; the slider trims them like the modelled ones
+            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 1.4;
+            self.dplay.render(&d, on_rec, if rc == i32::MIN { d.cents } else { rc as f64 }, lv, self.sr, out_l, out_r);
+        }
         for v in 0..13 {
             let c = self.p.drone_cents[v].load(Relaxed);
             let active = on && c != i32::MIN;
@@ -2387,6 +2431,14 @@ impl Engine {
                 }
                 Cmd::SongSeek(t) => self.song_seek(t),
                 Cmd::Acc(m) => self.acc(m),
+                Cmd::RegSet(r) => {
+                    self.regset = r;
+                    self.regplay = Default::default();
+                }
+                Cmd::DroneLoop(d) => {
+                    self.dloop = d;
+                    self.dplay = Default::default();
+                }
                 Cmd::DrumInst(i) => {
                     self.drum_inst = i.clone();
                     if let Some(n) = self.native[DRUM_CH as usize].as_mut() {

@@ -1,0 +1,16 @@
+// Uilleann regulators (D set: tenor, baritone, bass), each key recorded by Fancy Butler. CC0.
+// One looped sample per key. group = regulator (1 tenor, 2 baritone, 3 bass); tune puts each at piano pitch.
+<control> default_path=samples/
+<region> group=1 sample=tenor-Fs4.wav key=66 tune=20 loop_mode=loop_continuous loop_start=13450 loop_end=46245
+<region> group=1 sample=tenor-G4.wav key=67 tune=11 loop_mode=loop_continuous loop_start=13450 loop_end=51623
+<region> group=1 sample=tenor-A4.wav key=69 tune=8 loop_mode=loop_continuous loop_start=13450 loop_end=46777
+<region> group=1 sample=tenor-B4.wav key=71 tune=23 loop_mode=loop_continuous loop_start=13450 loop_end=46151
+<region> group=1 sample=tenor-C5.wav key=72 tune=3 loop_mode=loop_continuous loop_start=13450 loop_end=48330
+<region> group=2 sample=baritone-D4.wav key=62 tune=6 loop_mode=loop_continuous loop_start=13450 loop_end=48269
+<region> group=2 sample=baritone-Fs4.wav key=66 tune=33 loop_mode=loop_continuous loop_start=13450 loop_end=53131
+<region> group=2 sample=baritone-G4.wav key=67 tune=18 loop_mode=loop_continuous loop_start=13450 loop_end=46456
+<region> group=2 sample=baritone-A4.wav key=69 tune=15 loop_mode=loop_continuous loop_start=13450 loop_end=50338
+<region> group=3 sample=bass-G3.wav key=55 tune=11 loop_mode=loop_continuous loop_start=13450 loop_end=46744
+<region> group=3 sample=bass-A3.wav key=57 tune=2 loop_mode=loop_continuous loop_start=13450 loop_end=50768
+<region> group=3 sample=bass-B3.wav key=59 tune=29 loop_mode=loop_continuous loop_start=13450 loop_end=48685
+<region> group=3 sample=bass-C4.wav key=60 tune=10 loop_mode=loop_continuous loop_start=13450 loop_end=53311

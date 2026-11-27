@@ -211,6 +211,10 @@ pub struct App {
     regs_open: bool,
     /// your sound before the recorded Highland chanter took over the keys
     rec_prev_main: Option<(i32, i32)>,
+    /// the recorded drone loop handed to the engine (its .sfz), if any
+    dloop_sent: Option<std::path::PathBuf>,
+    dloop_ok: bool,
+    regs_sent: Option<std::path::PathBuf>,
     reg_mouse: Option<(usize, usize)>,
     reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
@@ -600,6 +604,9 @@ impl App {
             rec_report: None,
             regs_open: false,
             rec_prev_main: None,
+            dloop_sent: None,
+            dloop_ok: false,
+            regs_sent: None,
             reg_mouse: None,
             reg_mouse_row: None,
             song_key: 0,
@@ -2455,6 +2462,16 @@ impl App {
             }
             _ => {}
         }
+        self.sync_recorded_regs();
+        let rec = self.drone_rec_on();
+        let p = &self.p;
+        if rec && mode == 1 {
+            // one recording of the whole set: it sounds at the tenor's pitch, the others ride along
+            p.drone_rec_cents.store(cents[0], Relaxed);
+            cents = [i32::MIN; 13];
+        } else {
+            p.drone_rec_cents.store(i32::MIN, Relaxed);
+        }
         for i in 0..13 {
             p.drone_cents[i].store(cents[i], Relaxed);
         }
@@ -2525,6 +2542,29 @@ impl App {
                                     }
                                 }
                             });
+                            if self.s.pipe_idx == 3 {
+                                // recorded or modelled drones
+                                let pk = Self::drone_pack();
+                                let have = crate::packs::installed(&pk);
+                                let busy = matches!(self.dl.status(pk.name), Some(crate::packs::Status::Working(..)));
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    let rec = self.s.uil_drones_rec && have;
+                                    let lab = if busy { "⬇ Recorded…".to_string() } else if have { "Recorded".to_string() } else { "⬇ Recorded".to_string() };
+                                    if ui.selectable_label(rec, lab).on_hover_text(format!("{} — all three drones in one recording, so they go on and off together", pk.credit)).clicked() {
+                                        self.s.uil_drones_rec = true;
+                                        if !have && !busy {
+                                            self.dl.start(pk, ui.ctx().clone());
+                                        }
+                                    }
+                                    if ui.selectable_label(!rec, "Modelled").on_hover_text("Synthesised drones: each one on and off on its own").clicked() {
+                                        self.s.uil_drones_rec = false;
+                                    }
+                                });
+                                if self.s.uil_drones_rec && have && !self.s.pipe_drones.iter().all(|x| *x) {
+                                    ui.label(RichText::new("Recorded drones play all three together — turn them all on, or this plays modelled ones").size(10.5).color(text_dim()));
+                                }
+                            }
                             ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
                             ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes. STOP or Esc silences it. (With a wind controller your breath decides.)");
                         });
@@ -4661,6 +4701,50 @@ impl App {
         };
         crate::packs::PACKS.iter().find(|p| p.name == name).copied()
     }
+    fn regs_pack() -> crate::packs::Pack {
+        *crate::packs::PACKS.iter().find(|p| p.name == "Uilleann regulators (recorded)").expect("regs pack")
+    }
+    /// Hand the recorded regulators to the engine when wanted and downloaded (and take them back when not).
+    fn sync_recorded_regs(&mut self) {
+        let path = crate::packs::installed_path(&Self::regs_pack());
+        let want = self.s.uil_regs_rec && path.exists();
+        let have = self.regs_sent.is_some();
+        if want && self.regs_sent.as_ref() != Some(&path) {
+            self.regs_sent = Some(path.clone());
+            match crate::drone_rec::load_regs(&path) {
+                Ok(r) => {
+                    let _ = self.tx.send(Cmd::RegSet(Some(std::sync::Arc::new(r))));
+                }
+                Err(e) => eprintln!("recorded regulators: {e}"),
+            }
+        } else if !want && have {
+            self.regs_sent = None;
+            let _ = self.tx.send(Cmd::RegSet(None));
+        }
+    }
+    fn drone_pack() -> crate::packs::Pack {
+        *crate::packs::PACKS.iter().find(|p| p.name == "Uilleann drones (recorded)").expect("drone pack")
+    }
+    /// Recorded uilleann drones: wanted, downloaded, loaded, uilleann pipes, all three drones on.
+    fn drone_rec_on(&mut self) -> bool {
+        let want = self.s.drone_mode == 1 && self.s.pipe_idx == 3 && self.s.uil_drones_rec;
+        let path = crate::packs::installed_path(&Self::drone_pack());
+        if want && path.exists() && self.dloop_sent.as_ref() != Some(&path) {
+            self.dloop_sent = Some(path.clone());
+            match crate::drone_rec::load(&path) {
+                Ok(d) => {
+                    let _ = self.tx.send(Cmd::DroneLoop(Some(std::sync::Arc::new(d))));
+                    self.dloop_ok = true;
+                }
+                Err(e) => {
+                    eprintln!("recorded drones: {e}");
+                    self.dloop_ok = false;
+                }
+            }
+        }
+        let all = self.s.pipe_drones.len() == 3 && self.s.pipe_drones.iter().all(|x| *x);
+        want && self.dloop_ok && all
+    }
     fn rec_wanted(&self, pipe: usize) -> bool {
         match pipe {
             0 => self.s.ghb_rec,
@@ -4736,6 +4820,21 @@ impl App {
                 let mut lv = self.s.reg_level;
                 if ui.add(egui::Slider::new(&mut lv, 0.0..=1.0).show_value(false).text("Level")).changed() {
                     self.s.reg_level = lv;
+                }
+                ui.separator();
+                let pk = Self::regs_pack();
+                let have = crate::packs::installed(&pk);
+                let busy = matches!(self.dl.status(pk.name), Some(crate::packs::Status::Working(..)));
+                let rec = self.s.uil_regs_rec && have;
+                let lab = if busy { "⬇ Recorded…" } else if have { "Recorded" } else { "⬇ Recorded" };
+                if ui.selectable_label(rec, lab).on_hover_text(pk.credit).clicked() {
+                    self.s.uil_regs_rec = true;
+                    if !have && !busy {
+                        self.dl.start(pk, ui.ctx().clone());
+                    }
+                }
+                if ui.selectable_label(!rec, "Modelled").on_hover_text("Synthesised regulators").clicked() {
+                    self.s.uil_regs_rec = false;
                 }
                 ui.separator();
                 ui.label("Stock on the");

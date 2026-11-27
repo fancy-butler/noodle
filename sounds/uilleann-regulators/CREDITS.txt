@@ -1,0 +1,4 @@
+Uilleann regulators (D set: tenor C B A G F#, baritone A G F# D, bass C B A G) — recorded by Fancy Butler.
+Released under CC0 1.0 (public domain): https://creativecommons.org/publicdomain/zero/1.0/
+Each key cut from a recording of the regulators played one note at a time, looped with a crossfade,
+and tuned to piano pitch (Noodle retunes them to just intonation against the drones when that's on).

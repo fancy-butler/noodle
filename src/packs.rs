@@ -46,6 +46,8 @@ pub const PACKS: &[Pack] = &[
     },
     Pack { name: "Great Highland chanter (recorded)", group: "Pipes & whistles", src: Src::Highland, credit: crate::pipe_pack::CREDIT },
     Pack { name: "Uilleann chanter (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-chanter-2/Uilleann chanter (recorded).sfz"), credit: "Uilleann chanter · recorded by Fancy Butler · CC0" },
+    Pack { name: "Uilleann drones (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-drones/Uilleann drones (recorded).sfz"), credit: "Uilleann drones · recorded by Fancy Butler · CC0" },
+    Pack { name: "Uilleann regulators (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-regulators/Uilleann regulators (recorded).sfz"), credit: "Uilleann regulators · recorded by Fancy Butler · CC0" },
     Pack { name: "Bagpipe in G (with drones)", group: "Pipes & whistles", src: Src::Sfz("freepats", "bagpipe", "main", "Bagpipe 20260806.sfz"), credit: "FreePats · Gilles Sadowski · CC0" },
     vcsl("Harmonica, chromatic (Hohner Super 64)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz"),
     vcsl("Harmonica, chromatic (vibrato)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Vib.sfz"),
@@ -216,6 +218,11 @@ pub fn better_for_gm(prog: i32) -> Option<&'static Pack> {
         _ => return None,
     };
     PACKS.iter().find(|p| p.name == name)
+}
+
+/// Packs that aren't instruments to play from the keys (the drone loop is played by the Drone panel).
+pub fn not_an_instrument(path: &Path) -> bool {
+    path.file_name().map(|n| { let n = n.to_string_lossy(); n.contains("drones (recorded)") || n.contains("regulators (recorded)") }).unwrap_or(false)
 }
 
 pub fn installed(p: &Pack) -> bool {
