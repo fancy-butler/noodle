@@ -115,7 +115,7 @@ pub fn find_notes(mono: &[f32], rate: u32, lo: f32, hi: f32) -> Vec<Found> {
         }
         let rel = c - offset;
         let key = (rel / 100.0).round().clamp(0.0, 127.0) as u8;
-        if (rel - key as f32 * 100.0).abs() > 45.0 {
+        if (rel - key as f32 * 100.0).abs() > 35.0 {
             continue;
         }
         let f = Found { key, hz: 440.0 * 2f32.powf((c - 6900.0) / 1200.0), cents: c - key as f32 * 100.0, start: s * hop, end: e * hop + win / 2 };
@@ -134,23 +134,54 @@ pub fn find_notes(mono: &[f32], rate: u32, lo: f32, hi: f32) -> Vec<Found> {
 
 /// Build the instrument into `<dir>/<name>/<name>.sfz`. Returns the .sfz and a line per note.
 pub fn build(src: &Path, name: &str, dir: &Path, lo: f32, hi: f32) -> Result<(PathBuf, Vec<String>), String> {
-    let (l, r, rate) = decode(src)?;
-    let mono: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
-    let notes = find_notes(&mono, rate, lo, hi);
-    if notes.len() < 2 {
-        return Err(format!("Found {} steady note{} — play each note of the scale for at least half a second, one at a time.", notes.len(), if notes.len() == 1 { "" } else { "s" }));
+    build_many(&[src], name, dir, lo, hi)
+}
+
+/// Several recordings of the same instrument (sessions can be tuned a little differently: each
+/// one's own offset is removed); for every note the longest clean take from any of them is kept.
+pub fn build_many(srcs: &[&Path], name: &str, dir: &Path, lo: f32, hi: f32) -> Result<(PathBuf, Vec<String>), String> {
+    struct Rec {
+        l: Vec<f32>,
+        r: Vec<f32>,
+        mono: Vec<f32>,
+        rate: u32,
+        offset: f32,
     }
-    // the instrument's overall offset from A440: the median of the notes' deviations
-    let mut devs: Vec<f32> = notes.iter().map(|n| n.cents).collect();
-    devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let offset = devs[devs.len() / 2];
+    let mut recs: Vec<Rec> = Vec::new();
+    let mut takes: Vec<(usize, Found)> = Vec::new();
+    let mut report = Vec::new();
+    for (si, src) in srcs.iter().enumerate() {
+        let (l, r, rate) = decode(src)?;
+        let mono: Vec<f32> = l.iter().zip(&r).map(|(a, b)| 0.5 * (a + b)).collect();
+        let found = find_notes(&mono, rate, lo, hi);
+        // this recording's overall offset from A440: the median of its notes' deviations
+        let mut devs: Vec<f32> = found.iter().map(|n| n.cents).collect();
+        devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let offset = if devs.is_empty() { 0.0 } else { devs[devs.len() / 2] };
+        report.push(format!("{}: {} notes, {offset:+.0} ¢ from A440 (removed)", src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(), found.len()));
+        for n in found {
+            match takes.iter_mut().find(|t| t.1.key == n.key) {
+                Some(t) if t.1.end - t.1.start >= n.end - n.start => {}
+                Some(t) => *t = (si, n),
+                None => takes.push((si, n)),
+            }
+        }
+        recs.push(Rec { l, r, mono, rate, offset });
+    }
+    takes.sort_by_key(|t| t.1.key);
+    if takes.len() < 2 {
+        return Err(format!("Found {} steady note{} — play each note of the scale for at least half a second, one at a time.", takes.len(), if takes.len() == 1 { "" } else { "s" }));
+    }
     let out = dir.join(name);
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(out.join("samples")).map_err(|e| e.to_string())?;
-    let mut sfz = format!("// {name}: built by Noodle from one recording of a scale ({}).\n<control> default_path=samples/\n<global> loop_mode=loop_continuous ampeg_attack=0.006 ampeg_release=0.06\n", src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default());
-    let mut report = vec![format!("{} notes · overall {offset:+.0} ¢ from A440 (removed)", notes.len())];
-    let keys: Vec<u8> = notes.iter().map(|n| n.key).collect();
-    for (i, n) in notes.iter().enumerate() {
+    let names: Vec<String> = srcs.iter().map(|s| s.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()).collect();
+    let mut sfz = format!("// {name}: built by Noodle from recordings of its scale ({}).\n<control> default_path=samples/\n<global> loop_mode=loop_continuous ampeg_attack=0.006 ampeg_release=0.06\n", names.join(", "));
+    report.insert(0, format!("{} notes", takes.len()));
+    let keys: Vec<u8> = takes.iter().map(|t| t.1.key).collect();
+    for (i, (si, n)) in takes.iter().enumerate() {
+        let Rec { l, r, mono, rate, offset } = &recs[*si];
+        let (rate, offset) = (*rate, *offset);
         // the steady middle: skip 60 ms at each end (the slide in from the last note, the change out)
         let edge = (rate as f32 * 0.06) as usize;
         let (s0, s1) = (n.start + edge, n.end.saturating_sub(edge).min(l.len() - 1));
@@ -209,7 +240,7 @@ pub fn build(src: &Path, name: &str, dir: &Path, lo: f32, hi: f32) -> Result<(Pa
     }
     let path = out.join(format!("{name}.sfz"));
     std::fs::write(&path, sfz).map_err(|e| e.to_string())?;
-    let _ = std::fs::write(out.join("SOURCE.txt"), format!("Built by Noodle from {}\nFor your own use unless the recording's owner has said otherwise.\n\n{}\n", src.display(), report.join("\n")));
+    let _ = std::fs::write(out.join("SOURCE.txt"), format!("Built by Noodle from {}\nFor your own use unless the recording's owner has said otherwise.\n\n{}\n", names.join(", "), report.join("\n")));
     Ok((path, report))
 }
 
@@ -254,8 +285,8 @@ mod tests {
         let text = std::fs::read_to_string(&sfz).unwrap();
         assert_eq!(text.matches("<region>").count(), 8, "{text}");
         // planted: +30 ¢ for the set, each note with its own small quirk on top
-        let off: f32 = report[0].split("overall ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
-        assert!((off - 31.0).abs() <= 3.0, "{}", report[0]);
+        let off: f32 = report[1].split("notes, ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+        assert!((off - 31.0).abs() <= 3.0, "{}", report[1]);
         let inst = crate::sampler::load(&sfz).expect("loads");
         assert_eq!(inst.regions.len(), 8);
     }
@@ -264,9 +295,12 @@ mod tests {
     #[test]
     #[ignore]
     fn rec_file() {
+        // several files: separated by commas
         let f = std::env::var("NOODLE_REC").unwrap();
+        let paths: Vec<std::path::PathBuf> = f.split(',').map(std::path::PathBuf::from).collect();
+        let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
         let out = std::env::temp_dir().join("noodle-rec-out");
-        let (sfz, report) = build(std::path::Path::new(&f), "Uilleann chanter", &out, 200.0, 1600.0).expect("build");
+        let (sfz, report) = build_many(&refs, "Uilleann chanter", &out, 200.0, 1600.0).expect("build");
         for l in &report {
             println!("{l}");
         }

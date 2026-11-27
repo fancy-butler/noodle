@@ -1,7 +1,0 @@
-Uilleann chanter (practice set in D) — recorded by Fancy Butler.
-Released under CC0 1.0 (public domain): https://creativecommons.org/publicdomain/zero/1.0/
-
-Notes: D4, E♭4, E4, F♯4, G4, A4, B4, C♯5, D5 (one octave plus the E♭).
-Built by Noodle's "make an instrument from a recording" tool: each note looped with a
-baked crossfade and levelled; the set's overall +34 cents removed so it plays at A440,
-each note keeping its own tuning (E♭ +23, F♯ −20, D5 +15 cents).

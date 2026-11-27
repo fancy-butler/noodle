@@ -5297,16 +5297,18 @@ impl App {
                     ui.label("Listening through the recording…");
                 } else if ui
                     .button(RichText::new("🎤 Make an instrument from a recording…").strong())
-                    .on_hover_text("A recording of an instrument playing a scale, one steady note at a time (half a second or more each). Noodle finds the notes, loops them and adds the instrument under Samples. It stays on this computer.")
+                    .on_hover_text("Recordings of an instrument playing its scale, one steady note at a time (half a second or more each); pick several to combine sessions. Noodle finds the notes, keeps the best take of each, loops them and adds the instrument under Samples. It stays on this computer.")
                     .clicked()
                 {
-                    if let Some(f) = rfd::FileDialog::new().add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "mp4", "aac"]).pick_file() {
+                    if let Some(files) = rfd::FileDialog::new().set_title("One or more recordings of the same instrument").add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "mp4", "aac"]).pick_files() {
+                        let f = files[0].clone();
                         let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "My instrument".into());
                         let job = std::sync::Arc::new(std::sync::Mutex::new(None));
                         self.rec_job = Some(job.clone());
                         let c = ctx.clone();
                         std::thread::spawn(move || {
-                            let r = crate::rec_build::build(&f, &name, &sounds::user_dir().join("instruments"), 70.0, 1600.0);
+                            let refs: Vec<&std::path::Path> = files.iter().map(|p| p.as_path()).collect();
+                            let r = crate::rec_build::build_many(&refs, &name, &sounds::user_dir().join("instruments"), 70.0, 1600.0);
                             *job.lock().unwrap() = Some(r);
                             c.request_repaint();
                         });

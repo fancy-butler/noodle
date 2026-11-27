@@ -1097,7 +1097,7 @@ fn regs_demo(out: &str) {
     p.pipe_mode.store(true, Relaxed);
     run(1.0, &mut eng);
     // the scale up and down first
-    for k in [62u8, 64, 66, 67, 69, 71, 73, 74, 73, 71, 69, 67, 66, 64, 62] {
+    for k in [62u8, 64, 66, 67, 69, 71, 73, 74, 76, 78, 79, 81, 83, 86, 83, 81, 79, 78, 76, 74, 73, 71, 69, 67, 66, 64, 62] {
         tx.send(Cmd::Midi([0x90, k, 100])).unwrap();
         run(0.3, &mut eng);
         tx.send(Cmd::Midi([0x80, k, 0])).unwrap();
