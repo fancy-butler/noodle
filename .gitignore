@@ -1,2 +1,5 @@
 target/
 *.wav
+
+# shipped instrument samples
+!sounds/**/*.wav
