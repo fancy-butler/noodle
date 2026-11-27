@@ -257,8 +257,23 @@ fn raw_url(owner: &str, repo: &str, branch: &str, path: &str) -> String {
 }
 
 fn fetch(url: &str) -> Result<Vec<u8>, String> {
-    let mut r = ureq::get(url).call().map_err(|e| format!("{url}: {e}"))?;
-    r.body_mut().with_config().limit(512 * 1024 * 1024).read_to_vec().map_err(|e| format!("{url}: {e}"))
+    // GitHub throttles lots of downloads at once (429) and has the odd hiccup: wait and try again
+    let mut last = String::new();
+    for attempt in 0..5u32 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2u64.pow(attempt)));
+        }
+        match ureq::get(url).call() {
+            Ok(mut r) => match r.body_mut().with_config().limit(512 * 1024 * 1024).read_to_vec() {
+                Ok(b) => return Ok(b),
+                Err(e) => last = format!("{url}: {e}"),
+            },
+            Err(ureq::Error::StatusCode(c)) if c == 429 || c >= 500 => last = format!("{url}: HTTP {c}"),
+            Err(ureq::Error::StatusCode(c)) => return Err(format!("{url}: HTTP {c}")),
+            Err(e) => last = format!("{url}: {e}"),
+        }
+    }
+    Err(last)
 }
 
 /// "a/b/../c" → "a/c"

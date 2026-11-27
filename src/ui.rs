@@ -1485,6 +1485,12 @@ impl App {
                 let _ = self.tx.send(Cmd::Midi([0x80, k, 0]));
             }
         }
+        if std::env::var("NOODLE_KEYDBG").is_ok() {
+            let n = ctx.input(|i| i.events.iter().filter(|e| matches!(e, egui::Event::Key { .. })).count());
+            if n > 0 {
+                eprintln!("keys: {n} events, focused={focused}, wants_kb={}, focus_id={:?}", ctx.wants_keyboard_input(), ctx.memory(|m| m.focused()));
+            }
+        }
         if ctx.wants_keyboard_input() {
             return;
         }
@@ -1631,13 +1637,9 @@ impl App {
             .min_size(Vec2::new(300.0, 240.0))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                // type to search: the box has the focus as soon as the list opens
-                let te = egui::TextEdit::singleline(&mut self.sound_search).id(search_id).hint_text("🔍 Type to search all sounds…").desired_width(f32::INFINITY);
+                // the keys keep playing while the list is open (to hear each sound); click the box to search
+                let te = egui::TextEdit::singleline(&mut self.sound_search).id(search_id).hint_text("🔍 Click here to search all sounds (the keys play while it's not)").desired_width(f32::INFINITY);
                 let resp = ui.add(te);
-                if !resp.has_focus() && !self.search_focused {
-                    resp.request_focus();
-                    self.search_focused = true;
-                }
                 let q: Vec<String> = self.sound_search.to_lowercase().split_whitespace().map(|w| w.to_string()).collect();
                 let list: Vec<usize> = if q.is_empty() {
                     list
