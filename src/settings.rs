@@ -40,6 +40,8 @@ pub struct Settings {
     pub acc_vol: f32,
     /// accordion button note names: 0 player's (C♯ E♭ F♯ A♭ B♭), 1 row's key, 2 sharps, 3 flats
     pub acc_spell: u8,
+    /// tremolo in cents (−1 = the layout's own)
+    pub acc_trem: i32,
     /// look for a new Noodle once a day
     pub check_updates: bool,
     /// knobs taught with MIDI learn: (cc, target); these win over a ready-made mapping
@@ -190,6 +192,7 @@ impl Default for Settings {
             midi_out: false,
             acc_vol: 1.6,
             acc_spell: 0,
+            acc_trem: -1,
             check_updates: true,
             learned: Vec::new(),
             update_checked: 0,

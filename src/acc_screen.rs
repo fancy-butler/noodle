@@ -132,6 +132,11 @@ impl App {
             let i = self.acc_inst();
             (i.registers[self.s.acc_reg.min(i.registers.len() - 1)], i.bass_ranks, i.tuning)
         };
+        // a tremolo preset in cents → the beat it makes at A4
+        let mut tuning = tuning;
+        if self.s.acc_trem >= 0 {
+            tuning.beat_a4 = 440.0 * (2f32.powf(self.s.acc_trem as f32 / 1200.0) - 1.0);
+        }
         self.acc_release_all();
         let reeds = self.acc_reeds();
         let _ = self.tx.send(Cmd::Acc(AccMsg::Setup(Some((reg, bass, tuning, reeds)))));
@@ -555,36 +560,73 @@ impl App {
                 if ui.button("✕ Leave (Esc)").clicked() {
                     leave = true;
                 }
-                ui.selectable_value(&mut self.s.acc_round, false, "Keys");
-                ui.selectable_value(&mut self.s.acc_round, true, "Buttons");
-                ui.label(RichText::new("Look").size(12.0).color(text_dim()));
-                ui.separator();
-                ui.toggle_value(&mut self.s.acc_space_pull, "Space = pull").on_hover_text("Off: hold Space to push, let go to pull. On: the other way round.");
-                ui.separator();
-                egui::ComboBox::from_id_salt("acc_spell")
-                    .selected_text(["C♯ E♭ F♯ A♭ B♭", "Row's key", "All ♯", "All ♭"][self.s.acc_spell.min(3) as usize])
-                    .width(118.0)
-                    .show_ui(ui, |ui| {
-                        for (i, n, tip) in [
-                            (0u8, "C♯ E♭ F♯ A♭ B♭", "The way most players write them"),
-                            (1, "Row's key", "Each row spelt in its own key: a B row gets D♯ G♯ A♯"),
-                            (2, "All ♯", "C♯ D♯ F♯ G♯ A♯"),
-                            (3, "All ♭", "D♭ E♭ G♭ A♭ B♭"),
-                        ] {
-                            ui.selectable_value(&mut self.s.acc_spell, i, n).on_hover_text(tip);
-                        }
-                    })
-                    .response
-                    .on_hover_text("How the black-key notes are named on the buttons");
-                ui.label(RichText::new("Names").size(12.0).color(text_dim()));
-                ui.separator();
-                let mut v = self.s.acc_vol;
-                if ui.add(egui::Slider::new(&mut v, 0.25..=4.0).logarithmic(true).show_value(false)).on_hover_text("Accordion volume (the limiter keeps it clean)").changed() {
-                    self.s.acc_vol = v;
-                    self.p.acc_vol.set(v);
-                }
-                ui.label(RichText::new(format!("Volume {:+.0} dB", 20.0 * v.log10())).size(12.0).color(text_dim()));
             });
+        }
+        // second row: how it looks and sounds (its own row, so nothing overlaps on a narrow window)
+        let top2 = Rect::from_min_size(Pos2::new(rect.left(), top.bottom()), Vec2::new(rect.width(), 30.0));
+        let mut bar2 = ui.new_child(egui::UiBuilder::new().max_rect(top2).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        {
+            let ui = &mut bar2;
+            ui.selectable_value(&mut self.s.acc_round, false, "Keys");
+            ui.selectable_value(&mut self.s.acc_round, true, "Buttons");
+            ui.label(RichText::new("Look").size(12.0).color(text_dim()));
+            ui.separator();
+            ui.toggle_value(&mut self.s.acc_space_pull, "Space = pull").on_hover_text("Off: hold Space to push, let go to pull. On: the other way round.");
+            ui.separator();
+            egui::ComboBox::from_id_salt("acc_spell")
+                .selected_text(["C♯ E♭ F♯ A♭ B♭", "Row's key", "All ♯", "All ♭"][self.s.acc_spell.min(3) as usize])
+                .width(118.0)
+                .show_ui(ui, |ui| {
+                    for (i, n, tip) in [
+                        (0u8, "C♯ E♭ F♯ A♭ B♭", "The way most players write them"),
+                        (1, "Row's key", "Each row spelt in its own key: a B row gets D♯ G♯ A♯"),
+                        (2, "All ♯", "C♯ D♯ F♯ G♯ A♯"),
+                        (3, "All ♭", "D♭ E♭ G♭ A♭ B♭"),
+                    ] {
+                        ui.selectable_value(&mut self.s.acc_spell, i, n).on_hover_text(tip);
+                    }
+                })
+                .response
+                .on_hover_text("How the black-key notes are named on the buttons");
+            ui.label(RichText::new("Names").size(12.0).color(text_dim()));
+            ui.separator();
+            // tremolo presets as Serenellini lists them (cents the musette reeds are tuned apart)
+            const TREM: [(i32, &str, &str); 8] = [
+                (-1, "This box's own", "What this layout is usually tuned to"),
+                (0, "Dry · 0¢", "No beating: one clean reed"),
+                (4, "Swing · 4¢", "A slow, gentle wave"),
+                (8, "American · 8¢", ""),
+                (13, "German · 12–14¢", ""),
+                (19, "Italian · 18–20¢", ""),
+                (25, "French · 24–26¢", "Paris musette"),
+                (30, "Scottish · 30¢", "Wet, fast and bright"),
+            ];
+            let cur = TREM.iter().find(|t| t.0 == self.s.acc_trem).map(|t| t.1).unwrap_or("This box's own");
+            let before = self.s.acc_trem;
+            egui::ComboBox::from_id_salt("acc_trem")
+                .selected_text(cur)
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for (c, n, tip) in TREM {
+                        let r = ui.selectable_value(&mut self.s.acc_trem, c, n);
+                        if !tip.is_empty() {
+                            r.on_hover_text(tip);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Tremolo: how far apart the musette reeds are tuned (needs a register with M− or M+)");
+            if self.s.acc_trem != before {
+                self.acc_setup();
+            }
+            ui.label(RichText::new("Tremolo").size(12.0).color(text_dim()));
+            ui.separator();
+            let mut v = self.s.acc_vol;
+            if ui.add(egui::Slider::new(&mut v, 0.25..=4.0).logarithmic(true).show_value(false)).on_hover_text("Accordion volume (the limiter keeps it clean)").changed() {
+                self.s.acc_vol = v;
+                self.p.acc_vol.set(v);
+            }
+            ui.label(RichText::new(format!("Volume {:+.0} dB", 20.0 * v.log10())).size(12.0).color(text_dim()));
         }
         if leave {
             self.exit_accordion();
@@ -597,7 +639,7 @@ impl App {
         }
 
         // ---- the keyboard, exactly as it sits in front of you ----
-        let strip = Rect::from_min_size(Pos2::new(rect.left(), top.bottom() + 6.0), Vec2::new(rect.width(), 92.0));
+        let strip = Rect::from_min_size(Pos2::new(rect.left(), top2.bottom() + 6.0), Vec2::new(rect.width(), 92.0));
         self.acc_drone_panel(ui, strip);
         let area = Rect::from_min_max(Pos2::new(rect.left(), strip.bottom() + 8.0), rect.max);
         // fit what is actually drawn: the Buttons look hides the computer-only keys, and a
