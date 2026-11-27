@@ -526,6 +526,11 @@ impl App {
             s.fing_idx = i;
             s.fing_tr = s.kb_inst_tr;
             s.fing_any = false;
+            // computer keys on the instrument's range (an older Noodle could leave them octaves away)
+            let c = &crate::fingering::CHARTS[i];
+            let tr = c.trans.get(s.fing_tr.min(c.trans.len().saturating_sub(1))).map(|t| t.1).unwrap_or(0) as i32;
+            let lo = c.fings.iter().map(|f| f.midi).min().unwrap_or(60) as i32 + tr;
+            s.kb_octave = (lo / 12 - 1).clamp(0, 8);
         } else {
             s.kb_inst = None;
         }
@@ -1558,12 +1563,18 @@ impl App {
         self.last_save = now;
         self.s.pull_from(&self.p);
         self.s.scale_on = self.scale_on;
+        // Ocarina mode moves the computer keys up for its range: save the octave you had before
+        let oct = self.s.kb_octave;
+        if self.oc_mode {
+            self.s.kb_octave = self.oc_prev_oct;
+        }
         if let Ok(j) = serde_json::to_string(&self.s) {
             if j != self.saved_json {
                 self.s.save();
                 self.saved_json = j;
             }
         }
+        self.s.kb_octave = oct;
     }
 
     // ---------- header ----------
@@ -5802,6 +5813,8 @@ impl App {
                         .presets
                         .iter()
                         .filter(|p| Some((p.bank, p.prog)) != rec_bp)
+                        // the recorded chanters are listed above as themselves
+                        .filter(|p| !p.name.contains("chanter (recorded)"))
                         .filter(|p| {
                             let n = p.name.to_lowercase();
                             (p.bank < 128 && p.prog == 109) || ((n.contains("pipe") || n.contains("chanter") || n.contains("uilleann")) && !n.contains("pan") && !n.contains("organ"))
@@ -5860,6 +5873,12 @@ impl App {
         }
     }
 
+    /// Computer keys: start A on the C at or below the instrument's lowest note, so they all land in its range.
+    fn kb_keys_on_chart(&mut self, c: usize) {
+        let (lo, _) = self.chart_range(c);
+        self.s.kb_octave = (lo as i32 / 12 - 1).clamp(0, 8);
+    }
+
     /// Keyboard mode: free play (None) or play a real instrument (chart, transposition).
     fn play_as(&mut self, pick: Option<(usize, usize)>) {
         use crate::fingering::CHARTS;
@@ -5876,6 +5895,7 @@ impl App {
                 self.s.fing_any = false;
                 self.s.fing_pane = true;
                 self.play_seen = (c, t);
+                self.kb_keys_on_chart(c);
                 self.play_sound();
             }
             None => {
@@ -6021,6 +6041,16 @@ impl App {
                 ui.toggle_value(&mut self.s.kb_follow, "Follow").on_hover_text("Slide along when you play outside the visible keys (e.g. after Oct +/−)");
                 let (lo, hi) = self.range();
                 ui.label(RichText::new(format!("{} – {}", theory::note_name_oct(lo), theory::note_name_oct(hi))).monospace().size(12.0).color(text_dim()));
+            }
+            ui.separator();
+            // the computer keys' octave: A is this C (Z / X move it)
+            ui.label(RichText::new("⌨ A =").color(text_dim())).on_hover_text("Your computer keys: A W S E D F T G Y H U J K… play notes from this C. Z / X move them an octave.");
+            if ui.small_button("◀").on_hover_text("Computer keys down an octave (Z)").clicked() {
+                self.s.kb_octave = (self.s.kb_octave - 1).max(0);
+            }
+            ui.label(RichText::new(format!("C{}", self.s.kb_octave)).monospace().size(12.5).strong());
+            if ui.small_button("▶").on_hover_text("Computer keys up an octave (X)").clicked() {
+                self.s.kb_octave = (self.s.kb_octave + 1).min(8);
             }
             ui.separator();
             ui.label(RichText::new("Layout").color(text_dim()));
@@ -6326,6 +6356,9 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.s.pull_from(&self.p);
         self.s.scale_on = self.scale_on;
+        if self.oc_mode {
+            self.s.kb_octave = self.oc_prev_oct;
+        }
         self.s.save();
     }
 }

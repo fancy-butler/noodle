@@ -222,7 +222,9 @@ pub fn better_for_gm(prog: i32) -> Option<&'static Pack> {
 
 /// Packs that aren't instruments to play from the keys (the drone loop is played by the Drone panel).
 pub fn not_an_instrument(path: &Path) -> bool {
-    path.file_name().map(|n| { let n = n.to_string_lossy(); n.contains("drones (recorded)") || n.contains("regulators (recorded)") }).unwrap_or(false)
+    // also the first uilleann chanter folder: Noodle 0.27 downloaded it, uilleann-chanter-2 replaces it
+    let old = path.parent().and_then(|p| p.file_name()).map(|d| d == "uilleann-chanter").unwrap_or(false);
+    old || path.file_name().map(|n| { let n = n.to_string_lossy(); n.contains("drones (recorded)") || n.contains("regulators (recorded)") }).unwrap_or(false)
 }
 
 pub fn installed(p: &Pack) -> bool {
