@@ -215,6 +215,8 @@ pub struct App {
     dloop_sent: Option<std::path::PathBuf>,
     dloop_ok: bool,
     regs_sent: Option<std::path::PathBuf>,
+    /// checked for a newer Noodle since this start
+    update_this_run: bool,
     reg_mouse: Option<(usize, usize)>,
     reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
@@ -607,6 +609,7 @@ impl App {
             dloop_sent: None,
             dloop_ok: false,
             regs_sent: None,
+            update_this_run: false,
             reg_mouse: None,
             reg_mouse_row: None,
             song_key: 0,
@@ -1184,11 +1187,13 @@ impl App {
         }
     }
 
-    /// Once a day: is there a newer Noodle? And the window that shows it.
+    /// Every start (and every few hours while open): is there a newer Noodle? And the window that shows it.
     fn update_window(&mut self, ctx: &egui::Context) {
         use crate::update::State;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        if self.s.check_updates && now.saturating_sub(self.s.update_checked) > 86_400 && matches!(self.updater.get(), State::Idle) {
+        let due = !self.update_this_run || now.saturating_sub(self.s.update_checked) > 6 * 3600;
+        if self.s.check_updates && due && matches!(self.updater.get(), State::Idle | State::UpToDate | State::Failed(_)) {
+            self.update_this_run = true;
             self.s.update_checked = now;
             self.updater.check(ctx.clone());
         }
@@ -2001,7 +2006,7 @@ impl App {
                     ui.checkbox(&mut self.s.hide_modules, "Hide all panels (F2)");
                     ui.separator();
                     ui.label(RichText::new(format!("Noodle {}", crate::VERSION)).size(11.0).color(text_dim()));
-                    ui.checkbox(&mut self.s.check_updates, "Check for updates once a day");
+                    ui.checkbox(&mut self.s.check_updates, "Check for updates when Noodle starts");
                     if ui.button("Check for updates now").clicked() {
                         self.updater.check(ui.ctx().clone());
                         self.update_open = true;
