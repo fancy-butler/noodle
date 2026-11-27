@@ -170,7 +170,9 @@ pub fn root() -> PathBuf {
 /// Where an installed pack's playable file lives.
 pub fn installed_path(p: &Pack) -> PathBuf {
     match p.src {
-        Src::Sfz(owner, repo, _, path) => root().join(format!("{owner}-{repo}")).join(path),
+        // one component at a time, so on Windows it's all backslashes — the same path (and so the
+        // same sound id) as the folder scan gives; "a/b" joined whole kept forward slashes
+        Src::Sfz(owner, repo, _, path) => path.split('/').fold(root().join(format!("{owner}-{repo}")), |p, s| p.join(s)),
         Src::Sf2(_, file, _) => crate::sounds::user_dir().join("soundfonts").join(file),
         Src::Highland => crate::pipe_pack::sfz_path(),
     }

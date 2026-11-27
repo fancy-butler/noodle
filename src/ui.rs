@@ -217,6 +217,8 @@ pub struct App {
     regs_sent: Option<std::path::PathBuf>,
     /// checked for a newer Noodle since this start
     update_this_run: bool,
+    /// the sound the last sound-list rescan was for (so a missing one doesn't rescan every frame)
+    rescanned_for: Option<(i32, i32)>,
     reg_mouse: Option<(usize, usize)>,
     reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
@@ -615,6 +617,7 @@ impl App {
             dloop_ok: false,
             regs_sent: None,
             update_this_run: false,
+            rescanned_for: None,
             reg_mouse: None,
             reg_mouse_row: None,
             song_key: 0,
@@ -2560,15 +2563,40 @@ impl App {
                                     }
                                 }
                             });
+                            // chanter: recorded or modelled (pipes that have a recording)
+                            let pi = self.s.pipe_idx;
+                            if let Some(pk) = Self::rec_pack(pi) {
+                                let have = crate::packs::installed(&pk);
+                                let busy = matches!(self.dl.status(pk.name), Some(crate::packs::Status::Working(..)));
+                                let picked = self.s.pipe_sounds.iter().any(|x| x.0 == pi);
+                                let rec = self.rec_wanted(pi) && have && !picked;
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    ui.label(RichText::new("Chanter").size(11.5).color(text_dim()));
+                                    let lab = if busy { "⬇ Recorded…" } else if have { "Recorded" } else { "⬇ Recorded" };
+                                    if ui.selectable_label(rec, lab).on_hover_text(pk.credit).clicked() {
+                                        self.set_rec_wanted(pi, true);
+                                        self.s.pipe_sounds.retain(|x| x.0 != pi);
+                                        if !have && !busy {
+                                            self.dl.start(pk, ui.ctx().clone());
+                                        }
+                                    }
+                                    if ui.selectable_label(!rec && !picked, "Modelled").on_hover_text("Synthesised from measurements of real chanters").clicked() {
+                                        self.set_rec_wanted(pi, false);
+                                        self.s.pipe_sounds.retain(|x| x.0 != pi);
+                                    }
+                                });
+                            }
                             if self.s.pipe_idx == 3 {
-                                // recorded or modelled drones
+                                // drones: recorded or modelled
                                 let pk = Self::drone_pack();
                                 let have = crate::packs::installed(&pk);
                                 let busy = matches!(self.dl.status(pk.name), Some(crate::packs::Status::Working(..)));
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 3.0;
+                                    ui.label(RichText::new("Drones").size(11.5).color(text_dim()));
                                     let rec = self.s.uil_drones_rec && have;
-                                    let lab = if busy { "⬇ Recorded…".to_string() } else if have { "Recorded".to_string() } else { "⬇ Recorded".to_string() };
+                                    let lab = if busy { "⬇ Recorded…" } else if have { "Recorded" } else { "⬇ Recorded" };
                                     if ui.selectable_label(rec, lab).on_hover_text(format!("{} — all three drones in one recording, so they go on and off together", pk.credit)).clicked() {
                                         self.s.uil_drones_rec = true;
                                         if !have && !busy {
@@ -4798,7 +4826,9 @@ impl App {
             None
         };
         if let Some(bp) = bp {
-            if bp.0 >= sounds::SAMPLE_BANK && !self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
+            // rescan once for a sound that isn't listed yet — never every frame
+            if bp.0 >= sounds::SAMPLE_BANK && !self.presets.iter().any(|p| (p.bank, p.prog) == bp) && self.rescanned_for != Some(bp) {
+                self.rescanned_for = Some(bp);
                 self.add_native_presets();
             }
             if self.s.main != bp && self.presets.iter().any(|p| (p.bank, p.prog) == bp) {
