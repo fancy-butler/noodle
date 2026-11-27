@@ -42,6 +42,8 @@ pub struct Settings {
     pub acc_spell: u8,
     /// tremolo in cents (−1 = the layout's own)
     pub acc_trem: i32,
+    /// accordion finish: 0 the box's own, 1 cherry & pearl, 2 cherry & chrome
+    pub acc_finish: u8,
     /// look for a new Noodle once a day
     pub check_updates: bool,
     /// knobs taught with MIDI learn: (cc, target); these win over a ready-made mapping
@@ -193,6 +195,7 @@ impl Default for Settings {
             acc_vol: 1.6,
             acc_spell: 0,
             acc_trem: -1,
+            acc_finish: 0,
             check_updates: true,
             learned: Vec::new(),
             update_checked: 0,

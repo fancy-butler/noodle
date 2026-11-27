@@ -6087,6 +6087,10 @@ impl eframe::App for App {
                 if std::env::var("NOODLE_OCARINA").is_ok() {
                     self.set_mode(3);
                 }
+                if let Some(f) = std::env::var("NOODLE_ACC_FINISH").ok().and_then(|v| v.parse().ok()) {
+                    self.s.acc_finish = f;
+                    self.s.acc_round = true;
+                }
                 if let Ok(v) = std::env::var("NOODLE_ACC") {
                     self.s.acc_inst = v.parse().unwrap_or(0);
                     self.enter_accordion();

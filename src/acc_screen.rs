@@ -567,6 +567,18 @@ impl App {
         let mut bar2 = ui.new_child(egui::UiBuilder::new().max_rect(top2).layout(egui::Layout::right_to_left(egui::Align::Center)));
         {
             let ui = &mut bar2;
+            if self.s.acc_round {
+                egui::ComboBox::from_id_salt("acc_finish")
+                    .selected_text(["Box's own", "Cherry · pearl", "Cherry · chrome"][self.s.acc_finish.min(2) as usize])
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.s.acc_finish, 0, "Box's own").on_hover_text("This layout's usual colours");
+                        ui.selectable_value(&mut self.s.acc_finish, 1, "Cherry · pearl").on_hover_text("Cherry wood, mother-of-pearl and black pearl buttons, dark brown bellows");
+                        ui.selectable_value(&mut self.s.acc_finish, 2, "Cherry · chrome").on_hover_text("Cherry wood, chrome buttons in red rings, tan bellows with a brown diamond");
+                    })
+                    .response
+                    .on_hover_text("Finish");
+            }
             ui.selectable_value(&mut self.s.acc_round, false, "Keys");
             ui.selectable_value(&mut self.s.acc_round, true, "Buttons");
             ui.label(RichText::new("Look").size(12.0).color(text_dim()));
@@ -673,7 +685,28 @@ impl App {
             Rect::from_min_size(Pos2::new(ox + x * u, oy + ry * u), Vec2::new(w * u - u * 0.08, h * u - u * 0.08))
         };
         let round = self.s.acc_round;
-        let look = self.acc_inst().look;
+        // finish: the box's own colours, or one of the wood finishes (after Italian cherry boxes)
+        let finish = if round { self.s.acc_finish } else { 0 };
+        let mut look = self.acc_inst().look;
+        match finish {
+            1 => {
+                // cherry, mother-of-pearl and black pearl buttons, dark brown bellows
+                look.body = [0xa4, 0x5e, 0x36];
+                look.body2 = [0x9a, 0x55, 0x30];
+                look.button = [0xf3, 0xf1, 0xec];
+                look.accent = [0x5e, 0x30, 0x18];
+                look.bellows = [0x4a, 0x2c, 0x1e];
+            }
+            2 => {
+                // cherry, chrome buttons in red rings, tan bellows with a brown diamond
+                look.body = [0xa8, 0x66, 0x3a];
+                look.body2 = [0x9e, 0x5c, 0x33];
+                look.button = [0xc4, 0xc8, 0xcc];
+                look.accent = [0x5a, 0x30, 0x18];
+                look.bellows = [0xbc, 0x92, 0x52];
+            }
+            _ => {}
+        }
         let dead = |r: Rect, label: &str| {
             if !round {
                 p.rect_filled(r, u * 0.12, dead_col);
@@ -683,18 +716,57 @@ impl App {
             }
         };
         // a button: round with a shadow and a sheen on the accordion look, a key cap otherwise
-        let cap = |r: Rect, fill: Color32| {
+        // style: 0 plain, 1 white pearl, 2 black pearl, 3 chrome in a red ring, 4 cream in a red ring
+        let cap_s = |r: Rect, fill: Color32, style: u8| {
             if round {
                 let rad = r.width().min(r.height()) * 0.47;
                 let c = r.center();
                 p.circle_filled(c + Vec2::new(0.0, rad * 0.1), rad, Color32::from_black_alpha(110));
-                p.circle_filled(c, rad, fill);
-                p.circle_stroke(c, rad, Stroke::new(1.2, Color32::from_black_alpha(90)));
-                p.circle_filled(c - Vec2::new(rad * 0.3, rad * 0.35), rad * 0.22, Color32::from_white_alpha(28));
+                match style {
+                    1 | 2 => {
+                        // pearl: a soft base with drifting milky bands
+                        let base = if style == 1 { fill } else { Color32::from_rgb(0x28, 0x28, 0x2e) };
+                        p.circle_filled(c, rad, base);
+                        let seed = (c.x * 0.37 + c.y * 0.61) as i32;
+                        for k in 0..4 {
+                            let a = (seed + k * 47) as f32 * 0.7;
+                            let off = Vec2::new(a.cos(), a.sin()) * rad * 0.32;
+                            let tint = if style == 1 {
+                                [Color32::from_rgba_unmultiplied(200, 220, 255, 30), Color32::from_rgba_unmultiplied(255, 220, 230, 28), Color32::from_rgba_unmultiplied(220, 255, 230, 24), Color32::from_rgba_unmultiplied(255, 255, 255, 60)][k as usize]
+                            } else {
+                                [Color32::from_rgba_unmultiplied(150, 150, 165, 40), Color32::from_rgba_unmultiplied(90, 90, 105, 60), Color32::from_rgba_unmultiplied(190, 190, 200, 28), Color32::from_rgba_unmultiplied(120, 120, 135, 45)][k as usize]
+                            };
+                            p.circle_filled(c + off, rad * (0.45 - k as f32 * 0.06), tint);
+                        }
+                        p.circle_stroke(c, rad, Stroke::new(1.2, Color32::from_black_alpha(90)));
+                        p.circle_filled(c - Vec2::new(rad * 0.3, rad * 0.35), rad * 0.2, Color32::from_white_alpha(if style == 1 { 70 } else { 45 }));
+                    }
+                    3 | 4 => {
+                        // a red bushing ring, then a chrome dome (or a cream cap)
+                        p.circle_filled(c, rad, Color32::from_rgb(0xc4, 0x1e, 0x1a));
+                        let inner = rad * 0.89;
+                        if style == 3 {
+                            p.circle_filled(c, inner, Color32::from_rgb(0x8a, 0x8e, 0x94));
+                            p.circle_filled(c - Vec2::new(inner * 0.06, inner * 0.08), inner * 0.82, fill);
+                            p.circle_filled(c - Vec2::new(inner * 0.1, inner * 0.12), inner * 0.55, Color32::from_rgb(0xe8, 0xea, 0xee));
+                            p.circle_filled(c - Vec2::new(inner * 0.32, inner * 0.36), inner * 0.18, Color32::from_white_alpha(200));
+                        } else {
+                            p.circle_filled(c, inner, fill);
+                            p.circle_filled(c - Vec2::new(inner * 0.3, inner * 0.35), inner * 0.22, Color32::from_white_alpha(60));
+                        }
+                        p.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_black_alpha(120)));
+                    }
+                    _ => {
+                        p.circle_filled(c, rad, fill);
+                        p.circle_stroke(c, rad, Stroke::new(1.2, Color32::from_black_alpha(90)));
+                        p.circle_filled(c - Vec2::new(rad * 0.3, rad * 0.35), rad * 0.22, Color32::from_white_alpha(28));
+                    }
+                }
             } else {
                 p.rect_filled(r, u * 0.12, fill);
             }
         };
+        let cap = |r: Rect, fill: Color32| cap_s(r, fill, 0);
         let ring = |r: Rect, grow: f32, w: f32, col: Color32| {
             if round {
                 p.circle_stroke(r.center(), r.width().min(r.height()) * 0.47 + grow, Stroke::new(w, col));
@@ -720,6 +792,25 @@ impl App {
             let bass = Rect::from_min_max(Pos2::new(ox + 2.08 * u, oy + (3.92 - shift) * u), Pos2::new(ox + 12.28 * u, oy + (4.96 - shift) * u));
             p.rect_filled(bass, u * 0.25, rgb(look.body2).linear_multiply(0.85));
             p.rect_stroke(bass, u * 0.25, Stroke::new(3.0, rgb(look.accent)), egui::StrokeKind::Inside);
+            if finish > 0 {
+                // wood: long wavy grain lines along each case
+                for (case, n) in [(treble, 22), (bass, 8)] {
+                    let inner = case.shrink(u * 0.12);
+                    for k in 0..n {
+                        let y0 = inner.top() + inner.height() * (k as f32 + 0.5) / n as f32;
+                        let ph = k as f32 * 1.7;
+                        let amp = inner.height() / n as f32 * 0.35;
+                        let pts: Vec<Pos2> = (0..=40)
+                            .map(|j| {
+                                let x = inner.left() + inner.width() * j as f32 / 40.0;
+                                Pos2::new(x, y0 + amp * ((x / u) * 0.9 + ph).sin() + amp * 0.5 * ((x / u) * 2.3 + ph * 0.7).sin())
+                            })
+                            .collect();
+                        let a = if k % 3 == 0 { 34 } else { 18 };
+                        p.add(egui::Shape::line(pts, Stroke::new(1.0, Color32::from_rgba_unmultiplied(60, 25, 8, a))));
+                    }
+                }
+            }
         }
         // helper keys (Esc, Tab, Shift, Ctrl) say what they do here
         let fy = 0.0;
@@ -794,7 +885,13 @@ impl App {
                         Color32::from_rgb(0xf2, 0xee, 0xe4)
                     };
                     let fill = if round && !held && !sharp { rgb(look.button) } else { fill };
-                    cap(kr, fill);
+                    let style = match (finish, held) {
+                        (_, true) | (0, _) => 0,
+                        (1, _) => if sharp { 2 } else { 1 },
+                        _ => 3,
+                    };
+                    let fill = if style == 3 { rgb(look.button) } else { fill };
+                    cap_s(kr, fill, style);
                     let ink3 = if held || !sharp { Color32::from_rgb(0x18, 0x18, 0x18) } else { Color32::WHITE };
                     if bisonoric {
                         let (big, small) = if push { (b.push, b.pull) } else { (b.pull, b.push) };
@@ -877,7 +974,13 @@ impl App {
                     _ => *x == h,
                 });
                 let base = Color32::from_rgb(0xd9, 0xc8, 0xa6);
-                cap(kr, if held { dir_col } else if round { rgb(look.button) } else { base });
+                let style = match (finish, held) {
+                    (_, true) | (0, _) => 0,
+                    (1, _) => 1,
+                    _ => 4,
+                };
+                let bass_fill = if finish == 2 { Color32::from_rgb(0xf0, 0xe6, 0xcc) } else if round { rgb(look.button) } else { base };
+                cap_s(kr, if held { dir_col } else { bass_fill }, style);
                 let ink3 = Color32::from_rgb(0x18, 0x18, 0x18);
                 let lab = |s: acc::BassSnd| match s {
                     acc::BassSnd::Note(pc) => acc::NAMES[pc as usize].to_string(),
@@ -918,10 +1021,32 @@ impl App {
             if round {
                 // bellows: folds in the case colour, edged in the direction colour
                 p.rect_filled(r, u * 0.08, rgb(look.bellows));
+                if finish == 2 {
+                    // a brown diamond across the folds
+                    let c = r.center();
+                    let (hw, hh) = (r.width() * 0.36, r.height() * 0.42);
+                    p.add(egui::Shape::convex_polygon(vec![Pos2::new(c.x - hw, c.y), Pos2::new(c.x, c.y - hh), Pos2::new(c.x + hw, c.y), Pos2::new(c.x, c.y + hh)], Color32::from_rgb(0x4e, 0x2a, 0x18), Stroke::NONE));
+                }
                 let folds = 16;
+                let crease = if finish == 1 { Color32::from_rgb(0xe8, 0xdc, 0xc4) } else { Color32::WHITE };
                 for k in 1..folds {
                     let x = r.left() + r.width() * k as f32 / folds as f32;
-                    p.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(if k % 2 == 0 { 2.0 } else { 1.0 }, mix(rgb(look.bellows), Color32::WHITE, if k % 2 == 0 { 0.35 } else { 0.12 })));
+                    p.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(if k % 2 == 0 { 2.0 } else { 1.0 }, mix(rgb(look.bellows), crease, if k % 2 == 0 { 0.35 } else { 0.12 })));
+                }
+                if finish == 2 {
+                    // metal corners at the ends, an inlaid band top and bottom
+                    for x in [r.left(), r.right() - u * 0.22] {
+                        p.rect_filled(Rect::from_min_size(Pos2::new(x, r.top()), Vec2::new(u * 0.22, r.height())), 2.0, Color32::from_rgb(0xc8, 0xcc, 0xd2));
+                    }
+                    for y in [r.top() + u * 0.05, r.bottom() - u * 0.09] {
+                        let mut x = r.left() + u * 0.25;
+                        let mut k = 0;
+                        while x < r.right() - u * 0.3 {
+                            p.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(u * 0.09, u * 0.04)), 0.0, if k % 2 == 0 { Color32::from_rgb(0xf0, 0xe8, 0xd8) } else { Color32::from_rgb(0x5a, 0x2c, 0x18) });
+                            x += u * 0.1;
+                            k += 1;
+                        }
+                    }
                 }
                 p.rect_stroke(r, u * 0.08, Stroke::new(4.0, dir_col), egui::StrokeKind::Inside);
                 p.rect_filled(Rect::from_center_size(r.center(), Vec2::new(u * 2.6, u * 0.8)), u * 0.12, dir_col);
