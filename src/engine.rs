@@ -642,6 +642,11 @@ pub struct Engine {
     enc_last: [u8; 128],
     breath_lock: u8,
     wind_was: bool,
+    /// bagpipes on a wind controller: breath (0–1), the chanter's gate, the bag's fill
+    pipe_breath: f32,
+    pipe_gate: f32,
+    bag: f32,
+    gate_cc_sent: u8,
     drones: [DroneVoice; 13],
     dloop: Option<Arc<crate::drone_rec::DroneLoop>>,
     dplay: crate::drone_rec::DronePlay,
@@ -781,6 +786,10 @@ impl Engine {
             enc_last: [64; 128],
             breath_lock: 0,
             wind_was: false,
+            pipe_breath: 1.0,
+            pipe_gate: 1.0,
+            bag: 1.0,
+            gate_cc_sent: 255,
             drones: [DroneVoice::default(); 13],
             dloop: None,
             dplay: Default::default(),
@@ -1409,7 +1418,7 @@ impl Engine {
         let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
         let tune = self.p.pipe_tune.load(Relaxed) as f64;
         let just = self.p.pipe_just.load(Relaxed);
-        let level = self.p.reg_level.get().clamp(0.0, 1.0) * crate::pipes::REGULATOR.level * 0.2;
+        let level = self.p.reg_level.get().clamp(0.0, 1.0) * crate::pipes::REGULATOR.level * 0.2 * self.bag_level();
         let sr = self.sr;
         let att = 1.0 - (-1.0 / (0.006 * sr)).exp();
         let rel = 1.0 - (-1.0 / (0.012 * sr)).exp();
@@ -1446,7 +1455,7 @@ impl Engine {
                 }
                 // their own volume: about 6 dB under the chanter at the default (0.6), a little over it at full
                 let rl = self.p.reg_level.get().clamp(0.0, 1.0);
-                let lv = 0.7 * rl * rl;
+                let lv = 0.7 * rl * rl * self.bag_level();
                 let pan = [0.12f32, 0.0, -0.12][r];
                 self.regplay[r].render(&set.rows[r], note, lv, pan, sr, out_l, out_r);
                 continue;
@@ -1523,7 +1532,7 @@ impl Engine {
         }
         let vi = (self.p.chanter_voice.load(Relaxed) as usize).min(crate::pipes::CHANTERS.len() - 1);
         let v = crate::pipes::CHANTERS[vi];
-        let level = self.p.chanter_level.get().clamp(0.0, 1.0) * v.level * 0.2;
+        let level = self.p.chanter_level.get().clamp(0.0, 1.0) * v.level * 0.2 * self.pipe_gate;
         let sr = self.sr;
         let tonic = self.p.pipe_tonic.load(Relaxed) as i32;
         // the note's table (new note → crossfade from the last one, a few ms)
@@ -1591,7 +1600,7 @@ impl Engine {
     /// Synthesised drones: band-limited buzzy reed tone, per-pipe brightness, strike-in growl.
     fn render_drones(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let on = self.p.drone_on.load(Relaxed);
-        let level = self.p.drone_level.get().clamp(0.0, 1.0) * 0.16;
+        let level = self.p.drone_level.get().clamp(0.0, 1.0) * 0.16 * self.bag_level();
         let tone = self.p.drone_tone.load(Relaxed);
         let sr = self.sr as f64;
         let (cut, form, buzz, beat) = match tone {
@@ -1617,7 +1626,7 @@ impl Engine {
             let on_rec = on && rc != i32::MIN;
             // recorded drones are as loud as they were blown; the slider trims them like the modelled ones
             // balanced against the recorded chanter: at the default slider (0.6) about 8 dB under it
-            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 0.24;
+            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 0.24 * self.bag_level();
             self.dplay.render(&d, on_rec, if rc == i32::MIN { d.cents } else { rc as f64 }, lv, self.sr, out_l, out_r);
         }
         for v in 0..13 {
@@ -1682,12 +1691,58 @@ impl Engine {
     }
 
     /// Breath → expression (CC11) on the playing channels, with a response curve.
+    /// Bagpipes played from a wind controller. Breath works the bag, not a volume knob:
+    /// - the chanter sounds once you blow past a light threshold and stops dead when you stop
+    ///   (like the chanter going quiet on the knee), barely louder for blowing harder;
+    /// - the bag keeps the drones and regulators going through breaths and runs dry after ~3 s
+    ///   of silence, filling again in about half a second.
+    fn pipe_bag(&mut self, n: usize) {
+        let dt = n as f32 / self.sr;
+        let on = self.p.wind_on.load(Relaxed) && self.p.pipe_mode.load(Relaxed);
+        let (gate_t, y) = if on {
+            let y = self.pipe_breath;
+            let x = ((y - 0.05) / 0.09).clamp(0.0, 1.0);
+            (x * x * (3.0 - 2.0 * x), y)
+        } else {
+            (1.0, 1.0)
+        };
+        let k = if gate_t > self.pipe_gate { dt / 0.006 } else { dt / 0.015 };
+        self.pipe_gate += (gate_t - self.pipe_gate) * k.min(1.0);
+        if on {
+            self.bag = (self.bag + if gate_t > 0.5 { dt / 0.45 } else { -dt / 3.0 }).clamp(0.0, 1.0);
+        } else {
+            self.bag = 1.0;
+        }
+        // the recorded chanter (a sample instrument) is opened and shut through expression
+        if self.p.pipe_rec.load(Relaxed) && on {
+            let v = (self.pipe_gate * (112.0 + 15.0 * y)).round().clamp(0.0, 127.0) as u8;
+            if v != self.gate_cc_sent {
+                self.gate_cc_sent = v;
+                self.msg(MAIN_CH, 0xB0, 11, v as i32);
+            }
+        } else if self.gate_cc_sent != 255 {
+            self.gate_cc_sent = 255;
+            self.msg(MAIN_CH, 0xB0, 11, 127);
+        }
+    }
+
+    /// The bag's pressure as heard by drones and regulators (they sag as it empties).
+    fn bag_level(&self) -> f32 {
+        let x = (self.bag / 0.25).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
+
     fn breath(&mut self, val: u8) {
         let x = val as f32 / 127.0;
         let c = self.p.breath_curve.get().clamp(0.0, 1.0);
         let e = 2f32.powf((c - 0.5) * 3.0); // soft <1 … hard >1
         let y = x.powf(e);
         self.p.breath_val.set(y);
+        if self.p.pipe_mode.load(Relaxed) {
+            // bagpipes: breath fills the bag and opens the chanter; it isn't a volume swell
+            self.pipe_breath = y;
+            return;
+        }
         let v = (y * 127.0).round() as u8;
         for ch in [MAIN_CH, LAYER_CH] {
             self.msg(ch, 0xB0, 11, v as i32);
@@ -2509,6 +2564,7 @@ impl Engine {
             return;
         }
         self.apply_params();
+        self.pipe_bag(n);
         let wind = self.p.wind_on.load(Relaxed);
         if wind != self.wind_was {
             self.wind_was = wind;

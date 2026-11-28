@@ -1271,6 +1271,12 @@ fn tune_demo(out: &str, events: &str) {
                 }
             }
             Some("dronesoff") => p.drone_on.store(false, Relaxed),
+            Some("breath") => {
+                // a wind controller's breath (CC 2)
+                p.wind_on.store(true, Relaxed);
+                let v: u8 = w[1].parse().unwrap_or(0);
+                tx.send(Cmd::Midi([0xB0, 2, v.min(127)])).unwrap();
+            }
             Some("expr") => {
                 // expression (CC 11): a shaded hole is quieter as well as flatter
                 let v: u8 = w[1].parse().unwrap_or(127);
