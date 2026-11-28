@@ -2514,6 +2514,20 @@ impl App {
         p.regs_on.store(self.s.regs_on && self.s.drone_mode == 1 && self.s.pipe_idx == 3, Relaxed);
         // the low keys only turn into regulators when you ask, and only with the window open
         p.regs_keys.store(self.s.regs_low_keys && self.regs_open, Relaxed);
+        // the tune's melody on your sound
+        let mine = match (&self.song, self.s.tune_mine) {
+            (Some(song), true) if !song.own_sound => {
+                // channel 1 holds the melody in tunes (chords go on 2); otherwise the busiest non-drum part
+                let mel = if song.channels & 1 != 0 {
+                    Some(0)
+                } else {
+                    (0..16usize).filter(|c| *c != 9 && song.channels & (1 << c) != 0).max_by_key(|c| (song.notes_per_ch[*c], std::cmp::Reverse(*c)))
+                };
+                mel.map(|c| 1u16 << c).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        p.song_mine.store(mine, Relaxed);
         p.reg_level.set(self.s.reg_level);
         p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
@@ -3640,6 +3654,16 @@ impl App {
                     ui.separator();
                 }
 
+                // the melody plays on your instrument, or on the tune's own
+                ui.label(RichText::new("Melody on").color(text_dim()));
+                let mine = self.s.tune_mine;
+                if ui.selectable_label(mine, format!("your sound ({})", self.preset_name(self.s.main))).on_hover_text("The tune's melody plays on the instrument you're on").clicked() {
+                    self.s.tune_mine = true;
+                }
+                if ui.selectable_label(!mine, "the tune's own").on_hover_text("The tune plays on the instruments written in it").clicked() {
+                    self.s.tune_mine = false;
+                }
+                ui.separator();
                 ui.label(RichText::new("You play:").color(YOURS)).on_hover_text("Pick the part(s) you want to play. They go silent and light up yellow.");
                 for ch in 0..16u16 {
                     if song.channels & (1 << ch) == 0 {

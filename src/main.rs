@@ -48,6 +48,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--tune-demo") {
+        // --tune-demo out.wav events.txt: an event list (from a script) on the uilleann pipes
+        tune_demo(&args[i + 1], &args[i + 2]);
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--regs-demo") {
         let out = args.get(i + 1).cloned().unwrap_or("regs.wav".into());
         regs_demo(&out);
@@ -1153,4 +1158,102 @@ fn regs_demo(out: &str) {
     p.drone_on.store(false, Relaxed);
     tx.send(Cmd::Panic).unwrap();
     run(1.0, &mut eng);
+}
+
+/// Play an event list on the uilleann pipes, offline. Lines: `t on KEY` (the chanter moves to KEY,
+/// legato), `t off`, `t regs BITS0 BITS1 BITS2` (keys held on tenor, baritone, bass), `t end`.
+/// Levels from NOODLE_DEMO_LEVELS="chanter drones regs"; NOODLE_DEMO_PARTS = any of c,d,r (stems).
+fn tune_demo(out: &str, events: &str) {
+    let sr = 48000u32;
+    let p = Arc::new(Params::new());
+    let (tx, rx) = crossbeam_channel::bounded::<Cmd>(4096);
+    let (utx, _urx) = crossbeam_channel::bounded::<UiEvt>(1 << 20);
+    let mut eng = Engine::new(p.clone(), rx, utx, sr as f32, 8192);
+    if let Some(sf) = sounds::find_soundfonts().into_iter().next() {
+        if let Ok(l) = sounds::load_soundfont(&sf, sr) {
+            tx.send(Cmd::Synths(l.synths)).unwrap();
+        }
+    }
+    let parts = std::env::var("NOODLE_DEMO_PARTS").unwrap_or_else(|_| "cdr".into());
+    let lv: Vec<f32> = std::env::var("NOODLE_DEMO_LEVELS").unwrap_or_else(|_| "0.8 0.3 0.4".into()).split_whitespace().filter_map(|x| x.parse().ok()).collect();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sounds");
+    let inst = sampler::load(&dir.join("uilleann-chanter-2/Uilleann chanter (recorded).sfz")).expect("chanter");
+    tx.send(Cmd::Program { layer: false, bank: sounds::SAMPLE_BANK, prog: 1, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }).unwrap();
+    p.pipe_rec.store(true, Relaxed);
+    let r = drone_rec::load_regs(&dir.join("uilleann-regulators/Uilleann regulators (recorded).sfz")).expect("regs");
+    tx.send(Cmd::RegSet(Some(Arc::new(r)))).unwrap();
+    let d = drone_rec::load(&dir.join("uilleann-drones-2/Uilleann drones (recorded).sfz")).expect("drones");
+    tx.send(Cmd::DroneLoop(Some(Arc::new(d)))).unwrap();
+    let pp = &pipes::PIPES[3];
+    p.chanter_voice.store(3, Relaxed);
+    p.pipe_tonic.store(62, Relaxed);
+    p.drone_tone.store(pp.tone, Relaxed);
+    p.pipe_just.store(true, Relaxed);
+    p.regs_on.store(true, Relaxed);
+    p.chanter_level.set(if parts.contains('c') { lv[0] } else { 0.0 });
+    p.drone_level.set(if parts.contains('d') { lv[1] } else { 0.0 });
+    p.reg_level.set(if parts.contains('r') { lv[2] } else { 0.0 });
+    for i in 0..13 {
+        p.drone_cents[i].store(i32::MIN, Relaxed);
+    }
+    p.drone_rec_cents.store(if parts.contains('d') { 6200 } else { i32::MIN }, Relaxed);
+    p.drone_on.store(true, Relaxed);
+    p.pipe_mode.store(true, Relaxed);
+    let mut wav = hound::WavWriter::create(out, hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 16, sample_format: hound::SampleFormat::Int }).unwrap();
+    let block = 64;
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut t = 0.0f64;
+    let mut cur: Option<u8> = None;
+    let text = std::fs::read_to_string(events).expect("events");
+    let mut evs: Vec<(f64, Vec<String>)> = text.lines().filter_map(|ln| {
+        let mut w = ln.split_whitespace();
+        let at: f64 = w.next()?.parse().ok()?;
+        Some((at, w.map(|x| x.to_string()).collect()))
+    }).collect();
+    evs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let mut end = 0.0;
+    for (at, w) in evs {
+        while t < at {
+            eng.process(&mut l, &mut r);
+            for i in 0..block {
+                wav.write_sample((l[i].clamp(-1.0, 1.0) * 32767.0) as i16).unwrap();
+                wav.write_sample((r[i].clamp(-1.0, 1.0) * 32767.0) as i16).unwrap();
+            }
+            t += block as f64 / sr as f64;
+        }
+        match w.first().map(|s| s.as_str()) {
+            Some("on") => {
+                let k: u8 = w[1].parse().unwrap();
+                tx.send(Cmd::Midi([0x90, k, 100])).unwrap();
+                if let Some(pk) = cur {
+                    if pk != k {
+                        tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+                    }
+                }
+                cur = Some(k);
+            }
+            Some("off") => {
+                if let Some(pk) = cur.take() {
+                    tx.send(Cmd::Midi([0x80, pk, 0])).unwrap();
+                }
+            }
+            Some("regs") => {
+                for i in 0..3 {
+                    p.reg_keys[i].store(w[1 + i].parse().unwrap_or(0), Relaxed);
+                }
+            }
+            Some("dronesoff") => p.drone_on.store(false, Relaxed),
+            Some("end") => end = at,
+            _ => {}
+        }
+    }
+    let _ = end;
+    tx.send(Cmd::Panic).unwrap();
+    for _ in 0..(1.5 * sr as f64) as usize / block {
+        eng.process(&mut l, &mut r);
+        for i in 0..block {
+            wav.write_sample((l[i].clamp(-1.0, 1.0) * 32767.0) as i16).unwrap();
+            wav.write_sample((r[i].clamp(-1.0, 1.0) * 32767.0) as i16).unwrap();
+        }
+    }
 }

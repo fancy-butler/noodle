@@ -476,4 +476,34 @@ mod live_tests {
         a.render(&mut tail, &mut tr);
         assert!(rms(&tail[24000..]) < 1e-3);
     }
+
+    /// The recorded uilleann chanter as the reeds: chords and a bass note all sound.
+    #[test]
+    fn chanter_reeds_sound() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sounds/uilleann-chanter-2/Uilleann chanter (recorded).sfz");
+        let mut inst = crate::sampler::load(&path).unwrap();
+        inst.mono = false;
+        if let Some(lo) = inst.regions.iter().map(|r| r.lokey).min() {
+            inst.regions.iter_mut().filter(|r| r.lokey == lo).for_each(|r| r.lokey = 0);
+        }
+        if let Some(hi) = inst.regions.iter().map(|r| r.hikey).max() {
+            inst.regions.iter_mut().filter(|r| r.hikey == hi).for_each(|r| r.hikey = 127);
+        }
+        let t = Tuning { beat_a4: 3.0, bright: 7.0, cassotto: false };
+        let reg = Register { name: "M", ranks: &[Rank::M] };
+        let mut a = Accordion::new(48000.0, reg, &[Rank::L, Rank::M], t).with_samples(std::sync::Arc::new(inst));
+        a.treble_on(1, 67);
+        a.treble_on(2, 71);
+        a.treble_on(3, 74);
+        a.bass_on(4, &[43], false);
+        let mut out = vec![0f32; 48000 * 2];
+        let mut r = vec![0f32; 48000 * 2];
+        for (cl, cr) in out.chunks_mut(256).zip(r.chunks_mut(256)) {
+            a.render(cl, cr);
+        }
+        let rms = (out[24000..].iter().map(|x| x * x).sum::<f32>() / 72000.0).sqrt();
+        let peak = out.iter().fold(0f32, |m, x| m.max(x.abs()));
+        println!("chanter reeds rms {rms:.3} peak {peak:.3}");
+        assert!(rms > 0.02 && peak < 1.0, "{rms} {peak}");
+    }
 }

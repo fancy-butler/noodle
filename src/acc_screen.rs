@@ -21,6 +21,8 @@ pub struct AccState {
     /// the recorded reeds, loaded once
     reeds: Option<Arc<crate::sampler::Instrument>>,
     reeds_tried: bool,
+    /// which recording the loaded reeds came from
+    reeds_src: u8,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -32,7 +34,7 @@ enum Held {
 
 impl AccState {
     pub fn new() -> Self {
-        AccState { insts: acc::instruments(), down: HashMap::new(), mouse: None, push: false, ext: 0.5, center: 0, reeds: None, reeds_tried: false }
+        AccState { insts: acc::instruments(), down: HashMap::new(), mouse: None, push: false, ext: 0.5, center: 0, reeds: None, reeds_tried: false, reeds_src: 0 }
     }
 }
 
@@ -110,14 +112,32 @@ impl App {
         if !self.s.acc_real {
             return None;
         }
+        let src = self.s.acc_reed_src;
+        let pack = Self::acc_reed_pack(src);
         let a = self.acc.as_mut()?;
+        if a.reeds_src != src {
+            a.reeds = None;
+            a.reeds_tried = false;
+            a.reeds_src = src;
+        }
         if a.reeds.is_none() && !a.reeds_tried {
-            let path = crate::packs::installed_path(crate::packs::reed_pack());
+            let path = crate::packs::installed_path(pack);
             if path.exists() {
                 a.reeds_tried = true;
                 match crate::sampler::load(&path) {
                     Ok(mut inst) => {
                         crate::sampler::loop_sustains(&mut inst);
+                        if src != 0 {
+                            // a chanter as accordion reeds: chords need polyphony, and the bass and
+                            // the top need notes past the chanter's two octaves (stretched recordings)
+                            inst.mono = false;
+                            if let Some(lo) = inst.regions.iter().map(|r| r.lokey).min() {
+                                inst.regions.iter_mut().filter(|r| r.lokey == lo).for_each(|r| r.lokey = 0);
+                            }
+                            if let Some(hi) = inst.regions.iter().map(|r| r.hikey).max() {
+                                inst.regions.iter_mut().filter(|r| r.hikey == hi).for_each(|r| r.hikey = 127);
+                            }
+                        }
                         a.reeds = Some(Arc::new(inst));
                     }
                     Err(e) => eprintln!("accordion reeds: {e}"),
@@ -125,6 +145,16 @@ impl App {
             }
         }
         a.reeds.clone()
+    }
+
+    /// The recording the real reeds are built from.
+    fn acc_reed_pack(src: u8) -> &'static crate::packs::Pack {
+        let name = match src {
+            1 => "Uilleann chanter (recorded)",
+            2 => "Great Highland chanter (recorded)",
+            _ => return crate::packs::reed_pack(),
+        };
+        crate::packs::PACKS.iter().find(|p| p.name == name).unwrap_or_else(crate::packs::reed_pack)
     }
 
     fn acc_setup(&mut self) {
@@ -532,13 +562,25 @@ impl App {
             }
             ui.separator();
             ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
-            let pack = crate::packs::reed_pack();
+            let pack = Self::acc_reed_pack(self.s.acc_reed_src);
             let have = crate::packs::installed(pack);
-            let mut real = self.s.acc_real;
-            ui.selectable_value(&mut real, true, "Real reeds").on_hover_text("Recorded reeds: a Hohner Super 64 chromatic harmonica (VCSL, CC0), stacked and detuned into accordion registers");
-            ui.selectable_value(&mut real, false, "Synth reeds");
-            if real != self.s.acc_real {
-                self.s.acc_real = real;
+            // (real?, source): harmonica reeds, your recorded chanters, or the synth
+            let cur = (self.s.acc_real, self.s.acc_reed_src);
+            let mut pick = cur;
+            if ui.selectable_label(cur == (true, 0), "Real reeds").on_hover_text("Recorded reeds: a Hohner Super 64 chromatic harmonica (VCSL, CC0), stacked and detuned into accordion registers").clicked() {
+                pick = (true, 0);
+            }
+            for (src, label, tip) in [(1u8, "Uilleann chanter", "Your recorded uilleann chanter as the reeds — every button a chanter, stacked into registers"), (2, "Highland chanter", "The recorded Great Highland chanter as the reeds")] {
+                if crate::packs::installed(Self::acc_reed_pack(src)) && ui.selectable_label(cur == (true, src), label).on_hover_text(tip).clicked() {
+                    pick = (true, src);
+                }
+            }
+            if ui.selectable_label(!cur.0, "Synth reeds").clicked() {
+                pick = (false, cur.1);
+            }
+            if pick != cur {
+                self.s.acc_real = pick.0;
+                self.s.acc_reed_src = pick.1;
                 self.acc_setup();
             }
             if self.s.acc_real && !have {

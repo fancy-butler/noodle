@@ -1086,14 +1086,22 @@ impl Player {
                 env: if legato { r.sustain.max(0.001) } else { 0.0 },
                 rel_from: 0.0,
                 fade: if legato { 0.0 } else { 1.0 },
-                fade_step: if legato { 1.0 / (0.035 * self.sr) } else { 0.0 },
+                fade_step: if legato { 1.0 / (self.legato_xf() * self.sr) } else { 0.0 },
                 sustained: false,
                 age: 0.0,
             });
         }
     }
 
+    /// Legato crossfade time: winds glide over ~35 ms; a bagpipe chanter switches note at once
+    /// (its cuts and taps are 20–40 ms grace notes that a slow crossfade would swallow).
+    fn legato_xf(&self) -> f32 {
+        let n = self.inst.name.to_lowercase();
+        if n.contains("chanter") || (n.contains("pipe") && !n.contains("pan")) { 0.004 } else { 0.035 }
+    }
+
     fn release_key(&mut self, key: u8, fast: bool) {
+        let xf_out = if self.legato_xf() < 0.01 { 0.006 } else { 0.045 };
         let sustain = self.sustain;
         let inst = self.inst.clone();
         for v in self.voices.iter_mut().filter(|v| v.key == key && v.stage != Stage::Release && v.stage != Stage::Dead) {
@@ -1106,7 +1114,7 @@ impl Player {
                 continue;
             }
             if fast {
-                v.fade_step = -1.0 / (0.045 * self.sr);
+                v.fade_step = -1.0 / (xf_out * self.sr);
                 v.sustained = false;
             } else {
                 v.stage = Stage::Release;
@@ -1134,6 +1142,15 @@ impl Player {
         }
         self.held.push((key, vel));
         self.start(key, vel, Trig::Attack, legato);
+    }
+
+    /// A chanter closing: this key's voices fade out over `secs` (a few ms), whatever the release.
+    pub fn quick_off(&mut self, key: u8, secs: f32) {
+        let step = -1.0 / (secs.max(0.001) * self.sr);
+        for v in self.voices.iter_mut().filter(|v| v.key == key && v.stage != Stage::Dead) {
+            v.fade_step = step;
+            v.sustained = false;
+        }
     }
 
     pub fn note_off(&mut self, key: u8) {

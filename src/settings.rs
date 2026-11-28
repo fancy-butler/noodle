@@ -107,6 +107,8 @@ pub struct Settings {
     pub oc_glaze: u8,
     /// accordion sound: recorded reeds (when downloaded) or the synth
     pub acc_real: bool,
+    /// what the real reeds are made of: 0 harmonica, 1 your uilleann chanter, 2 the Highland chanter
+    pub acc_reed_src: u8,
     pub ml3_setup_done: bool,
     pub wind: u8, // 0 auto-detect, 1 off, 2 on
     pub breath_src: u8,
@@ -141,6 +143,8 @@ pub struct Settings {
     pub regs_left: bool,
     /// low keys strike the regulators (only while the Regulators window is open)
     pub regs_low_keys: bool,
+    /// a tune's melody plays on your sound (off: on the tune's own instruments)
+    pub tune_mine: bool,
     /// Highland pipes use the recorded chanter when it's downloaded
     pub ghb_rec: bool,
     /// uilleann pipes use the recorded chanter when it's downloaded
@@ -251,6 +255,7 @@ impl Default for Settings {
             acc_round: true,
             oc_glaze: 0,
             acc_real: true,
+            acc_reed_src: 0,
             ml3_setup_done: false,
             wind: 0,
             breath_src: 0,
@@ -281,6 +286,7 @@ impl Default for Settings {
             reg_level: 0.6,
             regs_left: false,
             regs_low_keys: false,
+            tune_mine: true,
             ghb_rec: true,
             uil_rec: true,
             uil_drones_rec: true,

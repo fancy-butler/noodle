@@ -178,6 +178,8 @@ pub struct Params {
     // song
     pub song_speed: AF32,
     pub song_user: AtomicU16, // channels the user plays (muted in playback)
+    /// channels of the song that play on the player's own sound (the tune's melody)
+    pub song_mine: AtomicU16,
     pub song_wait: AtomicBool,
     pub song_vol: AF32,
     // engine → UI
@@ -297,6 +299,7 @@ impl Params {
             swing: AF32::new(0.0),
             song_speed: AF32::new(1.0),
             song_user: AtomicU16::new(0),
+            song_mine: AtomicU16::new(0),
             song_wait: AtomicBool::new(false),
             song_vol: AF32::new(0.8),
             drum_step: AtomicU8::new(255),
@@ -1332,8 +1335,17 @@ impl Engine {
             // recorded chanter: new note on, then the old one off (no gap, no two at once)
             let old = self.chanter;
             if old != key as i16 {
-                self.route(key, 100, true);
+                // the Chanter knob sets how hard it's blown (0.7, the default = velocity 100)
+                let vel = (self.p.chanter_level.get().clamp(0.0, 1.0) / 0.7 * 100.0).round().clamp(1.0, 127.0) as u8;
+                self.route(key, vel, true);
                 if old >= 0 {
+                    // a chanter changes note at once: the old one goes in ~8 ms, not its release
+                    // time, so cuts and taps (grace notes of 25–40 ms) actually sound
+                    for ch in [MAIN_CH, LAYER_CH] {
+                        if let Some(n) = self.native.get_mut(ch as usize).and_then(|n| n.as_mut()) {
+                            n.quick_off(old as u8, 0.008);
+                        }
+                    }
                     self.route(old as u8, 0, false);
                 }
             }
@@ -1432,7 +1444,8 @@ impl Engine {
                 if note.is_none() {
                     self.p.reg_sounding[r].store(255, Relaxed);
                 }
-                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 1.2;
+                // at the default slider (0.6) about 5 dB under the recorded chanter
+                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 0.18;
                 let pan = [0.12f32, 0.0, -0.12][r];
                 self.regplay[r].render(&set.rows[r], note, lv, pan, sr, out_l, out_r);
                 continue;
@@ -1602,7 +1615,8 @@ impl Engine {
             let rc = self.p.drone_rec_cents.load(Relaxed);
             let on_rec = on && rc != i32::MIN;
             // recorded drones are as loud as they were blown; the slider trims them like the modelled ones
-            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 1.4;
+            // balanced against the recorded chanter: at the default slider (0.6) about 8 dB under it
+            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 0.12;
             self.dplay.render(&d, on_rec, if rc == i32::MIN { d.cents } else { rc as f64 }, lv, self.sr, out_l, out_r);
         }
         for v in 0..13 {
@@ -2273,8 +2287,18 @@ impl Engine {
         for k in 0..128 {
             if self.own_held[k] {
                 self.own_held[k] = false;
-                self.route(k as u8, 0, false);
+                self.own_note(k as u8, 0, false);
             }
+        }
+    }
+
+    /// A song note on your own sound: through the bagpipe chanter when the pipes are on
+    /// (one note at a time, over the drones), straight to your sound otherwise.
+    fn own_note(&mut self, k: u8, vel: u8, on: bool) {
+        if self.p.pipe_mode.load(Relaxed) {
+            if on { self.pipe_on(k) } else { self.pipe_off(k) }
+        } else {
+            self.route(k, vel, on);
         }
     }
 
@@ -2342,16 +2366,17 @@ impl Engine {
                 self.p.song_pos.set(self.song_pos);
                 return;
             }
-            if song.own_sound && e.ch != 9 && (is_note || e.st == 0xC0 || e.st == 0xB0) {
-                // scales and drills: play on the sound the player has picked
+            let mine = song.own_sound || bit(self.p.song_mine.load(Relaxed), e.ch as usize);
+            if mine && e.ch != 9 && (is_note || e.st == 0xC0 || e.st == 0xB0) {
+                // scales and drills, and a tune's melody: play on the sound the player has picked
                 if is_note && !is_user {
                     let on = e.st == 0x90 && e.d2 > 0;
                     let k = e.d1 as usize & 127;
                     if on && self.own_held[k] {
-                        self.route(e.d1, 0, false);
+                        self.own_note(e.d1, 0, false);
                     }
                     self.own_held[k] = on;
-                    self.route(e.d1, e.d2, on);
+                    self.own_note(e.d1, e.d2, on);
                 }
             } else if !(is_user && is_note) {
                 if let Some(s) = self.synths.as_mut() {
