@@ -219,6 +219,9 @@ pub struct App {
     update_this_run: bool,
     /// the sound the last sound-list rescan was for (so a missing one doesn't rescan every frame)
     rescanned_for: Option<(i32, i32)>,
+    /// what the engine's copy of the song was last ornamented for
+    orn_sent: String,
+    orn_mine: u16,
     reg_mouse: Option<(usize, usize)>,
     reg_mouse_row: Option<usize>,
     /// semitones the song is moved from its written key
@@ -618,6 +621,8 @@ impl App {
             regs_sent: None,
             update_this_run: false,
             rescanned_for: None,
+            orn_sent: String::new(),
+            orn_mine: 0,
             reg_mouse: None,
             reg_mouse_row: None,
             song_key: 0,
@@ -2528,6 +2533,7 @@ impl App {
             _ => 0,
         };
         p.song_mine.store(mine, Relaxed);
+        self.orn_mine = mine;
         p.reg_level.set(self.s.reg_level);
         p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
@@ -2627,6 +2633,13 @@ impl App {
                                     ui.label(RichText::new("Recorded drones play all three together — turn them all on, or this plays modelled ones").size(10.5).color(text_dim()));
                                 }
                             }
+                            if let Some(st) = Self::orn_style(self.s.pipe_idx) {
+                                let (lab, tip) = match st {
+                                    crate::ornament::Style::Irish => ("Ornaments: Irish", "Tunes played on these pipes (Hear it) get a piper's ornaments: cuts, taps, rolls, crans. The score stays plain."),
+                                    crate::ornament::Style::Highland => ("Ornaments: Highland", "Tunes played on these pipes (Hear it) get gracenotes, doublings, grips, taorluaths, throws and birls. The score stays plain."),
+                                };
+                                ui.checkbox(&mut self.s.pipe_orn, lab).on_hover_text(tip);
+                            }
                             ui.checkbox(&mut self.s.pipe_just, "Just tuning").on_hover_text("Chanter notes tuned pure against the drones (5-limit just intonation) instead of piano tuning");
                             ui.checkbox(&mut self.s.pipe_cont, "Never stops").on_hover_text("Chanter keeps sounding with all fingers up, like real pipes. STOP or Esc silences it. (With a wind controller your breath decides.)");
                         });
@@ -2715,6 +2728,13 @@ impl App {
                         let mut cl = self.s.chanter_level;
                         if knob(ui, "Chanter", &mut cl, 0.7, LIVE, pct) {
                             self.s.chanter_level = cl;
+                        }
+                        if self.s.pipe_idx == 3 {
+                            // the regulators' own volume (same as the Level in the Regulators window)
+                            let mut rl = self.s.reg_level;
+                            if knob(ui, "Regulators", &mut rl, 0.6, ARP, pct) {
+                                self.s.reg_level = rl;
+                            }
                         }
                         let mut t = (self.s.pipe_tune as f32 + 100.0) / 200.0;
                         if knob(ui, "Tune", &mut t, 0.5, LIVE, |v| format!("{:+.0} ¢", v * 200.0 - 100.0)) {
@@ -4794,6 +4814,42 @@ impl App {
             let _ = self.tx.send(Cmd::RegSet(None));
         }
     }
+    /// The pipes' ornament style for this pipe, if it has one.
+    fn orn_style(pipe: usize) -> Option<crate::ornament::Style> {
+        match pipe {
+            3 => Some(crate::ornament::Style::Irish),
+            0..=2 => Some(crate::ornament::Style::Highland),
+            _ => None,
+        }
+    }
+
+    /// A tune's melody on the pipes gets ornamented (in the sound only; the score stays plain).
+    fn sync_ornaments(&mut self, mine: u16) {
+        let Some(song) = self.song.clone() else {
+            self.orn_sent.clear();
+            return;
+        };
+        let style = if self.s.pipe_orn && self.s.drone_mode == 1 && mine != 0 { Self::orn_style(self.s.pipe_idx) } else { None };
+        let tonic = self.p.pipe_tonic.load(Relaxed);
+        let key = format!("{:p}|{:?}|{}|{}", Arc::as_ptr(&song), style, tonic, mine);
+        if key == self.orn_sent {
+            return;
+        }
+        let was_ornamented = self.orn_sent.contains("Some(");
+        self.orn_sent = key;
+        match style {
+            Some(st) => {
+                let ch = mine.trailing_zeros() as u8;
+                let o = crate::ornament::apply(&song, ch, st, tonic);
+                let _ = self.tx.send(Cmd::SongSwap(Arc::new(o)));
+            }
+            None if was_ornamented => {
+                let _ = self.tx.send(Cmd::SongSwap(song));
+            }
+            None => {}
+        }
+    }
+
     fn drone_pack() -> crate::packs::Pack {
         *crate::packs::PACKS.iter().find(|p| p.name == "Uilleann drones (recorded)").expect("drone pack")
     }
@@ -6296,6 +6352,8 @@ impl eframe::App for App {
         }
         self.apply_controller(ctx);
         self.apply_drones();
+        let mine = self.orn_mine;
+        self.sync_ornaments(mine);
         self.sync_recorded_chanter();
         self.apply_range();
         self.poll_score(ctx);

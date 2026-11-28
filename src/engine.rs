@@ -369,6 +369,8 @@ pub enum Cmd {
     Panic,
     Synths(Box<SynthPair>),
     LoadSong(Option<Arc<Song>>),
+    /// the loaded song with other events (ornaments): keep the place and play state
+    SongSwap(Arc<Song>),
     /// a chip drum kit on the drum channel (None = back to the SoundFont kit)
     DrumInst(Option<Arc<crate::native::InstDef>>),
     SongPlay(bool),
@@ -1442,8 +1444,9 @@ impl Engine {
                 if note.is_none() {
                     self.p.reg_sounding[r].store(255, Relaxed);
                 }
-                // at the default slider (0.6) about 5 dB under the recorded chanter
-                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 0.36;
+                // their own volume: about 6 dB under the chanter at the default (0.6), a little over it at full
+                let rl = self.p.reg_level.get().clamp(0.0, 1.0);
+                let lv = 0.7 * rl * rl;
                 let pan = [0.12f32, 0.0, -0.12][r];
                 self.regplay[r].render(&set.rows[r], note, lv, pan, sr, out_l, out_r);
                 continue;
@@ -2426,6 +2429,16 @@ impl Engine {
                     let t = self.song_pos;
                     self.song_seek(t);
                     self.p.synth_ready.store(true, Relaxed);
+                }
+                Cmd::SongSwap(s) => {
+                    // the same song, other events (ornaments on/off): carry on from where it is
+                    let pos = self.song_pos;
+                    let playing = self.song_playing;
+                    if let Some(old) = std::mem::replace(&mut self.song, Some(s)) {
+                        let _ = self.tx.try_send(UiEvt::TrashSong(old));
+                    }
+                    self.song_seek(pos);
+                    self.song_playing = playing;
                 }
                 Cmd::LoadSong(s) => {
                     self.own_release();

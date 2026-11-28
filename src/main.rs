@@ -19,6 +19,7 @@ mod drums;
 mod game;
 mod drone_rec;
 mod engine;
+mod ornament;
 mod fingering;
 mod midi;
 mod native;
@@ -1204,7 +1205,34 @@ fn tune_demo(out: &str, events: &str) {
     let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
     let mut t = 0.0f64;
     let mut cur: Option<u8> = None;
-    let text = std::fs::read_to_string(events).expect("events");
+    let mut text = std::fs::read_to_string(events).expect("events");
+    // an ABC tune: its melody, ornamented the way the app does it (NOODLE_DEMO_STYLE = irish | highland | none)
+    if events.ends_with(".abc") {
+        let (song, _) = abc::to_song(&text, 0, 109).expect("abc");
+        let style = match std::env::var("NOODLE_DEMO_STYLE").as_deref() {
+            Ok("highland") => Some(ornament::Style::Highland),
+            Ok("none") => None,
+            _ => Some(ornament::Style::Irish),
+        };
+        let song = match style { Some(st) => ornament::apply(&song, 0, st, 62), None => song };
+        let lead = 2.0;
+        let mut lines = Vec::new();
+        for e in song.evs.iter().filter(|e| e.ch == 0) {
+            match e.st {
+                0x90 if e.d2 > 0 => lines.push(format!("{:.4} on {}", e.t + lead, e.d1)),
+                _ => {}
+            }
+        }
+        // closes: a note-off with nothing starting right then
+        let ons: Vec<f64> = song.evs.iter().filter(|e| e.ch == 0 && e.st == 0x90).map(|e| e.t).collect();
+        for e in song.evs.iter().filter(|e| e.ch == 0 && e.st == 0x80) {
+            if !ons.iter().any(|t| (t - e.t).abs() < 0.002) {
+                lines.push(format!("{:.4} off", e.t + lead));
+            }
+        }
+        lines.push(format!("{:.4} dronesoff", song.dur + lead + 0.3));
+        text = lines.join("\n");
+    }
     let mut evs: Vec<(f64, Vec<String>)> = text.lines().filter_map(|ln| {
         let mut w = ln.split_whitespace();
         let at: f64 = w.next()?.parse().ok()?;

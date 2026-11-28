@@ -147,6 +147,8 @@ pub struct Settings {
     pub tune_mine: bool,
     /// Ocarina mode plays the sound bank's ocarina instead of the recorded one
     pub oc_bank: bool,
+    /// tunes played on the pipes get the pipes' ornaments (Irish on uilleann, Highland on Scottish pipes)
+    pub pipe_orn: bool,
     /// Highland pipes use the recorded chanter when it's downloaded
     pub ghb_rec: bool,
     /// uilleann pipes use the recorded chanter when it's downloaded
@@ -290,6 +292,7 @@ impl Default for Settings {
             regs_low_keys: false,
             tune_mine: true,
             oc_bank: false,
+            pipe_orn: true,
             ghb_rec: true,
             uil_rec: true,
             uil_drones_rec: true,
