@@ -1172,6 +1172,11 @@ impl Player {
             }
         }
         self.release_key(key, false);
+        // a mono instrument already moved on to another note: no release noise for the old one
+        // under the new (VCSL ocarina's breath-off samples played on every note change)
+        if self.inst.mono && !was_top {
+            return;
+        }
         if self.inst.regions.iter().any(|r| r.trigger == Trig::Release) {
             self.start(key, vel, Trig::Release, false);
         }
@@ -1632,6 +1637,20 @@ mod level_probe {
             p.render(&mut l, &mut r);
             let pk = l.iter().chain(r.iter()).fold(0f32, |a, b| a.max(b.abs())) * 0.8 * 2.0;
             println!("key {key:3}  peak after master {pk:.2} {}", if pk > 0.85 { "← into the clipper" } else { "" });
+        }
+    }
+}
+
+#[cfg(test)]
+mod oc_probe {
+    #[test]
+    #[ignore]
+    fn ocarina_regions() {
+        let p = std::path::Path::new("/root/.local/share/noodle/instruments/sgossner-VCSL/Aerophones/Edge-blown Aerophones/Ocarina, Typical - SusVib.sfz");
+        let inst = super::load(p).unwrap();
+        println!("mono {} norm {}", inst.mono, inst.norm);
+        for r in &inst.regions {
+            println!("{}..{} center {} loop {:?} {}..{} len {}", r.lokey, r.hikey, r.center, r.loop_mode, r.loop_start, r.loop_end, r.sample.len());
         }
     }
 }

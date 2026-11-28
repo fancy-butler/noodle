@@ -145,6 +145,8 @@ pub struct Settings {
     pub regs_low_keys: bool,
     /// a tune's melody plays on your sound (off: on the tune's own instruments)
     pub tune_mine: bool,
+    /// Ocarina mode plays the sound bank's ocarina instead of the recorded one
+    pub oc_bank: bool,
     /// Highland pipes use the recorded chanter when it's downloaded
     pub ghb_rec: bool,
     /// uilleann pipes use the recorded chanter when it's downloaded
@@ -287,6 +289,7 @@ impl Default for Settings {
             regs_left: false,
             regs_low_keys: false,
             tune_mine: true,
+            oc_bank: false,
             ghb_rec: true,
             uil_rec: true,
             uil_drones_rec: true,

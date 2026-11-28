@@ -44,7 +44,7 @@ impl App {
         self.oc_prev_oct = self.s.kb_octave;
         self.s.fing_any = !self.s.real_range;
         // the recorded ocarina if it's there, otherwise the General MIDI one (the header offers the download)
-        let bp = self.best_sound(79);
+        let bp = if self.s.oc_bank { (0, 79) } else { self.best_sound(79) };
         self.set_preset(false, bp);
         let c = self.oc_chart();
         if self.s.fing_idx != c {
@@ -95,6 +95,20 @@ impl App {
             }
             ui.separator();
             self.range_switch(ui);
+            ui.separator();
+            // which ocarina you hear: the recording (VCSL) or the sound bank's
+            ui.label(RichText::new("Sound").size(12.0).color(text_dim()));
+            let rec = !self.s.oc_bank;
+            let have = crate::packs::better_for_gm(79).map(crate::packs::installed).unwrap_or(false);
+            if have && ui.selectable_label(rec, "Recorded").on_hover_text("A real ocarina recorded with vibrato (VCSL, CC0)").clicked() {
+                self.s.oc_bank = false;
+                let bp = self.best_sound(79);
+                self.set_preset(false, bp);
+            }
+            if ui.selectable_label(!rec || !have, format!("{}", self.bank_label())).on_hover_text("The sound bank's ocarina: plainer, no vibrato").clicked() {
+                self.s.oc_bank = true;
+                self.set_preset(false, (0, 79));
+            }
             ui.separator();
             ui.label(RichText::new("Glaze").size(12.0).color(text_dim()));
             for (i, (n, c)) in GLAZES.iter().enumerate() {

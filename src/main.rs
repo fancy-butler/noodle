@@ -1243,6 +1243,11 @@ fn tune_demo(out: &str, events: &str) {
                 }
             }
             Some("dronesoff") => p.drone_on.store(false, Relaxed),
+            Some("expr") => {
+                // expression (CC 11): a shaded hole is quieter as well as flatter
+                let v: u8 = w[1].parse().unwrap_or(127);
+                tx.send(Cmd::Midi([0xB0, 11, v.min(127)])).unwrap();
+            }
             Some("bend") => {
                 // cents off the note (slides, finger vibrato); the sampler bends ±2 semitones
                 let c: f32 = w[1].parse().unwrap_or(0.0);
