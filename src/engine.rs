@@ -1335,9 +1335,7 @@ impl Engine {
             // recorded chanter: new note on, then the old one off (no gap, no two at once)
             let old = self.chanter;
             if old != key as i16 {
-                // the Chanter knob sets how hard it's blown (0.7, the default = velocity 100)
-                let vel = (self.p.chanter_level.get().clamp(0.0, 1.0) / 0.7 * 100.0).round().clamp(1.0, 127.0) as u8;
-                self.route(key, vel, true);
+                self.route(key, 100, true);
                 if old >= 0 {
                     // a chanter changes note at once: the old one goes in ~8 ms, not its release
                     // time, so cuts and taps (grace notes of 25–40 ms) actually sound
@@ -1445,7 +1443,7 @@ impl Engine {
                     self.p.reg_sounding[r].store(255, Relaxed);
                 }
                 // at the default slider (0.6) about 5 dB under the recorded chanter
-                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 0.18;
+                let lv = self.p.reg_level.get().clamp(0.0, 1.0) * 0.36;
                 let pan = [0.12f32, 0.0, -0.12][r];
                 self.regplay[r].render(&set.rows[r], note, lv, pan, sr, out_l, out_r);
                 continue;
@@ -1616,7 +1614,7 @@ impl Engine {
             let on_rec = on && rc != i32::MIN;
             // recorded drones are as loud as they were blown; the slider trims them like the modelled ones
             // balanced against the recorded chanter: at the default slider (0.6) about 8 dB under it
-            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 0.12;
+            let lv = self.p.drone_level.get().clamp(0.0, 1.0) * 0.24;
             self.dplay.render(&d, on_rec, if rc == i32::MIN { d.cents } else { rc as f64 }, lv, self.sr, out_l, out_r);
         }
         for v in 0..13 {
@@ -2486,6 +2484,12 @@ impl Engine {
         let start = std::time::Instant::now();
         let n = out_l.len();
         self.drain();
+        // the recorded chanter: its knob is a real gain (0.7 = +6 dB over a plain sample instrument,
+        // 1.0 ≈ +9 dB), so it stands well clear of the drones; back to 1 when it isn't the chanter
+        let boost = if self.p.pipe_rec.load(Relaxed) && self.p.pipe_mode.load(Relaxed) { 2.0 * self.p.chanter_level.get().clamp(0.0, 1.0) / 0.7 } else { 1.0 };
+        if let Some(nat) = self.native.get_mut(MAIN_CH as usize).and_then(|n| n.as_mut()) {
+            nat.set_boost(boost);
+        }
         if self.synths.is_none() {
             out_l.fill(0.0);
             out_r.fill(0.0);

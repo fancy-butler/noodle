@@ -78,6 +78,13 @@ impl Native {
         }
     }
 
+    /// Extra gain for a sample instrument (the recorded chanter's knob); others ignore it.
+    pub fn set_boost(&mut self, b: f32) {
+        if let Native::Sampler(p) = self {
+            p.boost = b;
+        }
+    }
+
     /// Cut a note off within a few ms (a recorded chanter changing note); others just note-off.
     pub fn quick_off(&mut self, k: u8, secs: f32) {
         match self {

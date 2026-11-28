@@ -1243,6 +1243,12 @@ fn tune_demo(out: &str, events: &str) {
                 }
             }
             Some("dronesoff") => p.drone_on.store(false, Relaxed),
+            Some("bend") => {
+                // cents off the note (slides, finger vibrato); the sampler bends ±2 semitones
+                let c: f32 = w[1].parse().unwrap_or(0.0);
+                let v = (8192.0 + c / 200.0 * 8192.0).clamp(0.0, 16383.0) as u16;
+                tx.send(Cmd::Midi([0xE0, (v & 0x7F) as u8, (v >> 7) as u8])).unwrap();
+            }
             Some("end") => end = at,
             _ => {}
         }

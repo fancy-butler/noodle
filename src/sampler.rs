@@ -994,6 +994,8 @@ struct Voice {
 }
 
 pub struct Player {
+    /// extra gain on top of the instrument's own level (the bagpipe chanter knob)
+    pub boost: f32,
     inst: Arc<Instrument>,
     sr: f32,
     voices: Vec<Voice>,
@@ -1021,7 +1023,7 @@ impl Player {
         for &(n, v) in &inst.init_cc {
             cc[n as usize] = v;
         }
-        Player { inst, sr, voices: Vec::with_capacity(MAX_VOICES), held: Vec::with_capacity(16), cc, sustain: false, bend: 0.0, fine: 0.0, seq: 0, rng: 0x2545_f491, vib_phase: 0.0, vib_amt: 0.0, expr: 1.0 }
+        Player { boost: 1.0, inst, sr, voices: Vec::with_capacity(MAX_VOICES), held: Vec::with_capacity(16), cc, sustain: false, bend: 0.0, fine: 0.0, seq: 0, rng: 0x2545_f491, vib_phase: 0.0, vib_amt: 0.0, expr: 1.0 }
     }
 
     fn rand(&mut self) -> f32 {
@@ -1226,7 +1228,7 @@ impl Player {
         self.vib_amt += (self.cc[1] as f32 / 127.0 * 0.35 - self.vib_amt) * 0.2;
         self.vib_phase = (self.vib_phase + 5.6 * block_t).fract();
         let vib = (self.vib_phase * std::f32::consts::TAU).sin() * self.vib_amt;
-        let vol = (self.cc[7] as f32 / 127.0).powi(2);
+        let vol = (self.cc[7] as f32 / 127.0).powi(2) * self.boost;
         let target_expr = (self.cc[11] as f32 / 127.0).powf(1.6);
         let e0 = self.expr;
         let e1 = e0 + (target_expr - e0) * 0.5;
