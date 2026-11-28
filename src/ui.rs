@@ -2610,6 +2610,11 @@ impl App {
                                     }
                                 }
                             });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Sound").size(11.5).color(text_dim()));
+                                let pi = self.s.pipe_idx;
+                                self.pipe_sound_tag(ui, pi);
+                            });
                             // chanter: recorded or modelled (pipes that have a recording)
                             let pi = self.s.pipe_idx;
                             if let Some(pk) = Self::rec_pack(pi) {
@@ -4810,6 +4815,33 @@ impl App {
     /// Highland pipes with the recorded chanter downloaded: the bagpipe module plays it (one note
     /// at a time over the drones) instead of the model; your own sound comes back afterwards.
     /// The recorded chanter for a pipe, if there is one: Highland (0), uilleann (3).
+    /// Which pipes have a real recorded sound: (what's recorded, who recorded it).
+    fn pipe_recording(pipe: usize) -> Option<(&'static str, &'static str)> {
+        match pipe {
+            0 => Some(("the chanter", "IowaSpaceWizard (Freesound), CC0")),
+            3 => Some(("chanter, drones and regulators", "Fancy Butler, CC0")),
+            9 | 10 => Some(("chanter and drones (a bagpipe in G)", "FreePats / Gilles Sadowski, CC0")),
+            _ => None,
+        }
+    }
+
+    /// A small "REAL" / "MODELLED" tag for a pipe, with what it means on hover.
+    fn pipe_sound_tag(&self, ui: &mut egui::Ui, pipe: usize) {
+        match (Self::pipe_recording(pipe), Self::rec_pack(pipe)) {
+            (Some((what, who)), Some(pk)) => {
+                let have = crate::packs::installed(&pk);
+                let txt = RichText::new(if have { "● REAL" } else { "⬇ REAL" }).size(10.5).strong().color(Color32::BLACK);
+                ui.add(egui::Label::new(txt.background_color(GOOD))).on_hover_text(format!(
+                    "Recorded from a real instrument: {what} — {who}.{}",
+                    if have { "" } else { " Not downloaded yet: pick it and click Recorded (or Get sounds)." }
+                ));
+            }
+            _ => {
+                ui.add(egui::Label::new(RichText::new("MODELLED").size(10.5).color(text_dim()))).on_hover_text("No free recording of this pipe exists to ship, so Noodle synthesises it from measurements and descriptions of real ones.");
+            }
+        }
+    }
+
     fn rec_pack(pipe: usize) -> Option<crate::packs::Pack> {
         let name = match pipe {
             0 => "Great Highland chanter (recorded)",
@@ -5701,11 +5733,21 @@ impl App {
                     let art = Rect::from_min_size(r.min + Vec2::new(15.0, 8.0), Vec2::new(120.0, 120.0));
                     ui.painter().rect_filled(art, 8.0, deep());
                     crate::pipe_art::draw(ui.painter(), art.shrink(6.0), i);
+                    if let (Some(_), Some(pk)) = (Self::pipe_recording(i), Self::rec_pack(i)) {
+                        let have = crate::packs::installed(&pk);
+                        let tag = Rect::from_min_size(Pos2::new(art.right() - 50.0, art.top() + 4.0), Vec2::new(46.0, 16.0));
+                        ui.painter().rect_filled(tag, 8.0, if have { GOOD } else { GOOD.gamma_multiply(0.55) });
+                        ui.painter().text(tag.center(), Align2::CENTER_CENTER, if have { "REAL" } else { "⬇ REAL" }, FontId::proportional(10.0), Color32::BLACK);
+                    }
                     ui.painter().text(Pos2::new(r.center().x, r.bottom() - 34.0), Align2::CENTER_CENTER, pp.name, FontId::proportional(12.5), fg());
                     let drones = pp.drones.iter().filter(|d| d.2).count();
                     let key = if matches!(pp.tonic % 12, 1 | 3 | 8 | 10) { theory::NOTE_FLAT[(pp.tonic % 12) as usize] } else { theory::NOTE_SHARP[(pp.tonic % 12) as usize] };
                     ui.painter().text(Pos2::new(r.center().x, r.bottom() - 16.0), Align2::CENTER_CENTER, format!("{key} · {drones} drone{}", if drones == 1 { "" } else { "s" }), FontId::proportional(11.0), text_dim());
-                    if resp.on_hover_text(pp.note).clicked() {
+                    let tip = match Self::pipe_recording(i) {
+                        Some((what, who)) => format!("{}\n\nREAL: recorded {what} — {who}.", pp.note),
+                        None => format!("{}\n\nModelled: no free recording of this pipe exists to ship.", pp.note),
+                    };
+                    if resp.on_hover_text(tip).clicked() {
                         pick = Some(i);
                     }
                     if i % 4 == 3 {
@@ -5713,6 +5755,8 @@ impl App {
                     }
                 }
             });
+            ui.add_space(6.0);
+            ui.label(RichText::new("REAL = recorded from a real set of pipes (⬇ = not downloaded yet; pick it and click Recorded).  The rest are modelled: no free recording of them exists to ship.").size(11.5).color(text_dim()));
         });
         if let Some(i) = pick {
             self.select_pipe(i);
