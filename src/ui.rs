@@ -215,6 +215,9 @@ pub struct App {
     dloop_sent: Option<std::path::PathBuf>,
     dloop_ok: bool,
     regs_sent: Option<std::path::PathBuf>,
+    /// drone notes held on a sample set that has its own drones, and which sound they're on
+    set_drones: Vec<(u8, u8)>,
+    set_drones_for: Option<(i32, i32)>,
     /// checked for a newer Noodle since this start
     update_this_run: bool,
     /// the sound the last sound-list rescan was for (so a missing one doesn't rescan every frame)
@@ -619,6 +622,8 @@ impl App {
             dloop_sent: None,
             dloop_ok: false,
             regs_sent: None,
+            set_drones: Vec::new(),
+            set_drones_for: None,
             update_this_run: false,
             rescanned_for: None,
             orn_sent: String::new(),
@@ -2490,6 +2495,26 @@ impl App {
         }
         self.sync_recorded_regs();
         let rec = self.drone_rec_on();
+        // a sample set with its own drones (the FreePats pipe): they play from the set, below its chanter
+        let own = mode == 1 && matches!(self.s.pipe_idx, 9 | 10) && self.p.pipe_rec.load(Relaxed);
+        let mut want: Vec<(u8, u8)> = Vec::new();
+        if own && self.drone_running {
+            let vel = (self.s.drone_level.clamp(0.0, 1.0) * 100.0).round().max(1.0) as u8;
+            for c in cents.iter().filter(|c| **c != i32::MIN) {
+                let mut k = ((*c as f32) / 100.0).round() as i32;
+                while k >= 60 {
+                    k -= 12; // the set's drones live below its chanter (G2/G3 recordings)
+                }
+                let k = k.clamp(36, 59) as u8;
+                if !want.iter().any(|x| x.0 == k) {
+                    want.push((k, vel));
+                }
+            }
+        }
+        if own {
+            cents = [i32::MIN; 13];
+        }
+        self.sync_set_drones(want);
         let p = &self.p;
         if rec && mode == 1 {
             // one recording of the whole set: it sounds at the tenor's pitch, the others ride along
@@ -4789,6 +4814,8 @@ impl App {
         let name = match pipe {
             0 => "Great Highland chanter (recorded)",
             3 => "Uilleann chanter (recorded)",
+            // a central-European pipe in G (FreePats): the nearest real thing to these two
+            9 | 10 => "Bagpipe in G (with drones)",
             _ => return None,
         };
         crate::packs::PACKS.iter().find(|p| p.name == name).copied()
@@ -4850,6 +4877,33 @@ impl App {
         }
     }
 
+    /// Hold (or let go of) the sample set's own drone notes; re-strike when the sound changes.
+    fn sync_set_drones(&mut self, want: Vec<(u8, u8)>) {
+        let main = self.s.main;
+        if self.set_drones_for != Some(main) {
+            // a new sound on the channel forgot the old notes
+            self.set_drones.clear();
+            self.set_drones_for = Some(main);
+        }
+        if want == self.set_drones {
+            return;
+        }
+        for (k, _) in self.set_drones.iter() {
+            if !want.iter().any(|w| w.0 == *k) {
+                let _ = self.tx.send(Cmd::RawNote { key: *k, vel: 0 });
+            }
+        }
+        for (k, v) in want.iter() {
+            if !self.set_drones.iter().any(|w| w == &(*k, *v)) {
+                if self.set_drones.iter().any(|w| w.0 == *k) {
+                    let _ = self.tx.send(Cmd::RawNote { key: *k, vel: 0 });
+                }
+                let _ = self.tx.send(Cmd::RawNote { key: *k, vel: *v });
+            }
+        }
+        self.set_drones = want;
+    }
+
     fn drone_pack() -> crate::packs::Pack {
         *crate::packs::PACKS.iter().find(|p| p.name == "Uilleann drones (recorded)").expect("drone pack")
     }
@@ -4877,6 +4931,7 @@ impl App {
         match pipe {
             0 => self.s.ghb_rec,
             3 => self.s.uil_rec,
+            9 | 10 => self.s.gpipe_rec,
             _ => false,
         }
     }
@@ -4884,6 +4939,7 @@ impl App {
         match pipe {
             0 => self.s.ghb_rec = on,
             3 => self.s.uil_rec = on,
+            9 | 10 => self.s.gpipe_rec = on,
             _ => {}
         }
     }

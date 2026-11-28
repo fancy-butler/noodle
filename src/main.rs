@@ -1178,7 +1178,9 @@ fn tune_demo(out: &str, events: &str) {
     let parts = std::env::var("NOODLE_DEMO_PARTS").unwrap_or_else(|_| "cdr".into());
     let lv: Vec<f32> = std::env::var("NOODLE_DEMO_LEVELS").unwrap_or_else(|_| "0.8 0.3 0.4".into()).split_whitespace().filter_map(|x| x.parse().ok()).collect();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sounds");
-    let inst = sampler::load(&dir.join("uilleann-chanter-2/Uilleann chanter (recorded).sfz")).expect("chanter");
+    // NOODLE_DEMO_SET: another sample set as the chanter, with its own drones (keys below 60)
+    let set = std::env::var("NOODLE_DEMO_SET").ok();
+    let inst = sampler::load(&set.clone().map(std::path::PathBuf::from).unwrap_or_else(|| dir.join("uilleann-chanter-2/Uilleann chanter (recorded).sfz"))).expect("chanter");
     tx.send(Cmd::Program { layer: false, bank: sounds::SAMPLE_BANK, prog: 1, inst: Some(Arc::new(native::InstDef::Sampler(Arc::new(inst)))) }).unwrap();
     p.pipe_rec.store(true, Relaxed);
     let r = drone_rec::load_regs(&dir.join("uilleann-regulators/Uilleann regulators (recorded).sfz")).expect("regs");
@@ -1197,7 +1199,16 @@ fn tune_demo(out: &str, events: &str) {
     for i in 0..13 {
         p.drone_cents[i].store(i32::MIN, Relaxed);
     }
-    p.drone_rec_cents.store(if parts.contains('d') { 6200 } else { i32::MIN }, Relaxed);
+    p.drone_rec_cents.store(if parts.contains('d') && set.is_none() { 6200 } else { i32::MIN }, Relaxed);
+    if set.is_some() {
+        tx.send(Cmd::RegSet(None)).unwrap();
+        if parts.contains('d') {
+            let tonic: i32 = std::env::var("NOODLE_DEMO_TONIC").ok().and_then(|v| v.parse().ok()).unwrap_or(67);
+            for k in [tonic - 24, tonic - 12] {
+                tx.send(Cmd::RawNote { key: k as u8, vel: (lv[1] * 100.0) as u8 }).unwrap();
+            }
+        }
+    }
     p.drone_on.store(true, Relaxed);
     p.pipe_mode.store(true, Relaxed);
     let mut wav = hound::WavWriter::create(out, hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 16, sample_format: hound::SampleFormat::Int }).unwrap();

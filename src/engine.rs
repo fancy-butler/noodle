@@ -378,6 +378,8 @@ pub enum Cmd {
     Acc(AccMsg),
     /// a recorded drone set (None = put it away)
     DroneLoop(Option<Arc<crate::drone_rec::DroneLoop>>),
+    /// a note straight to the main sound, bypassing the keyboard (a sample set's own drones)
+    RawNote { key: u8, vel: u8 },
     /// recorded regulators (None = the modelled ones)
     RegSet(Option<Arc<crate::drone_rec::RegSet>>),
 }
@@ -2525,6 +2527,13 @@ impl Engine {
                 }
                 Cmd::SongSeek(t) => self.song_seek(t),
                 Cmd::Acc(m) => self.acc(m),
+                Cmd::RawNote { key, vel } => {
+                    if vel > 0 {
+                        self.msg(MAIN_CH, 0x90, key as i32, vel as i32);
+                    } else {
+                        self.msg(MAIN_CH, 0x80, key as i32, 0);
+                    }
+                }
                 Cmd::RegSet(r) => {
                     self.regset = r;
                     self.regplay = Default::default();

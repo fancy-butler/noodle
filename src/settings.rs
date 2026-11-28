@@ -155,6 +155,8 @@ pub struct Settings {
     pub uil_rec: bool,
     /// uilleann pipes use the recorded drones when they're downloaded
     pub uil_drones_rec: bool,
+    /// Medieval market pipes and Hümmelchen use the FreePats bagpipe in G (chanter and drones)
+    pub gpipe_rec: bool,
     /// uilleann regulators use the recorded ones when they're downloaded
     pub uil_regs_rec: bool,
     /// a sound from your banks used as a pipe's chanter (pipe index, bank, program)
@@ -296,6 +298,7 @@ impl Default for Settings {
             ghb_rec: true,
             uil_rec: true,
             uil_drones_rec: true,
+            gpipe_rec: true,
             uil_regs_rec: true,
             pipe_sounds: Vec::new(),
             drone_level: 0.6,

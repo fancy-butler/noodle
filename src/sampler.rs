@@ -1645,6 +1645,30 @@ mod level_probe {
 mod oc_probe {
     #[test]
     #[ignore]
+    fn freepats_drones_under_chanter() {
+        let p = std::path::Path::new("/root/.local/share/noodle/instruments/freepats-bagpipe/Bagpipe 20260806.sfz");
+        let inst = std::sync::Arc::new(super::load(p).unwrap());
+        println!("mono {} from {}", inst.mono, inst.mono_from);
+        let mut pl = super::Player::new(inst, 48000.0);
+        pl.note_on(45, 90);
+        pl.note_on(57, 90);
+        pl.note_on(69, 100);
+        let (mut l, mut r) = (vec![0f32; 48000], vec![0f32; 48000]);
+        pl.render(&mut l, &mut r);
+        pl.note_on(71, 100);
+        pl.note_off(69);
+        let (mut l2, mut r2) = (vec![0f32; 48000], vec![0f32; 48000]);
+        pl.render(&mut l2, &mut r2);
+        pl.note_off(71);
+        let (mut l3, mut r3) = (vec![0f32; 48000], vec![0f32; 48000]);
+        pl.render(&mut l3, &mut r3);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        println!("chanter+drones {:.4} after change {:.4} drones only {:.4}", rms(&l[24000..]), rms(&l2[24000..]), rms(&l3[24000..]));
+        assert!(rms(&l3[24000..]) > 0.005, "drones keep sounding with the chanter up");
+    }
+
+    #[test]
+    #[ignore]
     fn ocarina_regions() {
         let p = std::path::Path::new("/root/.local/share/noodle/instruments/sgossner-VCSL/Aerophones/Edge-blown Aerophones/Ocarina, Typical - SusVib.sfz");
         let inst = super::load(p).unwrap();
