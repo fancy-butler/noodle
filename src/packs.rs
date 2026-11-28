@@ -46,7 +46,7 @@ pub const PACKS: &[Pack] = &[
     },
     Pack { name: "Great Highland chanter (recorded)", group: "Pipes & whistles", src: Src::Highland, credit: crate::pipe_pack::CREDIT },
     Pack { name: "Uilleann chanter (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-chanter-2/Uilleann chanter (recorded).sfz"), credit: "Uilleann chanter · recorded by Fancy Butler · CC0" },
-    Pack { name: "Uilleann drones (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-drones/Uilleann drones (recorded).sfz"), credit: "Uilleann drones · recorded by Fancy Butler · CC0" },
+    Pack { name: "Uilleann drones (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-drones-2/Uilleann drones (recorded).sfz"), credit: "Uilleann drones · recorded by Fancy Butler · CC0" },
     Pack { name: "Uilleann regulators (recorded)", group: "Pipes & whistles", src: Src::Sfz("fancy-butler", "noodle", "main", "sounds/uilleann-regulators/Uilleann regulators (recorded).sfz"), credit: "Uilleann regulators · recorded by Fancy Butler · CC0" },
     Pack { name: "Bagpipe in G (with drones)", group: "Pipes & whistles", src: Src::Sfz("freepats", "bagpipe", "main", "Bagpipe 20260806.sfz"), credit: "FreePats · Gilles Sadowski · CC0" },
     vcsl("Harmonica, chromatic (Hohner Super 64)", "Pipes & whistles", "Aerophones/Free Aerophones/Harmonica-Hohner-Super64 - Normal.sfz"),

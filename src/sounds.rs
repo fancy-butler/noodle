@@ -72,6 +72,9 @@ pub fn instrument_dirs() -> Vec<PathBuf> {
 
 /// A stable id for an instrument file, so a saved choice survives new files appearing.
 pub fn inst_id(p: &Path) -> i32 {
+    // the folder scan lists files by their canonical path (on Windows that's \\?\C:\…), so a path
+    // built any other way (a pack's install path) must be canonical too, or the ids never match
+    let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let mut h: u32 = 2166136261;
     for b in p.to_string_lossy().bytes() {
         h = (h ^ b as u32).wrapping_mul(16777619);

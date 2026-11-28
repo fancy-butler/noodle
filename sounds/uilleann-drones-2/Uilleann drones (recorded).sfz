@@ -1,0 +1,5 @@
+// Uilleann drones (tenor D4, baritone D3, bass D2 together), recorded by Fancy Butler. CC0.
+// Cut from the steady stretch after tuning (no change in bag pressure inside the loop); crossfaded loop.
+// Measured: tenor 295.3 Hz (+10 cents), so tune=-10 puts it at A440 pitch; pitch_keycenter is the tenor.
+<control> default_path=samples/
+<region> sample=drones.wav lokey=0 hikey=127 pitch_keycenter=62 tune=-10 loop_mode=loop_continuous loop_start=24539 loop_end=129089 ampeg_attack=0.15 ampeg_release=0.4

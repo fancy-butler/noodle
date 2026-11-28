@@ -220,7 +220,7 @@ impl DronePlay {
 mod tests {
     #[test]
     fn shipped_loop_loads_and_is_in_tune() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sounds/uilleann-drones/Uilleann drones (recorded).sfz");
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sounds/uilleann-drones-2/Uilleann drones (recorded).sfz");
         let d = super::load(&p).unwrap();
         assert!(d.loop_end > d.loop_start + 44100, "loop too short");
         assert!((d.cents - 6210.0).abs() < 5.0, "recorded pitch {}", d.cents);

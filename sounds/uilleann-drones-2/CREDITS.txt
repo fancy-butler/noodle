@@ -1,0 +1,4 @@
+Uilleann drones (practice set in D: tenor, baritone, bass together) — recorded by Fancy Butler.
+Released under CC0 1.0 (public domain): https://creativecommons.org/publicdomain/zero/1.0/
+A 2.4-second loop cut from the steady drones after tuning (tenor 295.3 Hz, baritone 147.6 Hz, bass 73.8 Hz),
+crossfaded so it repeats seamlessly; tuned down 10 cents to A440 pitch.
