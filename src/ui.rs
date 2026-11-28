@@ -2512,6 +2512,8 @@ impl App {
         p.pipe_continuous.store(self.s.pipe_cont, Relaxed);
         p.pipe_closed.store(self.s.pipe_closed || self.s.pipe_idx == 4, Relaxed);
         p.regs_on.store(self.s.regs_on && self.s.drone_mode == 1 && self.s.pipe_idx == 3, Relaxed);
+        // the low keys only turn into regulators when you ask, and only with the window open
+        p.regs_keys.store(self.s.regs_low_keys && self.regs_open, Relaxed);
         p.reg_level.set(self.s.reg_level);
         p.chord_on.store(mode == 3 && !self.acc_mode, Relaxed);
         p.chord_kind.store(self.s.chord_kind, Relaxed);
@@ -4885,6 +4887,11 @@ impl App {
                     self.s.uil_regs_rec = false;
                 }
                 ui.separator();
+                let mut lk = self.s.regs_low_keys;
+                if ui.checkbox(&mut lk, "Low keys play regulators").on_hover_text("Keys below the chanter's low D strike regulator chords instead of nothing. Only while this window is open.").changed() {
+                    self.s.regs_low_keys = lk;
+                }
+                ui.separator();
                 ui.label("Stock on the");
                 for (v, t) in [(false, "right"), (true, "left")] {
                     if ui.selectable_label(self.s.regs_left == v, t).clicked() {
@@ -4893,7 +4900,7 @@ impl App {
                 }
             });
             ui.label(
-                RichText::new("Click a key, or a row's strip underneath for the whole row (the wrist). Computer keys 1–5 strike rows. On a MIDI keyboard the keys below the chanter's low note strike rows by letter: C → C/A/C · B → G · A → D · G → G/D · F♯ → F♯.")
+                RichText::new("Click a key, or a row's strip underneath for the whole row (the wrist). Computer keys 1–5 strike rows. With \"Low keys play regulators\" on, the keys below the chanter's low note strike rows by letter: C → C/A/C · B → G · A → D · G → G/D · F♯ → F♯.")
                     .size(11.5)
                     .color(text_dim()),
             );

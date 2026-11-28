@@ -139,6 +139,8 @@ pub struct Settings {
     pub regs_on: bool,
     pub reg_level: f32,
     pub regs_left: bool,
+    /// low keys strike the regulators (only while the Regulators window is open)
+    pub regs_low_keys: bool,
     /// Highland pipes use the recorded chanter when it's downloaded
     pub ghb_rec: bool,
     /// uilleann pipes use the recorded chanter when it's downloaded
@@ -278,6 +280,7 @@ impl Default for Settings {
             regs_on: true,
             reg_level: 0.6,
             regs_left: false,
+            regs_low_keys: false,
             ghb_rec: true,
             uil_rec: true,
             uil_drones_rec: true,

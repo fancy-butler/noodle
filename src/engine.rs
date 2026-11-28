@@ -237,6 +237,8 @@ pub struct Params {
     /// uilleann regulators: on, level, keys held on screen (bit per key, per regulator),
     /// and what each one is sounding (255 = silent) for the screen to show
     pub regs_on: AtomicBool,
+    /// keys below the chanter's low note strike regulator rows (off: they're just out of range)
+    pub regs_keys: AtomicBool,
     pub reg_level: AF32,
     pub reg_keys: [AtomicU8; 3],
     pub reg_sounding: [AtomicU8; 3],
@@ -324,6 +326,7 @@ impl Params {
             chanter_voice: AtomicU8::new(0),
             chanter_level: AF32::new(0.7),
             regs_on: AtomicBool::new(false),
+            regs_keys: AtomicBool::new(false),
             reg_level: AF32::new(0.6),
             reg_keys: Default::default(),
             reg_sounding: [AtomicU8::new(255), AtomicU8::new(255), AtomicU8::new(255)],
@@ -1047,7 +1050,7 @@ impl Engine {
     /// Keys below the chanter's bottom note strike regulator rows by letter:
     /// C → C/A/C, B → G chord, A → D chord, G → G/D, F♯ or F → the tenor F♯.
     fn reg_row_for(&self, s: u8) -> Option<usize> {
-        if !self.p.regs_on.load(Relaxed) {
+        if !self.p.regs_on.load(Relaxed) || !self.p.regs_keys.load(Relaxed) {
             return None;
         }
         let tonic = self.p.pipe_tonic.load(Relaxed) as i32;

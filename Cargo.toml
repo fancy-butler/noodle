@@ -1,6 +1,6 @@
 [package]
 name = "noodle"
-version = "0.29.5"
+version = "0.29.6"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Fancy Butler"]
